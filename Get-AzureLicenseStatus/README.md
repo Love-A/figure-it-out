@@ -83,6 +83,9 @@ We liked that this approach doesn’t rely on a user account — it just felt cl
 We ended up with what we think is a pretty nifty little monitoring solution for our Azure license status.
 
 Here's what the notification flow looks like if you want changes reported to a **Teams channel or direct chat**.
+<img width="475" alt="image" src="https://github.com/user-attachments/assets/34a331cc-f3ef-421c-820b-862d40dfaaa5" />
+
+<img width="474" alt="image" src="https://github.com/user-attachments/assets/ad51d428-8f2e-48ce-90e2-dd99b47fe689" />
 
 > 📆 The flow includes a condition called `non-weekend`, which skips direct notifications on Saturdays and Sundays to avoid disturbing people during the weekend. (Checking for bank holidays is a bit trickier.)
 
