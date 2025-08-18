@@ -292,7 +292,7 @@ function Invoke-CMPackageVersionCleanup {
 
                 if ($RemoveFromEnvironment) {
                     try {
-                        Remove-CMPackage -PackageId $pkgId -ErrorAction Stop -Confirm:$false
+                        Remove-CMPackage -PackageId $pkgId -ErrorAction Stop -Confirm:$false -Force
                         # Verify only after an actual attempt
                         $verify = Get-CMPackage -Id $pkgId -Fast -ErrorAction SilentlyContinue
                         if ($null -eq $verify) {
