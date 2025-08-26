@@ -7,7 +7,7 @@ The UI is **fully driven by JSON configuration** — no hardcoded menus in the s
 > **Highlights**
 >
 > - ✅ Config-driven options (types, business units, shared options, UI text)
-> - ✅ **Windows 11 default & locked**, with an optional **Win10 override gesture** (default: `Ctrl+Shift+W`)
+> - ✅ **Windows 11 default & locked**, with an optional **Win10 override gesture** (default: `Ctrl+W`)
 > - ✅ Writes both **legacy string vars** and **boolean-friendly flags** for easy TS conditions
 > - ✅ `-ResetTS` to clear stale TS variables at start
 > - ✅ `-DevMode` + **presets** for rapid local testing
@@ -122,7 +122,7 @@ The script looks for the JSON config in this order:
     "lockWin11": true,
     "allowWin10Hotkey": true,
     // Simple, single gesture (letters recommended):
-    "win10OverrideGesture": "Ctrl+Shift+W",
+    "win10OverrideGesture": "Ctrl+W",
     "postInstallOfficeNoticeTypes": ["Corporate Laptop"]
   },
 
@@ -177,7 +177,7 @@ The script looks for the JSON config in this order:
     ],
     "lockWin11": true,
     "allowWin10Hotkey": true,
-    "win10OverrideGesture": "Ctrl+Shift+W",
+    "win10OverrideGesture": "Ctrl+W",
     "postInstallOfficeNoticeTypes": ["Corporate Laptop"]
   },
   "ui": {
@@ -198,10 +198,10 @@ The script looks for the JSON config in this order:
 
 Older configs might have used a **plural** form:
 ```json
-"win10OverrideGestures": ["Ctrl+Shift+F10", "Ctrl+Shift+W"]
+"win10OverrideGestures": ["Ctrl+Shift+F10", "Ctrl+W"]
 ```
 The script will automatically take the **first** entry and use it as the singular
-`win10OverrideGesture`. If neither is present, it defaults to `"Ctrl+Shift+W"`.
+`win10OverrideGesture`. If neither is present, it defaults to `"Ctrl+W"`.
 
 ---
 
@@ -297,9 +297,9 @@ When the technician clicks **Start deployment**, the script writes both “legac
 
 ## Hotkeys
 
-- **Single** gesture defined in JSON under `rules.win10OverrideGesture` (default: `"Ctrl+Shift+W"`).
+- **Single** gesture defined in JSON under `rules.win10OverrideGesture` (default: `"Ctrl+W"`).
 - The script listens on **PreviewKeyDown** only (simple and reliable).
-- We recommend **letter-based** gestures (`W`, `Ctrl+W`, `Ctrl+Shift+W`), since F-keys are often intercepted by WinPE/TS host or OEM Fn layers.
+- We recommend **letter-based** gestures (`W`, `Ctrl+W`, `Ctrl+W`), since F-keys are often intercepted by WinPE/TS host or OEM Fn layers.
 - To disable entirely: set `"allowWin10Hotkey": false`.
 
 ---
@@ -323,7 +323,7 @@ When the technician clicks **Start deployment**, the script writes both “legac
   The selected `Type` isn’t listed under `rules.officeEnabledTypes`.
 
 - **Windows 10 gesture doesn’t trigger**  
-  If using F-keys, they may be intercepted. Use a letter-based gesture like `Ctrl+Shift+W`.
+  If using F-keys, they may be intercepted. Use a letter-based gesture like `Ctrl+W`.
 
 - **TS doesn’t react to choices**  
   Verify TS **conditions**, variable **names**, and **case**. The log shows lines like `Set TS variable OSDWin11Image=True`.
