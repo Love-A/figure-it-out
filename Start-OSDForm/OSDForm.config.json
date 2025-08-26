@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "types": [
+    "Corporate Laptop",
+    "Shared Workstation",
+    "Engineering Workstation",
+    "Kiosk / Digital Signage",
+    "Factory HMI / Production",
+    "Lab / Test Bench"
+  ],
+  "affinity": {
+    "Corporate Laptop": [
+      "Finance",
+      "HR",
+      "Sales",
+      "Marketing",
+      "Legal",
+      "IT",
+      "Executive"
+    ],
+    "Shared Workstation": [
+      "Front Desk",
+      "Contact Center",
+      "Training Room"
+    ],
+    "Engineering Workstation": [
+      "Software Dev",
+      "QA / Test",
+      "CAD / Design",
+      "Data Science"
+    ],
+    "Kiosk / Digital Signage": [
+      "Lobby",
+      "Showroom",
+      "Warehouse",
+      "Cafeteria"
+    ],
+    "Factory HMI / Production": [
+      "Plant 1",
+      "Plant 2",
+      "Quality Lab",
+      "Maintenance"
+    ],
+    "Lab / Test Bench": [
+      "R&D Lab A",
+      "R&D Lab B",
+      "Demo Lab"
+    ]
+  },
+  "shared": {
+    "default": [
+      "No",
+      "Yes"
+    ],
+    "Front Desk": [
+      "Yes",
+      "No"
+    ],
+    "Contact Center": [
+      "Yes",
+      "No"
+    ],
+    "Training Room": [
+      "Yes",
+      "No"
+    ]
+  },
+  "rules": {
+    "officeEnabledTypes": [
+      "Corporate Laptop",
+      "Shared Workstation",
+      "Engineering Workstation"
+    ],
+    "lockWin11": true,
+    "allowWin10Hotkey": true,
+    "win10OverrideGesture": "Ctrl+W",
+    "postInstallOfficeNoticeTypes": [
+      "Corporate Laptop"
+    ]
+  },
+  "ui": {
+    "title": "Select deployment options",
+    "strings": {
+      "typeLabel": "Type",
+      "affinityLabel": "Business unit",
+      "sharedLabel": "Shared device?",
+      "officeLabel": "Install Microsoft 365 Apps?",
+      "windowsLabel": "Choose Windows version",
+      "runButton": "Start deployment"
+    }
+  }
+}
