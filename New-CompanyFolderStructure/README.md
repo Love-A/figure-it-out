@@ -80,6 +80,8 @@ Detta PowerShell-skript skapar en logisk, arkivvänlig och revisorsvänlig mapps
     └─ Rapporter-Årsbokslut
         ├─ Månatliga rapporter
         └─ Årsbokslut
+```
+
 ## Tips
 - Använd YYYY-MM-DD i filnamn för fakturor/kvitton.
 - Undvik mellanslag i filnamn, använd - eller _.
