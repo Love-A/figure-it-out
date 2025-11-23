@@ -20,6 +20,29 @@ Detta PowerShell-skript skapar en logisk, arkivvänlig och revisorsvänlig mapps
 ```
 4. Ange basmapp och år när skriptet frågar.
 
+## 📝 Exempel på mappstruktur 
+[Basmapp]
+└─ 2025
+├─ Fakturor
+│ ├─ Skickat
+│ │ ├─ 01-Januari
+│ │ └─ 12-December
+│ ├─ Mottagna
+│ └─ ...
+├─ Administration
+│ ├─ Jobb-Projekt
+│ └─ Leverantörsfakturor
+├─ Bank-Betalningar
+├─ Avtal
+├─ Skatt-Moms
+├─ Löneadministration
+├─ Bokföring
+│ ├─ Kvitton
+│ │ ├─ 01-Januari
+│ │ └─ 12-December
+│ └─ Inköp
+└─ Rapporter-Årsbokslut
+
 ## Tips
 - Använd YYYY-MM-DD i filnamn för fakturor/kvitton.
 - Undvik mellanslag i filnamn, använd - eller _.
