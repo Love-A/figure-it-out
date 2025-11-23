@@ -21,27 +21,64 @@ Detta PowerShell-skript skapar en logisk, arkivvänlig och revisorsvänlig mapps
 4. Ange basmapp och år när skriptet frågar.
 
 ## 📝 Exempel på mappstruktur 
-[Basmapp]
+[Basmapp] (t.ex. C:\Users\DittNamn\Documents\Företag)
+│
 └─ 2025
-├─ Fakturor
-│ ├─ Skickat
-│ │ ├─ 01-Januari
-│ │ └─ 12-December
-│ ├─ Mottagna
-│ └─ ...
-├─ Administration
-│ ├─ Jobb-Projekt
-│ └─ Leverantörsfakturor
-├─ Bank-Betalningar
-├─ Avtal
-├─ Skatt-Moms
-├─ Löneadministration
-├─ Bokföring
-│ ├─ Kvitton
-│ │ ├─ 01-Januari
-│ │ └─ 12-December
-│ └─ Inköp
-└─ Rapporter-Årsbokslut
+    ├─ Fakturor
+    │   ├─ Skickat
+    │   │   ├─ 01-Januari
+    │   │   ├─ 02-Februari
+    │   │   ├─ 03-Mars
+    │   │   └─ ... (till 12-December)
+    │   ├─ Mottagna
+    │   │   ├─ 01-Januari
+    │   │   ├─ 02-Februari
+    │   │   └─ ... (till 12-December)
+    │   ├─ Betalda
+    │   │   └─ 01-Januari → 12-December
+    │   ├─ Obetalda
+    │   │   └─ 01-Januari → 12-December
+    │   ├─ Makulerade
+    │   │   └─ 01-Januari → 12-December
+    │   └─ Bestridda
+    │       └─ 01-Januari → 12-December
+    │
+    ├─ Administration
+    │   ├─ Jobb-Projekt
+    │   ├─ Leverantörsfakturor
+    │   └─ Övrigt
+    │
+    ├─ Bank-Betalningar
+    │   ├─ Konto1
+    │   └─ Konto2
+    │
+    ├─ Avtal
+    │   ├─ Kunder
+    │   ├─ Leverantörer
+    │   └─ Övriga
+    │
+    ├─ Skatt-Moms
+    │   ├─ Momsrapport
+    │   ├─ Deklarationer
+    │   └─ Skattebesked
+    │
+    ├─ Löneadministration
+    │   ├─ Anställda
+    │   ├─ Löneunderlag
+    │   └─ Arbetsgivardeklarationer
+    │
+    ├─ Bokföring
+    │   ├─ Kvitton
+    │   │   ├─ 01-Januari
+    │   │   ├─ 02-Februari
+    │   │   └─ ... (till 12-December)
+    │   ├─ Inköp
+    │   ├─ Försäljning
+    │   └─ Övrigt
+    │
+    └─ Rapporter-Årsbokslut
+        ├─ Månatliga rapporter
+        └─ Årsbokslut
 
 ## Tips
 - Använd YYYY-MM-DD i filnamn för fakturor/kvitton.
