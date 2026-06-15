@@ -7,7 +7,7 @@ The UI is **fully driven by JSON configuration** — no hardcoded menus in the s
 > **Highlights**
 >
 > - ✅ Config-driven options (types, business units, shared options, UI text)
-> - ✅ **Windows 11 default & locked**, with an optional **Win10 override gesture** (default: `Ctrl+W`)
+> - ✅ **Windows 11 default & locked**, with an optional **Win10 override gesture** (default: `Ctrl+Shift+W`)
 > - ✅ Writes both **legacy string vars** and **boolean-friendly flags** for easy TS conditions
 > - ✅ `-ResetTS` to clear stale TS variables at start
 > - ✅ `-DevMode` + **presets** for rapid local testing
@@ -19,6 +19,7 @@ The UI is **fully driven by JSON configuration** — no hardcoded menus in the s
 
 ## Table of Contents
 
+- [Screenshots](#screenshots)
 - [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Files in this repo](#files-in-this-repo)
@@ -31,6 +32,7 @@ The UI is **fully driven by JSON configuration** — no hardcoded menus in the s
 - [How it maps to Task Sequence variables](#how-it-maps-to-task-sequence-variables)
   - [Legacy string variables](#legacy-string-variables)
   - [Boolean-friendly variables (recommended for conditions)](#booleanfriendly-variables-recommended-for-conditions)
+  - [Exit codes & result](#exit-codes--result)
 - [Integrating with a ConfigMgr Task Sequence](#integrating-with-a-configmgr-task-sequence)
   - [Suggested step order](#suggested-step-order)
   - [Example conditions](#example-conditions)
@@ -119,10 +121,12 @@ The script looks for the JSON config in this order:
 
   "rules": {
     "officeEnabledTypes": ["Corporate Laptop", "Engineering Workstation"],
+    // true  = Windows 11 locked, Windows 10 only via override gesture
+    // false = both Windows versions selectable by the technician
     "lockWin11": true,
     "allowWin10Hotkey": true,
     // Simple, single gesture (letters recommended):
-    "win10OverrideGesture": "Ctrl+W",
+    "win10OverrideGesture": "Ctrl+Shift+W",
     "postInstallOfficeNoticeTypes": ["Corporate Laptop"]
   },
 
@@ -134,13 +138,31 @@ The script looks for the JSON config in this order:
       "sharedLabel": "Shared device?",
       "officeLabel": "Install Microsoft 365 Apps?",
       "windowsLabel": "Choose Windows version",
-      "runButton": "Start deployment"
+      "runButton": "Start deployment",
+      "cancelButton": "Cancel",
+      "officeWith": "With",
+      "officeWithout": "Without"
+    },
+    // All dialog/message-box texts (optional - English defaults are used if omitted)
+    "messages": {
+      "selectTypePrompt": "Please choose a device type.",
+      "selectTypeTitle": "Select type",
+      "selectAffinityPrompt": "Please choose a business unit.",
+      "selectAffinityTitle": "Select business unit",
+      "selectSharedPrompt": "Please specify if this is a shared device.",
+      "selectSharedTitle": "Shared device",
+      "confirmTitle": "Confirm selection",
+      "confirmIntro": "This device will be configured as:",
+      "confirmFooter": "Click 'Cancel' to adjust your choices or 'OK' to continue.",
+      "officeNotInstalledNote": "Microsoft 365 Apps: Not preinstalled (installed later by policy).",
+      "writeErrorMessage": "Failed to write Task Sequence variables. See OSDForm.log for details.",
+      "writeErrorTitle": "OSDForm: Error"
     }
   }
 }
 ```
 
-> The script validates presence of **`types`** and **`shared.default`**. Everything else falls back to safe defaults.
+> The script validates presence of **`types`** and **`shared.default`**. Everything else (including all of `ui.strings` and `ui.messages`) falls back to safe English defaults. A config file should be saved as **UTF-8** so non-ASCII labels (e.g. `Å Ä Ö`) render correctly.
 
 ### Example `OSDForm.config.json`
 
@@ -177,7 +199,7 @@ The script looks for the JSON config in this order:
     ],
     "lockWin11": true,
     "allowWin10Hotkey": true,
-    "win10OverrideGesture": "Ctrl+W",
+    "win10OverrideGesture": "Ctrl+Shift+W",
     "postInstallOfficeNoticeTypes": ["Corporate Laptop"]
   },
   "ui": {
@@ -198,10 +220,10 @@ The script looks for the JSON config in this order:
 
 Older configs might have used a **plural** form:
 ```json
-"win10OverrideGestures": ["Ctrl+Shift+F10", "Ctrl+W"]
+"win10OverrideGestures": ["Ctrl+Shift+F10", "Ctrl+Shift+W"]
 ```
 The script will automatically take the **first** entry and use it as the singular
-`win10OverrideGesture`. If neither is present, it defaults to `"Ctrl+W"`.
+`win10OverrideGesture`. If neither is present, it defaults to `"Ctrl+Shift+W"`.
 
 ---
 
@@ -228,6 +250,23 @@ When the technician clicks **Start deployment**, the script writes both “legac
 | Device type      | `OSDClientType`     | *(string mirror of `Type`)*   |
 | Business unit    | `OSDAffinity`       | *(string mirror of `Affinity`)* |
 | Shared device    | `OSDShared`         | *(string mirror of `Shared`)* |
+
+### Exit codes & result
+
+The script communicates its outcome two ways:
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | GUI ran successfully — the technician either **confirmed** a selection or **cancelled** (closed the window). |
+| `1` | Unhandled error. |
+| `3` | **Configuration error** — config missing, empty, unreadable, or invalid. The TS step fails so imaging does not continue with no choices. |
+
+In addition, the TS variable **`OSDFormResult`** is set to:
+
+- `Completed` — technician clicked *Start deployment* and confirmed.
+- `Cancelled` — window was closed without confirming.
+
+> **Tip:** Because a cancel still exits `0`, the step itself does not fail on cancel. If you want imaging to stop when the technician cancels, add a condition such as `OSDFormResult equals Completed` on the steps that follow, or a guard step that fails when `OSDFormResult` is not `Completed`.
 
 ---
 
@@ -297,17 +336,17 @@ When the technician clicks **Start deployment**, the script writes both “legac
 
 ## Hotkeys
 
-- **Single** gesture defined in JSON under `rules.win10OverrideGesture` (default: `"Ctrl+W"`).
+- **Single** gesture defined in JSON under `rules.win10OverrideGesture` (default: `"Ctrl+Shift+W"`).
 - The script listens on **PreviewKeyDown** only (simple and reliable).
-- We recommend **letter-based** gestures (`W`, `Ctrl+W`, `Ctrl+W`), since F-keys are often intercepted by WinPE/TS host or OEM Fn layers.
+- We recommend **letter-based** gestures (`W`, `Ctrl+W`, `Ctrl+Shift+W`), since F-keys are often intercepted by WinPE/TS host or OEM Fn layers.
 - To disable entirely: set `"allowWin10Hotkey": false`.
 
 ---
 
 ## Logging
 
-- Log path: `.\OSDForm.log` (alongside the script).  
-- The log includes timestamps, levels (INFO/WARN/ERROR), and key actions (config loaded, selections confirmed, TS set, registered gesture).
+- Log path: `.\OSDForm.log` (alongside the script). If that location is not writable, the log falls back to `%TEMP%\OSDForm.log`.
+- Written as **UTF-8**. The log includes timestamps, levels (INFO/WARN/ERROR), and key actions (config loaded, selections confirmed, TS set, registered gesture, completed/cancelled).
 
 ---
 
@@ -323,7 +362,7 @@ When the technician clicks **Start deployment**, the script writes both “legac
   The selected `Type` isn’t listed under `rules.officeEnabledTypes`.
 
 - **Windows 10 gesture doesn’t trigger**  
-  If using F-keys, they may be intercepted. Use a letter-based gesture like `Ctrl+W`.
+  If using F-keys, they may be intercepted. Use a letter-based gesture like `Ctrl+Shift+W`.
 
 - **TS doesn’t react to choices**  
   Verify TS **conditions**, variable **names**, and **case**. The log shows lines like `Set TS variable OSDWin11Image=True`.
@@ -337,3 +376,36 @@ When the technician clicks **Start deployment**, the script writes both “legac
 - Avoid storing secrets in the JSON.
 
 ---
+
+## Contributing
+
+1. Fork the repo
+2. Create a feature branch (`feat/new-thing`)
+3. Commit with clear messages
+4. Open a Pull Request with a short description and testing notes
+
+Please keep changes **config-driven** whenever possible.
+
+---
+
+## License
+
+MIT (suggested). Replace with your company’s preferred license if needed.
+
+---
+
+## Changelog
+
+- **4.0.0-en** — Full refactor:
+  - **Fixed** a pipeline leak in `Write-Log` that caused functions (e.g. config loading) to return arrays instead of single objects. (The script worked before only by accident, via member enumeration.)
+  - **`lockWin11` is now functional.** When `false`, the Windows 10 radio button is enabled and the technician can choose freely. When `true` (default), Windows 11 is locked and Windows 10 is only reachable via the override gesture.
+  - **Missing/invalid config now hard-fails the step** (exit code `3`) with a message box, instead of silently letting the Task Sequence continue with no selections.
+  - **UTF-8** encoding is used for both config reading and log writing (fixes garbled `Å Ä Ö` in WinPE).
+  - **Exit-code + `OSDFormResult` contract** so the Task Sequence can branch on whether the technician confirmed or cancelled. See [Exit codes & result](#exit-codes--result).
+  - **All dialog texts are now configurable** under `ui.messages` (English defaults, fully localizable). Office radio labels and the Cancel button are configurable under `ui.strings`.
+  - **Redesigned layout:** auto-sizing `StackPanel`, non-resizable window, **Enter** triggers *Start deployment*, **Esc**/Cancel closes.
+  - **Approved PowerShell verbs** throughout (`ConvertTo-SafeXaml`, `New-FormFromXaml`, `Confirm-Config`, `Test-SharedSelectionRequired`, `Set-DefaultProperty`, `ConvertTo-ModifierMask`, `ConvertFrom-Gesture`, …).
+- **3.2.1-en** — Robust defaulting for PSCustomObject/hashtable configs; accept legacy `win10OverrideGestures` (plural) but prefer singular `win10OverrideGesture`; keep simple `PreviewKeyDown` hotkey.
+- **3.2-en** — Simplified hotkey handling: single configurable gesture via `win10OverrideGesture` (default `Ctrl+W`); PreviewKeyDown only.
+- **3.1-en** — Multiple configurable gestures; stronger event handling; docs updates.
+- **3.0-en** — English, config-driven UI; Win11 default & lock; secret Win10 hotkey (configurable); ResetTS; dev-presets; TS variable mapping.
