@@ -121,7 +121,6 @@ MIT (or internal equivalent for Norrköpings kommun)
 
 ## ✍️ Author
 
-**Love A**  
-Digital arbetsplats – Norrköpings kommun  
+**Love A**   
 Created: 2025-06-10  
 Last updated: 2025-06-18
