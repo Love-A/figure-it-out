@@ -21,6 +21,7 @@ A PowerShell function for retrieving Microsoft 365 license status, exporting rep
 - Optional audit of enabled licensed accounts with no sign-in for N days via `-AuditInactiveUsers` / `-InactiveDays`
 - Appends per-run license history to `LicenseTrend.csv` and forecasts estimated days until depletion for low/exhausted SKUs (shown in the Teams notification)
 - Styled HTML report (summary cards, status tables with depletion forecast, and a per-license aggregation showing how many disabled/inactive accounts hold each license)
+- Bilingual HTML report (`-Language sv`/`en`) — generate one or both
 
 ---
 
@@ -78,6 +79,7 @@ Get-AzureLicenseStatus `
 | `AuditDisabledUsers` | (Optional) Audits disabled accounts with assigned licenses; adds HTML section, `DisabledLicensedUsers.csv` and a Teams summary line. Requires `User.Read.All` |
 | `AuditInactiveUsers` | (Optional) Audits enabled licensed accounts with no successful sign-in for `InactiveDays` days; adds HTML section, `InactiveLicensedUsers.csv` and a Teams summary line. Requires `User.Read.All` + `AuditLog.Read.All` |
 | `InactiveDays`       | (Optional) Inactivity threshold in days for `AuditInactiveUsers`. Default: 90 |
+| `Language`           | (Optional) HTML report language: `sv` (default) or `en`. Run twice with different `-htmlPath`/`-Language` to produce both. Teams notification and log stay English |
 
 ---
 
@@ -115,12 +117,12 @@ It will:
 
 ## 📦 License
 
-MIT
+MIT 
 
 ---
 
 ## ✍️ Author
 
-**Love A**   
+**Love A**  
 Created: 2025-06-10  
 Last updated: 2025-06-18
