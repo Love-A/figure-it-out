@@ -20,6 +20,7 @@ A PowerShell function for retrieving Microsoft 365 license status, exporting rep
 - Optional audit of disabled accounts with licenses still assigned (reclaimable licenses) via `-AuditDisabledUsers`
 - Optional audit of enabled licensed accounts with no sign-in for N days via `-AuditInactiveUsers` / `-InactiveDays`
 - Appends per-run license history to `LicenseTrend.csv` and forecasts estimated days until depletion for low/exhausted SKUs (shown in the Teams notification)
+- Styled HTML report (summary cards, status tables with depletion forecast, and a per-license aggregation showing how many disabled/inactive accounts hold each license)
 
 ---
 
@@ -55,7 +56,10 @@ Get-AzureLicenseStatus `
 ## 📤 Output
 
 - **CSV:** `./AzureLicenseAudit/AzureLicenseSummary.csv`
-- **HTML:** path given via `-htmlPath`, e.g. `\\server\share\Reports\AzureLicenseSummary.html`
+- **HTML report:** path given via `-htmlPath`, e.g. `\\server\share\Reports\AzureLicenseSummary.html` (summary cards, status tables with depletion forecast, and per-license aggregation of disabled/inactive holdings)
+- **Trend history:** `./AzureLicenseAudit/LicenseTrend.csv` (one row per SKU per run; powers the depletion forecast)
+- **Disabled users:** `./AzureLicenseAudit/DisabledLicensedUsers.csv` (only with `-AuditDisabledUsers`)
+- **Inactive users:** `./AzureLicenseAudit/InactiveLicensedUsers.csv` (only with `-AuditInactiveUsers`)
 - **JSON cache:** `./AzureLicenseAudit/LastLicenseStatus.json`
 - **Log file:** `./AzureLicenseAudit.log`
 
@@ -111,13 +115,13 @@ It will:
 
 ## 📦 License
 
-MIT
+MIT (or internal equivalent for Norrköpings kommun)
 
 ---
 
 ## ✍️ Author
 
 **Love A**  
-
+Digital arbetsplats – Norrköpings kommun  
 Created: 2025-06-10  
 Last updated: 2025-06-18
