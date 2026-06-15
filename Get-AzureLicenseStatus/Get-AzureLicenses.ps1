@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Retrieves Microsoft 365 license status and sends Teams notification via webhook.
 
@@ -54,6 +54,8 @@
                        new -AuditDisabledUsers feature for reclaimable licenses
     2026-06-12 - 1.6 - Trend logging (LicenseTrend.csv), depletion forecast in Teams
                        notification, new -AuditInactiveUsers/-InactiveDays feature
+    2026-06-15 - 1.7 - Redesigned HTML report (cards, styled tables, charset), added
+                       per-license aggregation of disabled/inactive holdings
 #>
 
 function Get-AzureLicenseStatus {
@@ -90,6 +92,35 @@ function Get-AzureLicenseStatus {
         $logMessage = "[$timestamp] [$Level] $Message"
         Add-Content -Path $LogFile -Value $logMessage
         Write-Output $logMessage
+    }
+
+    # Builds a styled HTML table with a proper header row and HTML-encoded values.
+    function ConvertTo-StyledTable {
+        param (
+            [object[]]$Data,
+            [string[]]$Columns,
+            [hashtable]$Headers,
+            [string]$RowClass = "",
+            [string]$EmptyText = "Inget att visa."
+        )
+        if (-not $Data -or @($Data).Count -eq 0) { return "<p class='empty'>$EmptyText</p>" }
+        $sb = [System.Text.StringBuilder]::new()
+        [void]$sb.Append("<table><thead><tr>")
+        foreach ($c in $Columns) {
+            $h = if ($Headers -and $Headers.ContainsKey($c)) { $Headers[$c] } else { $c }
+            [void]$sb.Append("<th>$([System.Net.WebUtility]::HtmlEncode([string]$h))</th>")
+        }
+        [void]$sb.Append("</tr></thead><tbody>")
+        $cls = if ($RowClass) { " class=`"$RowClass`"" } else { "" }
+        foreach ($row in @($Data)) {
+            [void]$sb.Append("<tr$cls>")
+            foreach ($c in $Columns) {
+                [void]$sb.Append("<td>$([System.Net.WebUtility]::HtmlEncode([string]$row.$c))</td>")
+            }
+            [void]$sb.Append("</tr>")
+        }
+        [void]$sb.Append("</tbody></table>")
+        $sb.ToString()
     }
 
     try {
@@ -250,10 +281,12 @@ function Get-AzureLicenseStatus {
                 $uri = $result.'@odata.nextLink'
             } while ($uri)
 
+            $disabledLicenseAgg = @{}
             $disabledLicensedUsers = foreach ($user in ($disabledUsers | Where-Object { $_.assignedLicenses.Count -gt 0 })) {
                 $userLicenses = foreach ($skuId in $user.assignedLicenses.skuId) {
                     if ($skuIdLookup.ContainsKey([string]$skuId)) { $skuIdLookup[[string]$skuId] } else { $skuId }
                 }
+                foreach ($ln in $userLicenses) { $disabledLicenseAgg[$ln]++ }
                 [PSCustomObject]@{
                     DisplayName       = $user.displayName
                     UserPrincipalName = $user.userPrincipalName
@@ -262,6 +295,9 @@ function Get-AzureLicenseStatus {
                 }
             }
             $disabledLicensedUsers = @($disabledLicensedUsers)
+            $disabledLicenseSummary = $disabledLicenseAgg.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object {
+                [PSCustomObject]@{ License = $_.Key; Users = $_.Value }
+            }
 
             $reclaimableCount = ($disabledLicensedUsers | Measure-Object LicenseCount -Sum).Sum
             if (-not $reclaimableCount) { $reclaimableCount = 0 }
@@ -288,6 +324,7 @@ function Get-AzureLicenseStatus {
                 $uri = $result.'@odata.nextLink'
             } while ($uri)
 
+            $inactiveLicenseAgg = @{}
             $inactiveLicensedUsers = foreach ($user in $enabledUsers) {
                 if ($user.assignedLicenses.Count -eq 0) { continue }
                 $lastSignIn = $user.signInActivity.lastSuccessfulSignInDateTime
@@ -296,6 +333,7 @@ function Get-AzureLicenseStatus {
                 $userLicenses = foreach ($skuId in $user.assignedLicenses.skuId) {
                     if ($skuIdLookup.ContainsKey([string]$skuId)) { $skuIdLookup[[string]$skuId] } else { $skuId }
                 }
+                foreach ($ln in $userLicenses) { $inactiveLicenseAgg[$ln]++ }
                 [PSCustomObject]@{
                     DisplayName       = $user.displayName
                     UserPrincipalName = $user.userPrincipalName
@@ -305,6 +343,9 @@ function Get-AzureLicenseStatus {
                 }
             }
             $inactiveLicensedUsers = @($inactiveLicensedUsers)
+            $inactiveLicenseSummary = $inactiveLicenseAgg.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object {
+                [PSCustomObject]@{ License = $_.Key; Users = $_.Value }
+            }
 
             $inactiveLicenseCount = ($inactiveLicensedUsers | Measure-Object LicenseCount -Sum).Sum
             if (-not $inactiveLicenseCount) { $inactiveLicenseCount = 0 }
@@ -315,45 +356,122 @@ function Get-AzureLicenseStatus {
             Write-Log -Message "Inactive licensed users exported to InactiveLicensedUsers.csv." -Level "INFO"
         }
 
-        # HTML export
+        # ========== HTML EXPORT ==========
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $htmlContent = @"
-<html><head><style>
-body { font-family: Arial; } h2 { color: #333; }
-table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
-th, td { border: 1px solid #aaa; padding: 8px; text-align: left; }
-th { background-color: #eee; }
-.exhausted { background-color: #fdd; }
-.low { background-color: #fff5cc; }
-.healthy { background-color: #dff0d8; }
-</style></head><body>
-<p><strong>Report time:</strong> $timestamp</p>
-"@
 
+        # --- Summary cards ---
+        $cardsHtml = @"
+            <div class="card"><div class="card-label">Licens-SKU:er</div><div class="card-value">$(@($summary).Count)</div><div class="card-sub">totalt antal prenumerationer</div></div>
+            <div class="card accent-red"><div class="card-label">Slut</div><div class="card-value">$(@($exhausted).Count)</div><div class="card-sub">0 lediga licenser</div></div>
+            <div class="card accent-amber"><div class="card-label">Få kvar</div><div class="card-value">$(@($low).Count)</div><div class="card-sub">&lt; $lowThreshold lediga licenser</div></div>
+"@
+        if ($AuditDisabledUsers) {
+            $cardsHtml += @"
+            <div class="card accent-blue"><div class="card-label">Återvinningsbara</div><div class="card-value">$reclaimableCount</div><div class="card-sub">licenser på $(@($disabledLicensedUsers).Count) avstängda konton</div></div>
+"@
+        }
+        if ($AuditInactiveUsers) {
+            $cardsHtml += @"
+            <div class="card accent-blue"><div class="card-label">Inaktiva $InactiveDays+ dgr</div><div class="card-value">$inactiveLicenseCount</div><div class="card-sub">licenser på $(@($inactiveLicensedUsers).Count) konton</div></div>
+"@
+        }
+
+        # --- License status tables ---
+        $statusHtml = ""
         if ($exhausted) {
-            $htmlContent += "<h2>❌ Licenses that are exhausted</h2>"
-            $htmlContent += ($exhausted | Sort-Object DisplayName | ConvertTo-Html DisplayName, TotalLicenses, AssignedLicenses, AvailableLicenses -Fragment | ForEach-Object { $_ -replace '<tr>', '<tr class="exhausted">' })
+            $statusHtml += "<h3>❌ Slut</h3>"
+            $statusHtml += ConvertTo-StyledTable -Data ($exhausted | Sort-Object DisplayName) -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses -Headers @{DisplayName='Licens';TotalLicenses='Totalt';AssignedLicenses='Tilldelade';AvailableLicenses='Lediga'} -RowClass "exhausted"
         }
         if ($low) {
-            $htmlContent += "<h2>⚠️ Licenses with few remaining (&lt;$lowThreshold)</h2>"
-            $htmlContent += ($low | Sort-Object DisplayName | ConvertTo-Html DisplayName, TotalLicenses, AssignedLicenses, AvailableLicenses -Fragment | ForEach-Object { $_ -replace '<tr>', '<tr class="low">' })
+            $lowDisplay = $low | Sort-Object DisplayName | Select-Object DisplayName, TotalLicenses, AssignedLicenses, AvailableLicenses, @{n='Forecast';e={ if ($forecasts.ContainsKey($_.SkuPartNumber)) { "~$($forecasts[$_.SkuPartNumber]) dgr" } else { "–" } }}
+            $statusHtml += "<h3>⚠️ Få kvar (&lt; $lowThreshold)</h3>"
+            $statusHtml += ConvertTo-StyledTable -Data $lowDisplay -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses,Forecast -Headers @{DisplayName='Licens';TotalLicenses='Totalt';AssignedLicenses='Tilldelade';AvailableLicenses='Lediga';Forecast='Prognos (slut om)'} -RowClass "low"
         }
         if ($healthy) {
-            $htmlContent += "<h2>✅ Licenses with sufficient availability</h2>"
-            $htmlContent += ($healthy | Sort-Object DisplayName | ConvertTo-Html DisplayName, TotalLicenses, AssignedLicenses, AvailableLicenses -Fragment | ForEach-Object { $_ -replace '<tr>', '<tr class="healthy">' })
+            $statusHtml += "<h3>✅ God marginal</h3>"
+            $statusHtml += ConvertTo-StyledTable -Data ($healthy | Sort-Object DisplayName) -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses -Headers @{DisplayName='Licens';TotalLicenses='Totalt';AssignedLicenses='Tilldelade';AvailableLicenses='Lediga'} -RowClass "healthy"
         }
 
+        # --- Disabled accounts section ---
+        $disabledHtml = ""
         if ($AuditDisabledUsers -and $disabledLicensedUsers.Count -gt 0) {
-            $htmlContent += "<h2>♻️ Disabled accounts with licenses ($reclaimableCount reclaimable)</h2>"
-            $htmlContent += ($disabledLicensedUsers | Sort-Object DisplayName | ConvertTo-Html DisplayName, UserPrincipalName, LicenseCount, Licenses -Fragment | ForEach-Object { $_ -replace '<tr>', '<tr class="low">' })
+            $disabledHtml += "<h2>♻️ Avstängda konton med licenser</h2>"
+            $disabledHtml += "<p class='lead'>$reclaimableCount licenser kan återvinnas från $(@($disabledLicensedUsers).Count) avstängda konton.</p>"
+            $disabledHtml += "<h3>Licenser som binds upp</h3>"
+            $disabledHtml += ConvertTo-StyledTable -Data $disabledLicenseSummary -Columns License,Users -Headers @{License='Licens';Users='Avstängda konton'}
+            $disabledHtml += "<h3>Konton</h3>"
+            $disabledHtml += ConvertTo-StyledTable -Data ($disabledLicensedUsers | Sort-Object DisplayName) -Columns DisplayName,UserPrincipalName,LicenseCount,Licenses -Headers @{DisplayName='Namn';UserPrincipalName='UPN';LicenseCount='Antal';Licenses='Licenser'}
         }
 
+        # --- Inactive accounts section ---
+        $inactiveHtml = ""
         if ($AuditInactiveUsers -and $inactiveLicensedUsers.Count -gt 0) {
-            $htmlContent += "<h2>💤 Licensed accounts inactive for $InactiveDays+ days ($inactiveLicenseCount licenses)</h2>"
-            $htmlContent += ($inactiveLicensedUsers | Sort-Object LastSuccessfulSignIn | ConvertTo-Html DisplayName, UserPrincipalName, LastSuccessfulSignIn, LicenseCount, Licenses -Fragment | ForEach-Object { $_ -replace '<tr>', '<tr class="low">' })
+            $inactiveHtml += "<h2>💤 Inaktiva licensierade konton ($InactiveDays+ dagar)</h2>"
+            $inactiveHtml += "<p class='lead'>$inactiveLicenseCount licenser binds upp av $(@($inactiveLicensedUsers).Count) aktiverade konton som inte loggat in på $InactiveDays+ dagar.</p>"
+            $inactiveHtml += "<h3>Licenser som binds upp</h3>"
+            $inactiveHtml += ConvertTo-StyledTable -Data $inactiveLicenseSummary -Columns License,Users -Headers @{License='Licens';Users='Inaktiva användare'}
+            $inactiveHtml += "<h3>Konton</h3>"
+            $inactiveHtml += ConvertTo-StyledTable -Data ($inactiveLicensedUsers | Sort-Object LastSuccessfulSignIn) -Columns DisplayName,UserPrincipalName,LastSuccessfulSignIn,LicenseCount,Licenses -Headers @{DisplayName='Namn';UserPrincipalName='UPN';LastSuccessfulSignIn='Senaste inloggning';LicenseCount='Antal';Licenses='Licenser'}
         }
 
-        $htmlContent += "</body></html>"
+        $htmlContent = @"
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Microsoft 365 – Licensrapport</title>
+<style>
+  :root { --blue:#0078D4; --blue-dk:#106EBE; --ink:#243447; --muted:#6b7785; --line:#e3e8ee; --bg:#f4f6f9; }
+  * { box-sizing: border-box; }
+  body { font-family:'Segoe UI',Arial,sans-serif; margin:0; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:1200px; margin:0 auto; padding:0 32px 56px; }
+  header { background:linear-gradient(135deg,var(--blue) 0%,var(--blue-dk) 100%); color:#fff; padding:28px 0; margin-bottom:28px; box-shadow:0 3px 12px rgba(0,0,0,.12); }
+  header .wrap { padding-bottom:0; }
+  h1 { margin:0; font-size:26px; font-weight:600; letter-spacing:-.3px; }
+  .meta { margin-top:6px; font-size:13px; opacity:.9; }
+  h2 { font-size:20px; margin:40px 0 6px; padding-bottom:8px; border-bottom:2px solid var(--line); }
+  h3 { font-size:15px; color:var(--muted); margin:22px 0 8px; text-transform:uppercase; letter-spacing:.4px; }
+  p.lead { font-size:15px; margin:6px 0 4px; }
+  p.empty { color:var(--muted); font-style:italic; }
+  .cards { display:flex; flex-wrap:wrap; gap:16px; margin-top:8px; }
+  .card { background:#fff; border-radius:10px; padding:18px 20px; flex:1 1 160px; box-shadow:0 1px 6px rgba(0,0,0,.07); border-top:4px solid var(--blue); }
+  .card.accent-red { border-top-color:#d13438; }
+  .card.accent-amber { border-top-color:#f7a600; }
+  .card.accent-blue { border-top-color:var(--blue); }
+  .card-label { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .card-value { font-size:34px; font-weight:700; margin:4px 0 2px; }
+  .card-sub { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:separate; border-spacing:0; margin:8px 0 4px; background:#fff; border-radius:10px; overflow:hidden; box-shadow:0 1px 6px rgba(0,0,0,.07); font-size:14px; }
+  thead th { background:var(--blue); color:#fff; text-align:left; padding:11px 14px; font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
+  tbody td { padding:10px 14px; border-bottom:1px solid var(--line); }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr:nth-child(even) { background:#fafbfc; }
+  tbody tr:hover { background:#eef5fc; }
+  tr.exhausted td:nth-child(4) { color:#d13438; font-weight:700; }
+  tr.low td:nth-child(4) { color:#b46e00; font-weight:700; }
+  tr.healthy td:nth-child(4) { color:#107c10; font-weight:600; }
+  footer { margin-top:40px; text-align:center; font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>Microsoft 365 – Licensrapport</h1><div class="meta">Genererad $timestamp · tröskel för "få kvar": $lowThreshold lediga</div></div></header>
+<div class="wrap">
+  <div class="cards">
+$cardsHtml
+  </div>
+
+  <h2>Licensstatus</h2>
+$statusHtml
+$inactiveHtml
+$disabledHtml
+
+  <footer>Genererad via Microsoft Graph API. Prognosen baseras på tilldelningstakten de senaste 30 dagarna och visas endast när historik finns.</footer>
+</div>
+</body>
+</html>
+"@
+
         $htmlContent | Out-File -FilePath $htmlPath -Encoding UTF8
         Write-Log -Message "License summary exported to AzureLicenseSummary.html." -Level "INFO"
 
