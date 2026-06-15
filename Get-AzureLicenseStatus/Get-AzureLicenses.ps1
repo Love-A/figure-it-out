@@ -32,6 +32,11 @@
     Optional. Days without a successful sign-in before a licensed account is
     considered inactive. Default: 90.
 
+.PARAMETER Language
+    Optional. Language for the HTML report labels: 'sv' (default) or 'en'.
+    Run twice with different -htmlPath/-Language to produce both. Does not
+    affect the Teams notification or log (those stay English).
+
 .EXAMPLE
     Get-AzureLicenseStatus -WebhookUrl "https://..." -NotifySku "SPE_E5","VISIOCLIENT" -AppId "your-app-id" -TenantId "your-tenant-id" -Thumbprint "your-cert-thumbprint" -htmlPath "\\UNCPATH\Directory\licensereport.html"
 
@@ -56,6 +61,7 @@
                        notification, new -AuditInactiveUsers/-InactiveDays feature
     2026-06-15 - 1.7 - Redesigned HTML report (cards, styled tables, charset), added
                        per-license aggregation of disabled/inactive holdings
+    2026-06-15 - 1.8 - Bilingual HTML report via -Language (sv/en)
 #>
 
 function Get-AzureLicenseStatus {
@@ -70,7 +76,8 @@ function Get-AzureLicenseStatus {
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Thumbprint,
         [switch]$AuditDisabledUsers,
         [switch]$AuditInactiveUsers,
-        [ValidateRange(1, 3650)][int]$InactiveDays = 90
+        [ValidateRange(1, 3650)][int]$InactiveDays = 90,
+        [ValidateSet('sv', 'en')][string]$Language = 'sv'
     )
 
     $foldername = "AzureLicenseAudit"
@@ -101,7 +108,7 @@ function Get-AzureLicenseStatus {
             [string[]]$Columns,
             [hashtable]$Headers,
             [string]$RowClass = "",
-            [string]$EmptyText = "Inget att visa."
+            [string]$EmptyText = "–"
         )
         if (-not $Data -or @($Data).Count -eq 0) { return "<p class='empty'>$EmptyText</p>" }
         $sb = [System.Text.StringBuilder]::new()
@@ -359,68 +366,105 @@ function Get-AzureLicenseStatus {
         # ========== HTML EXPORT ==========
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
+        # --- Localized labels (sv/en) ---
+        $strings = @{
+            sv = @{
+                Title = 'Microsoft 365 – Licensrapport'; MetaFmt = 'Genererad {0} · tröskel för "få kvar": {1} lediga'
+                CardSkus = 'Licens-SKU:er'; CardSkusSub = 'totalt antal prenumerationer'
+                CardExhausted = 'Slut'; CardExhaustedSub = '0 lediga licenser'
+                CardLow = 'Få kvar'; CardLowSubFmt = '&lt; {0} lediga licenser'
+                CardReclaim = 'Återvinningsbara'; CardReclaimSubFmt = 'licenser på {0} avstängda konton'
+                CardInactiveFmt = 'Inaktiva {0}+ dgr'; CardInactiveSubFmt = 'licenser på {0} konton'
+                StatusHeading = 'Licensstatus'; H3Exhausted = '❌ Slut'; H3LowFmt = '⚠️ Få kvar (&lt; {0})'; H3Healthy = '✅ God marginal'
+                ColLicense = 'Licens'; ColTotal = 'Totalt'; ColAssigned = 'Tilldelade'; ColAvailable = 'Lediga'; ColForecast = 'Prognos (slut om)'; ForecastUnit = 'dgr'
+                DisabledHeading = '♻️ Avstängda konton med licenser'; DisabledLeadFmt = '{0} licenser kan återvinnas från {1} avstängda konton.'
+                InactiveHeadingFmt = '💤 Inaktiva licensierade konton ({0}+ dagar)'; InactiveLeadFmt = '{0} licenser binds upp av {1} aktiverade konton som inte loggat in på {2}+ dagar.'
+                TiedUpHeading = 'Licenser som binds upp'; AccountsHeading = 'Konton'
+                ColDisabledAccounts = 'Avstängda konton'; ColInactiveUsers = 'Inaktiva användare'
+                ColName = 'Namn'; ColUpn = 'UPN'; ColCount = 'Antal'; ColLicenses = 'Licenser'; ColLastSignIn = 'Senaste inloggning'
+                Footer = 'Genererad via Microsoft Graph API. Prognosen baseras på tilldelningstakten de senaste 30 dagarna och visas endast när historik finns.'
+            }
+            en = @{
+                Title = 'Microsoft 365 – License Report'; MetaFmt = 'Generated {0} · "low" threshold: {1} available'
+                CardSkus = 'License SKUs'; CardSkusSub = 'total subscriptions'
+                CardExhausted = 'Exhausted'; CardExhaustedSub = '0 available licenses'
+                CardLow = 'Low'; CardLowSubFmt = '&lt; {0} available licenses'
+                CardReclaim = 'Reclaimable'; CardReclaimSubFmt = 'licenses on {0} disabled accounts'
+                CardInactiveFmt = 'Inactive {0}+ days'; CardInactiveSubFmt = 'licenses on {0} accounts'
+                StatusHeading = 'License status'; H3Exhausted = '❌ Exhausted'; H3LowFmt = '⚠️ Low (&lt; {0})'; H3Healthy = '✅ Healthy'
+                ColLicense = 'License'; ColTotal = 'Total'; ColAssigned = 'Assigned'; ColAvailable = 'Available'; ColForecast = 'Forecast (depleted in)'; ForecastUnit = 'days'
+                DisabledHeading = '♻️ Disabled accounts with licenses'; DisabledLeadFmt = '{0} licenses can be reclaimed from {1} disabled accounts.'
+                InactiveHeadingFmt = '💤 Inactive licensed accounts ({0}+ days)'; InactiveLeadFmt = '{0} licenses are tied up by {1} enabled accounts with no sign-in for {2}+ days.'
+                TiedUpHeading = 'Licenses tied up'; AccountsHeading = 'Accounts'
+                ColDisabledAccounts = 'Disabled accounts'; ColInactiveUsers = 'Inactive users'
+                ColName = 'Name'; ColUpn = 'UPN'; ColCount = 'Count'; ColLicenses = 'Licenses'; ColLastSignIn = 'Last sign-in'
+                Footer = 'Generated via the Microsoft Graph API. The forecast is based on the assignment rate over the last 30 days and is shown only when history exists.'
+            }
+        }
+        $L = $strings[$Language]
+
         # --- Summary cards ---
         $cardsHtml = @"
-            <div class="card"><div class="card-label">Licens-SKU:er</div><div class="card-value">$(@($summary).Count)</div><div class="card-sub">totalt antal prenumerationer</div></div>
-            <div class="card accent-red"><div class="card-label">Slut</div><div class="card-value">$(@($exhausted).Count)</div><div class="card-sub">0 lediga licenser</div></div>
-            <div class="card accent-amber"><div class="card-label">Få kvar</div><div class="card-value">$(@($low).Count)</div><div class="card-sub">&lt; $lowThreshold lediga licenser</div></div>
+            <div class="card"><div class="card-label">$($L.CardSkus)</div><div class="card-value">$(@($summary).Count)</div><div class="card-sub">$($L.CardSkusSub)</div></div>
+            <div class="card accent-red"><div class="card-label">$($L.CardExhausted)</div><div class="card-value">$(@($exhausted).Count)</div><div class="card-sub">$($L.CardExhaustedSub)</div></div>
+            <div class="card accent-amber"><div class="card-label">$($L.CardLow)</div><div class="card-value">$(@($low).Count)</div><div class="card-sub">$($L.CardLowSubFmt -f $lowThreshold)</div></div>
 "@
         if ($AuditDisabledUsers) {
             $cardsHtml += @"
-            <div class="card accent-blue"><div class="card-label">Återvinningsbara</div><div class="card-value">$reclaimableCount</div><div class="card-sub">licenser på $(@($disabledLicensedUsers).Count) avstängda konton</div></div>
+            <div class="card accent-blue"><div class="card-label">$($L.CardReclaim)</div><div class="card-value">$reclaimableCount</div><div class="card-sub">$($L.CardReclaimSubFmt -f @($disabledLicensedUsers).Count)</div></div>
 "@
         }
         if ($AuditInactiveUsers) {
             $cardsHtml += @"
-            <div class="card accent-blue"><div class="card-label">Inaktiva $InactiveDays+ dgr</div><div class="card-value">$inactiveLicenseCount</div><div class="card-sub">licenser på $(@($inactiveLicensedUsers).Count) konton</div></div>
+            <div class="card accent-blue"><div class="card-label">$($L.CardInactiveFmt -f $InactiveDays)</div><div class="card-value">$inactiveLicenseCount</div><div class="card-sub">$($L.CardInactiveSubFmt -f @($inactiveLicensedUsers).Count)</div></div>
 "@
         }
 
         # --- License status tables ---
         $statusHtml = ""
         if ($exhausted) {
-            $statusHtml += "<h3>❌ Slut</h3>"
-            $statusHtml += ConvertTo-StyledTable -Data ($exhausted | Sort-Object DisplayName) -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses -Headers @{DisplayName='Licens';TotalLicenses='Totalt';AssignedLicenses='Tilldelade';AvailableLicenses='Lediga'} -RowClass "exhausted"
+            $statusHtml += "<h3>$($L.H3Exhausted)</h3>"
+            $statusHtml += ConvertTo-StyledTable -Data ($exhausted | Sort-Object DisplayName) -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses -Headers @{DisplayName=$L.ColLicense;TotalLicenses=$L.ColTotal;AssignedLicenses=$L.ColAssigned;AvailableLicenses=$L.ColAvailable} -RowClass "exhausted"
         }
         if ($low) {
-            $lowDisplay = $low | Sort-Object DisplayName | Select-Object DisplayName, TotalLicenses, AssignedLicenses, AvailableLicenses, @{n='Forecast';e={ if ($forecasts.ContainsKey($_.SkuPartNumber)) { "~$($forecasts[$_.SkuPartNumber]) dgr" } else { "–" } }}
-            $statusHtml += "<h3>⚠️ Få kvar (&lt; $lowThreshold)</h3>"
-            $statusHtml += ConvertTo-StyledTable -Data $lowDisplay -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses,Forecast -Headers @{DisplayName='Licens';TotalLicenses='Totalt';AssignedLicenses='Tilldelade';AvailableLicenses='Lediga';Forecast='Prognos (slut om)'} -RowClass "low"
+            $lowDisplay = $low | Sort-Object DisplayName | Select-Object DisplayName, TotalLicenses, AssignedLicenses, AvailableLicenses, @{n='Forecast';e={ if ($forecasts.ContainsKey($_.SkuPartNumber)) { "~$($forecasts[$_.SkuPartNumber]) $($L.ForecastUnit)" } else { "–" } }}
+            $statusHtml += "<h3>$($L.H3LowFmt -f $lowThreshold)</h3>"
+            $statusHtml += ConvertTo-StyledTable -Data $lowDisplay -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses,Forecast -Headers @{DisplayName=$L.ColLicense;TotalLicenses=$L.ColTotal;AssignedLicenses=$L.ColAssigned;AvailableLicenses=$L.ColAvailable;Forecast=$L.ColForecast} -RowClass "low"
         }
         if ($healthy) {
-            $statusHtml += "<h3>✅ God marginal</h3>"
-            $statusHtml += ConvertTo-StyledTable -Data ($healthy | Sort-Object DisplayName) -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses -Headers @{DisplayName='Licens';TotalLicenses='Totalt';AssignedLicenses='Tilldelade';AvailableLicenses='Lediga'} -RowClass "healthy"
+            $statusHtml += "<h3>$($L.H3Healthy)</h3>"
+            $statusHtml += ConvertTo-StyledTable -Data ($healthy | Sort-Object DisplayName) -Columns DisplayName,TotalLicenses,AssignedLicenses,AvailableLicenses -Headers @{DisplayName=$L.ColLicense;TotalLicenses=$L.ColTotal;AssignedLicenses=$L.ColAssigned;AvailableLicenses=$L.ColAvailable} -RowClass "healthy"
         }
 
         # --- Disabled accounts section ---
         $disabledHtml = ""
         if ($AuditDisabledUsers -and $disabledLicensedUsers.Count -gt 0) {
-            $disabledHtml += "<h2>♻️ Avstängda konton med licenser</h2>"
-            $disabledHtml += "<p class='lead'>$reclaimableCount licenser kan återvinnas från $(@($disabledLicensedUsers).Count) avstängda konton.</p>"
-            $disabledHtml += "<h3>Licenser som binds upp</h3>"
-            $disabledHtml += ConvertTo-StyledTable -Data $disabledLicenseSummary -Columns License,Users -Headers @{License='Licens';Users='Avstängda konton'}
-            $disabledHtml += "<h3>Konton</h3>"
-            $disabledHtml += ConvertTo-StyledTable -Data ($disabledLicensedUsers | Sort-Object DisplayName) -Columns DisplayName,UserPrincipalName,LicenseCount,Licenses -Headers @{DisplayName='Namn';UserPrincipalName='UPN';LicenseCount='Antal';Licenses='Licenser'}
+            $disabledHtml += "<h2>$($L.DisabledHeading)</h2>"
+            $disabledHtml += "<p class='lead'>$($L.DisabledLeadFmt -f $reclaimableCount, @($disabledLicensedUsers).Count)</p>"
+            $disabledHtml += "<h3>$($L.TiedUpHeading)</h3>"
+            $disabledHtml += ConvertTo-StyledTable -Data $disabledLicenseSummary -Columns License,Users -Headers @{License=$L.ColLicense;Users=$L.ColDisabledAccounts}
+            $disabledHtml += "<h3>$($L.AccountsHeading)</h3>"
+            $disabledHtml += ConvertTo-StyledTable -Data ($disabledLicensedUsers | Sort-Object DisplayName) -Columns DisplayName,UserPrincipalName,LicenseCount,Licenses -Headers @{DisplayName=$L.ColName;UserPrincipalName=$L.ColUpn;LicenseCount=$L.ColCount;Licenses=$L.ColLicenses}
         }
 
         # --- Inactive accounts section ---
         $inactiveHtml = ""
         if ($AuditInactiveUsers -and $inactiveLicensedUsers.Count -gt 0) {
-            $inactiveHtml += "<h2>💤 Inaktiva licensierade konton ($InactiveDays+ dagar)</h2>"
-            $inactiveHtml += "<p class='lead'>$inactiveLicenseCount licenser binds upp av $(@($inactiveLicensedUsers).Count) aktiverade konton som inte loggat in på $InactiveDays+ dagar.</p>"
-            $inactiveHtml += "<h3>Licenser som binds upp</h3>"
-            $inactiveHtml += ConvertTo-StyledTable -Data $inactiveLicenseSummary -Columns License,Users -Headers @{License='Licens';Users='Inaktiva användare'}
-            $inactiveHtml += "<h3>Konton</h3>"
-            $inactiveHtml += ConvertTo-StyledTable -Data ($inactiveLicensedUsers | Sort-Object LastSuccessfulSignIn) -Columns DisplayName,UserPrincipalName,LastSuccessfulSignIn,LicenseCount,Licenses -Headers @{DisplayName='Namn';UserPrincipalName='UPN';LastSuccessfulSignIn='Senaste inloggning';LicenseCount='Antal';Licenses='Licenser'}
+            $inactiveHtml += "<h2>$($L.InactiveHeadingFmt -f $InactiveDays)</h2>"
+            $inactiveHtml += "<p class='lead'>$($L.InactiveLeadFmt -f $inactiveLicenseCount, @($inactiveLicensedUsers).Count, $InactiveDays)</p>"
+            $inactiveHtml += "<h3>$($L.TiedUpHeading)</h3>"
+            $inactiveHtml += ConvertTo-StyledTable -Data $inactiveLicenseSummary -Columns License,Users -Headers @{License=$L.ColLicense;Users=$L.ColInactiveUsers}
+            $inactiveHtml += "<h3>$($L.AccountsHeading)</h3>"
+            $inactiveHtml += ConvertTo-StyledTable -Data ($inactiveLicensedUsers | Sort-Object LastSuccessfulSignIn) -Columns DisplayName,UserPrincipalName,LastSuccessfulSignIn,LicenseCount,Licenses -Headers @{DisplayName=$L.ColName;UserPrincipalName=$L.ColUpn;LastSuccessfulSignIn=$L.ColLastSignIn;LicenseCount=$L.ColCount;Licenses=$L.ColLicenses}
         }
 
         $htmlContent = @"
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="$Language">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Microsoft 365 – Licensrapport</title>
+<title>$($L.Title)</title>
 <style>
   :root { --blue:#0078D4; --blue-dk:#106EBE; --ink:#243447; --muted:#6b7785; --line:#e3e8ee; --bg:#f4f6f9; }
   * { box-sizing: border-box; }
@@ -455,18 +499,18 @@ function Get-AzureLicenseStatus {
 </style>
 </head>
 <body>
-<header><div class="wrap"><h1>Microsoft 365 – Licensrapport</h1><div class="meta">Genererad $timestamp · tröskel för "få kvar": $lowThreshold lediga</div></div></header>
+<header><div class="wrap"><h1>$($L.Title)</h1><div class="meta">$($L.MetaFmt -f $timestamp, $lowThreshold)</div></div></header>
 <div class="wrap">
   <div class="cards">
 $cardsHtml
   </div>
 
-  <h2>Licensstatus</h2>
+  <h2>$($L.StatusHeading)</h2>
 $statusHtml
 $inactiveHtml
 $disabledHtml
 
-  <footer>Genererad via Microsoft Graph API. Prognosen baseras på tilldelningstakten de senaste 30 dagarna och visas endast när historik finns.</footer>
+  <footer>$($L.Footer)</footer>
 </div>
 </body>
 </html>
