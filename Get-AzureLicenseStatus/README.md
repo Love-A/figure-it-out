@@ -115,7 +115,7 @@ It will:
 
 ## 📦 License
 
-MIT (or internal equivalent for Norrköpings kommun)
+MIT
 
 ---
 
