@@ -68,6 +68,70 @@ perpetually flagged by detection while remediation declines to act.
 A persistent log is written to
 `%ProgramData%\IntuneRemediations\WinRE-Resize.log` on every run.
 
+## How it works
+
+### Detection
+
+```mermaid
+flowchart TD
+    A["reagentc /info"] --> B{"WinRE location found?<br/>(harddiskX\partitionY)"}
+    B -- No --> D1["Deviation - Exit 1"]
+    B -- Yes --> C["Get partition + disk"]
+    C --> E{"Correct recovery type?<br/>(GPT GUID / MBR 0x27)"}
+    E -- No --> D1
+    E -- Yes --> F{"Not on system partition C:?"}
+    F -- No --> D1
+    F -- Yes --> G{"Size >= 750 MB?"}
+    G -- No --> D1
+    G -- Yes --> H{"Volume free space<br/>measurable?"}
+    H -- No --> OK["Compliant - Exit 0"]
+    H -- Yes --> I{"Free >= 250 MB<br/>AND Healthy?"}
+    I -- No --> D1
+    I -- Yes --> OK
+
+    classDef ok fill:#d4edda,stroke:#28a745,color:#155724;
+    classDef bad fill:#f8d7da,stroke:#dc3545,color:#721c24;
+    class OK ok;
+    class D1 bad;
+```
+
+### Remediation
+
+```mermaid
+flowchart TD
+    A["Start (run as SYSTEM, 64-bit)"] --> B{"WinRE enabled<br/>and located?"}
+    B -- No --> X1["Log: run enable-remediation<br/>Exit 1"]
+    B -- Yes --> C{"Blocking pending reboot?<br/>(CBS / Windows Update)"}
+    C -- Yes --> X2["Abort - retry after reboot<br/>Exit 1"]
+    C -- "No / only PFRO" --> D["Measure size + free space"]
+    D --> E{"Compliant?<br/>size >= 750 MB AND<br/>(free >= 250 MB or n/a)"}
+    E -- Yes --> O1["Nothing to do<br/>Exit 0"]
+    E -- No --> F{"Recovery is last partition<br/>AND C: immediately before?"}
+    F -- No --> X3["Unsafe layout - abort<br/>Exit 1"]
+    F -- Yes --> G{"BitLocker on C:?"}
+    G -- "Yes + SuspendBitLocker = false" --> X4["Abort<br/>Exit 1"]
+    G -- "No / will suspend" --> H["Calculate shrink amount"]
+    H --> I{"Can C: shrink enough?"}
+    I -- No --> X5["Not enough free space on C:<br/>Exit 1"]
+    I -- Yes --> J{"AllowResize = true?"}
+    J -- No --> O2["DRY-RUN: log plan only<br/>Exit 0"]
+    J -- Yes --> K["Suspend BitLocker (-RebootCount 1)"]
+    K --> L["reagentc /disable"]
+    L --> M{"winre.wim present?"}
+    M -- No --> X6["Re-enable WinRE + resume BitLocker<br/>Abort - Exit 1"]
+    M -- Yes --> N["diskpart: shrink C:, delete + recreate,<br/>format NTFS, set recovery type"]
+    N --> P["reagentc /enable"]
+    P --> Q{"WinRE relocated to valid<br/>recovery partition?<br/>(correct type, not C:)"}
+    Q -- No --> X7["Resume BitLocker<br/>Manual review - Exit 1"]
+    Q -- Yes --> R["Resume BitLocker"]
+    R --> O3["DONE - partition rebuilt<br/>Exit 0"]
+
+    classDef ok fill:#d4edda,stroke:#28a745,color:#155724;
+    classDef bad fill:#f8d7da,stroke:#dc3545,color:#721c24;
+    class O1,O2,O3 ok;
+    class X1,X2,X3,X4,X5,X6,X7 bad;
+```
+
 ## Safety model
 
 The remediation is **destructive** (it deletes and recreates a partition), so
