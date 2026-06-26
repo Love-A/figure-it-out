@@ -13,9 +13,9 @@ executions — live and historically — with a clean WPF UI and a self-containe
 
 ---
 
-## What's new vs 1.6
+## What's new vs ConfigMgr Task Sequence Monitor
 
-| Area | TS Monitor 1.6 | Sequence Insight |
+| Area | TS Monitor | Sequence Insight |
 |---|---|---|
 | Data access | Direct SQL only | **Hybrid**: AdminService (REST/HTTPS) for the TS list, name resolution and live status feed; SQL (read-only) for the deep step-level execution history |
 | Live data | **MDT web service** (deprecated by Microsoft) | MDT removed — near-real-time via polling the execution view + AdminService status feed |
