@@ -1,0 +1,32 @@
+{
+  "provider": "cm-provider.contoso.com",
+  "siteCode": "ABC",
+
+  "adminService": {
+    "trustServerCertificate": false
+  },
+
+  "sql": {
+    "server": "cm-sql.contoso.com",
+    "database": "CM_ABC",
+    "encrypt": true,
+    "trustServerCertificate": false
+  },
+
+  "refreshIntervalSeconds": 30,
+  "dateDisplay": "local",
+  "theme": "auto",
+  "defaultTimeWindowHours": 24,
+  "errorsOnlyDefault": false,
+  "maxRows": 20000,
+
+  "liveWindowMinutes": 30,
+  "analytics": {
+    "baselineMinSuccessRuns": 3,
+    "phasePatterns": []
+  },
+  "alerts": {
+    "onFailure": true,
+    "toast": true
+  }
+}

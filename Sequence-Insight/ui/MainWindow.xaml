@@ -1,0 +1,302 @@
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Sequence Insight"
+    Width="1280" Height="760" MinWidth="900" MinHeight="520"
+    WindowStartupLocation="CenterScreen"
+    Background="{DynamicResource BgBrush}">
+
+    <Window.Resources>
+        <!-- Theme brushes (swapped at runtime by Set-Theme). Defaults = light. -->
+        <SolidColorBrush x:Key="BgBrush"     Color="#F6F7F9"/>
+        <SolidColorBrush x:Key="PanelBrush"  Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="InkBrush"    Color="#1F2430"/>
+        <SolidColorBrush x:Key="MutedBrush"  Color="#6B7280"/>
+        <SolidColorBrush x:Key="LineBrush"   Color="#E5E7EB"/>
+        <SolidColorBrush x:Key="AccentBrush" Color="#2563EB"/>
+        <SolidColorBrush x:Key="AltRowBrush" Color="#F2F4F7"/>
+        <SolidColorBrush x:Key="ErrRowBrush" Color="#FEF2F2"/>
+        <SolidColorBrush x:Key="ChipBrush"   Color="#EEF2FF"/>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="RowBackground" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource AltRowBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource LineBrush}"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+        </Style>
+        <!-- Column headers must be readable in both themes. The default Aero header (DataGridHeaderBorder)
+             renders its own grey gradient and ignores Background, so we use a plain Border template. -->
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridColumnHeader">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{DynamicResource LineBrush}"
+                                BorderThickness="0,0,1,1" Padding="8,6">
+                            <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Flat, rounded controls so the app matches the modern HTML report (dependency-free). -->
+        <Style TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}"/>
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" CornerRadius="8" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource ChipBrush}"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource LineBrush}"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border CornerRadius="8" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal" Background="Transparent">
+                            <Border x:Name="box" Width="16" Height="16" CornerRadius="4" VerticalAlignment="Center"
+                                    Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource LineBrush}" BorderThickness="1">
+                                <Path x:Name="chk" Stretch="Uniform" Margin="3" Visibility="Collapsed"
+                                      Data="M0,5 L4,9 L11,0" Stroke="#FFFFFF" StrokeThickness="2"/>
+                            </Border>
+                            <ContentPresenter Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="box" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="chk" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Name="ToggleButton" Focusable="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="tb" CornerRadius="8" Background="{DynamicResource PanelBrush}"
+                                                BorderBrush="{DynamicResource LineBrush}" BorderThickness="1">
+                                            <Path HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,9,0"
+                                                  Data="M0,0 L8,0 L4,5 Z" Fill="{DynamicResource MutedBrush}"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="tb" Property="Background" Value="{DynamicResource ChipBrush}"/></Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                              Margin="10,0,28,0" Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                            <Popup Name="Popup" Placement="Bottom" Focusable="False" AllowsTransparency="True"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}" PopupAnimation="Slide">
+                                <Border MinWidth="{TemplateBinding ActualWidth}" MaxHeight="320" Margin="0,2,0,0" CornerRadius="8"
+                                        Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource LineBrush}" BorderThickness="1">
+                                    <ScrollViewer><StackPanel IsItemsHost="True"/></ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="Padding" Value="9,6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ci" Background="Transparent" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="ci" Property="Background" Value="{DynamicResource ChipBrush}"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGridCell">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border x:Name="cell" Background="{TemplateBinding Background}" BorderThickness="0" Padding="6,4">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="cell" Property="Background" Value="{DynamicResource ChipBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <WrapPanel Grid.Row="0" Margin="0,0,0,10" Orientation="Horizontal">
+            <Label Content="Task sequence"/>
+            <ComboBox x:Name="TsCombo" Width="240" Height="26" Margin="4,0,14,0">
+                <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" Foreground="{DynamicResource InkBrush}"/></DataTemplate></ComboBox.ItemTemplate>
+            </ComboBox>
+            <Label Content="Computer"/>
+            <TextBox x:Name="ComputerBox" Width="150" Height="26" Margin="4,0,14,0" VerticalContentAlignment="Center"/>
+            <Label Content="Last"/>
+            <TextBox x:Name="HoursBox" Width="60" Height="26" Margin="4,0,4,0" VerticalContentAlignment="Center" ToolTip="Hours back to load, e.g. 1, 24, 120 (press Enter to apply)"/>
+            <Label Content="hours" Margin="0,0,14,0"/>
+            <CheckBox x:Name="ErrorsOnlyCheck" Content="Errors only" VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{DynamicResource InkBrush}"/>
+            <Button x:Name="RefreshButton" Content="Refresh" Height="26" MinWidth="80" Margin="0,0,8,0"/>
+            <CheckBox x:Name="AutoRefreshCheck" Content="Auto" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource InkBrush}"/>
+            <Label Content="every"/>
+            <ComboBox x:Name="IntervalCombo" Width="104" Height="26" Margin="4,0,14,0">
+                <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" Foreground="{DynamicResource InkBrush}"/></DataTemplate></ComboBox.ItemTemplate>
+            </ComboBox>
+            <Button x:Name="ExportButton" Content="Export report" Height="26" MinWidth="118" Margin="0,0,8,0"/>
+            <Button x:Name="ThemeButton" Content="Theme" Height="26" MinWidth="70"/>
+        </WrapPanel>
+
+        <!-- Main split: runs | detail -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1*" MinWidth="430"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="1*" MinWidth="430"/>
+            </Grid.ColumnDefinitions>
+
+            <DataGrid x:Name="RunsGrid" Grid.Column="0">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Computer"      Binding="{Binding Computer}"     Width="125"/>
+                    <DataGridTextColumn Header="Task sequence" Binding="{Binding TaskSequence}" Width="*" MinWidth="150"/>
+                    <DataGridTextColumn Header="Live"          Binding="{Binding Live}"         Width="108"/>
+                    <DataGridTextColumn Header="Status"        Binding="{Binding Status}"       Width="70"/>
+                    <DataGridTextColumn Header="Started"       Binding="{Binding Started}"      Width="130"/>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="{DynamicResource LineBrush}"/>
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="2*" MinHeight="120"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="1.3*" MinHeight="90"/>
+                </Grid.RowDefinitions>
+
+                <DataGrid x:Name="StepsGrid" Grid.Row="0">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="#"        Binding="{Binding Step}"     Width="40"/>
+                        <DataGridTextColumn Header="Action"   Binding="{Binding Action}"   Width="*"/>
+                        <DataGridTextColumn Header="Status"   Binding="{Binding Status}"   Width="70"/>
+                        <DataGridTextColumn Header="Exit"     Binding="{Binding ExitCode}" Width="70"/>
+                        <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="80"/>
+                        <DataGridTextColumn Header="Time"     Binding="{Binding Time}"     Width="180"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+                <!-- Draggable divider so the operator can grow the action-output pane. -->
+                <GridSplitter Grid.Row="1" Height="6" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                              ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"
+                              Background="{DynamicResource LineBrush}"/>
+
+                <Grid Grid.Row="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="Action output" Margin="0,6,0,4" Foreground="{DynamicResource MutedBrush}"/>
+                    <TextBox x:Name="OutputBox" Grid.Row="1" IsReadOnly="True" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"
+                             Background="{DynamicResource PanelBrush}" Foreground="{DynamicResource InkBrush}"
+                             BorderBrush="{DynamicResource LineBrush}"/>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <!-- Status bar -->
+        <DockPanel Grid.Row="2" Margin="0,8,0,0" LastChildFill="False">
+            <TextBlock x:Name="StatusText" DockPanel.Dock="Left" Foreground="{DynamicResource MutedBrush}" Text="Ready."/>
+            <TextBlock x:Name="ConnText" DockPanel.Dock="Right" Foreground="{DynamicResource MutedBrush}" Text=""/>
+        </DockPanel>
+    </Grid>
+</Window>
