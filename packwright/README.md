@@ -12,6 +12,8 @@ Three PowerShell scripts, no dependencies beyond `Microsoft.Graph.Authentication
 
 **Requirements:** Windows with PowerShell 7+, and an Intune tenant you may create apps in. `Install-Module Microsoft.Graph.Authentication -Scope CurrentUser` covers the only dependency.
 
+Start it with `pwsh`, not `powershell`. *Run with PowerShell* in Explorer hands a `.ps1` to Windows PowerShell 5.1, and all three scripts stop there with a single sentence telling you so — the studio in a dialog as well, since a double-click leaves no console to read. Keep the scripts saved as **UTF-8 with BOM**: without one, 5.1 decodes the em dashes as ANSI and dies in parse errors before it reaches that message. The self-test checks the BOM is still there.
+
 ### The GUI in one screen
 
 It opens on a **start screen** with two choices — *I have an installer file* (guided wizard) and *I have a package folder* — plus your recent packages. You can also drop a package folder or an installer straight onto the window.
@@ -146,6 +148,10 @@ A client secret works too and is quicker to set up, but it sits in `.secret` as 
 
 If neither `.secret` nor `-ClientId` is present, the script falls back to delegated interactive sign-in (browser) with the same permission as a delegated scope. Already-connected matching sessions are reused.
 
+`-SignIn` decides how that prompt appears. By default (`Auto`) the Graph SDK brokers it through **WAM**, which parents its window to the console window of the process — a host without one gets no prompt and an empty `InteractiveBrowserCredential authentication failed:`. `-SignIn Browser` turns WAM off (`Set-MgGraphOption -EnableLoginByWAM $false`) and signs in in the default browser instead; that is what the studio uses, because a GUI has no console window to hand over. `-SignIn DeviceCode` prints a code for <https://microsoft.com/devicelogin> — for remote sessions, and only useful from a real console, since the SDK writes that code straight to the console rather than to a PowerShell stream.
+
+Sign-in failures stop the run. Nothing is created in Intune before there is a working Graph connection.
+
 ### App settings — `app.json`
 Settings are read from an `app.json` manifest, searched for in this order:
 
@@ -214,6 +220,7 @@ See [app.example.json](app.example.json) for the full schema. Detection block va
 | `-Update` | Create when missing, otherwise upload a new content version to the existing app. Use this from automation. |
 | `-AppId` | Update this exact app instead of matching on display name. Implies `-Update`. |
 | `-AllowDuplicateName` | Create a second app even though the name is taken. Cannot be combined with `-Update`. |
+| `-SignIn` | How the delegated prompt is shown: `Auto` (WAM, default), `Browser` (no WAM — needed without a console window), `DeviceCode`. |
 
 Returns `Action` (`Created`/`Updated`), `AppId`, `DisplayName`, `Version`, `ContentVersion`, `TenantId` and `PortalUrl`.
 
@@ -228,10 +235,27 @@ Each build writes `Build-<PackageName>-<yyyyMMdd_HHmmss>.log` in the package out
 
 MIT — see [LICENSE](LICENSE). `IntuneWinAppUtil.exe` is Microsoft's [Win32 Content Prep Tool](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool) and is not redistributed here; `Build-IntuneWinApp.ps1` downloads it on first use.
 
-## Version History
-- **2026-09-03 — Publish 1.4** — Idempotent publishing: `-Update` creates the app when missing and otherwise uploads a new content version to the existing app and re-asserts its metadata (assignments kept); `-AppId` targets one app directly; several apps sharing a name are reported instead of guessed at; `-WhatIf` is a real plan step. In the studio this is the *update it* option under Advanced.
+## Version history
+
+Three components, versioned separately: **Studio** (`Packwright.ps1`, the GUI), **Build** (`Build-IntuneWinApp.ps1`) and **Publish** (`Publish-IntuneWinApp.ps1`). Each script's own `.VERSION` block is the authoritative changelog; this is the merged view, newest first.
+
+- **2026-09-04 — Studio 2.3 / Publish 1.5 / Build 2.2** — Windows PowerShell 5.1 is turned away with one sentence naming the version and the `pwsh` command to use, the studio in a dialog as well. It used to produce 41 parse errors, because the scripts were saved without a BOM and 5.1 read the em dashes as ANSI; they are UTF-8 with BOM now and the self-test checks it.
+- **2026-09-04 — Studio 2.3** — Asks for the delegated sign-in with `-SignIn Browser`, so the prompt actually appears when publishing from the GUI.
+- **2026-09-04 — Publish 1.5** — A failed sign-in stops the run. It used to be reported and then ignored, so the publish carried on unauthenticated, printed `App created:` with no id, and told you to go delete an app that was never created. `-SignIn` picks how the delegated prompt appears; the studio passes `Browser`, because the default WAM prompt needs a console window to parent itself to and a GUI has none.
+- **2026-09-04 — Studio 2.2** — Picking another installer in the wizard refreshes everything derived from the previous file (commands, hint, MSI product code, extracted logo, suggested folder name); hand-edited text is kept and pointed out. A hidden *use the MSI product code* option can no longer stay selected and write an empty product code.
 - **2026-09-03 — Studio 2.1** — Built-in help (Help button / F1): a short usage guide for the person packaging the app, with a link to this README.
-- **2026-09-03 — Studio 2.0 / Publish 1.3** — Redesigned studio: start screen with recent packages and drag-and-drop, restyled single-window editor with live Company Portal preview and a readiness checklist, detection reduced to one button with the raw fields behind an expander, advanced settings collapsed, icon extraction from the installer/installed app, Cancel for a running build, humanized Graph errors. Publishing now refuses a duplicate app name unless `-AllowDuplicateName` is given. Fixes: changing the setup file refreshes the commands; absolute detection-script paths validate; MSI COM handles released; MSI and installed-app lookups cached; engine arguments passed as parameters; the window fits small screens.
-- **2026-07-10 — Studio 1.4** — Guided mode: "New package from installer..." wizard (scaffolds a package folder from a vendor `.exe`/`.msi`, engine detection with silent switches for MSI/Inno Setup/NSIS/InstallShield/WiX Burn), "Installed apps..." detection picker that generates the uninstall-key registry rule and harvests `QuietUninstallString`.
-- **2026-07-06 — Build 2.0 / Publish 1.0** — Direct script invocation with parameters, setup file auto-detection, backup pruning, rich `-PassThru` object, fixed console/pipeline output bugs. New: publish Win32 apps directly to Intune via Graph.
-- **2025-09-24 — Build 1.0** — Initial advanced function version.
+- **2026-09-03 — Studio 2.0** — Redesigned for low-threshold use: start screen with recent packages and drag-and-drop, single-window editor with live Company Portal preview and readiness checklist, detection reduced to one button with the raw fields behind an expander, advanced settings collapsed, icon extraction from the installer or installed app, Cancel for a running build.
+  - Fixes: changing the setup file refreshes the commands and detection; absolute detection-script paths validate; MSI COM handles released; MSI and installed-app lookups cached; engine arguments passed as parameters instead of string concatenation; the window fits small screens.
+- **2026-09-03 — Publish 1.4** — Idempotent publishing: `-Update` creates the app when missing and otherwise uploads a new content version to the existing app and re-asserts its metadata (assignments kept); `-AppId` targets one app directly; several apps sharing a name are reported instead of guessed at; `-WhatIf` is a real plan step; the result carries `Action` and `ContentVersion`. In the studio this is the *update it* option under Advanced.
+- **2026-09-03 — Publish 1.3** — Refuses to create a second app with the same display name unless `-AllowDuplicateName` is given, checked before anything is created.
+- **2026-07-10 — Studio 1.4** — Guided wizard from a vendor installer: engine detection with silent switches for MSI/Inno Setup/NSIS/InstallShield/WiX Burn, installed-apps picker that generates the uninstall-key registry rule and harvests `QuietUninstallString`, remembered package root.
+- **2026-07-07 — Studio 1.3** — English UI, neutral publisher default.
+- **2026-07-07 — Studio 1.2** — Correct `minimumWindowsRelease` values.
+- **2026-07-07 — Studio 1.1** — *From MSI...* product code fetch, manual source tags.
+- **2026-07-07 — Build 2.1** — Downloads `IntuneWinAppUtil.exe` from GitHub when it is missing.
+- **2026-07-06 — Studio 1.0** — Initial GUI.
+- **2026-07-06 — Build 2.0** — Direct script invocation with parameters (no more editing the last line), setup file auto-detection, deterministic output detection, backup pruning, rich `-PassThru` object (SHA256/size/duration), pipeline input for batch builds; fixed console echo and output-stream pollution.
+- **2026-07-06 — Publish 1.2** — PSADT metadata: displayName/publisher/version read from the `$adtSession` block (AppVendor/AppName/AppVersion).
+- **2026-07-06 — Publish 1.1** — App-only auth via Entra app registration (the `.secret` pattern: certificate thumbprint or client secret), delegated sign-in kept as fallback.
+- **2026-07-06 — Publish 1.0** — Initial version: create the `win32LobApp`, chunked content upload, commit.
+- **2025-09-24 — Build 1.0** — Initial advanced function version (`SupportsShouldProcess`, `-Clean`, `-Quiet`, `-PassThru`).

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Create or update a Win32 app in Intune from a .intunewin file (metadata + content upload).
 
@@ -56,6 +56,17 @@
     Client secret for app-only auth (dev convenience; plaintext at rest — prefer the
     certificate in prod). Overrides the 'ClientSecret' field in '.secret'.
 
+.PARAMETER SignIn
+    How the delegated fallback prompts (ignored for app-only auth):
+      Auto       - let the Graph SDK decide; on Windows that is the WAM broker, which
+                   parents its prompt to the console window of the process (default)
+      Browser    - turn WAM off and sign in in the default browser. Needed whenever the
+                   process has no console window to parent a prompt to, or the prompt
+                   would open behind a window — a GUI host, a background thread
+      DeviceCode - print a code for https://microsoft.com/devicelogin. For remote
+                   sessions and hosts with no browser. The SDK writes that code to the
+                   console, so a host without one will not show it
+
 .EXAMPLE
     .\Publish-IntuneWinApp.ps1 -Path ".\Output\7-zip\Invoke-AppDeployToolkit.intunewin" -ManifestPath "C:\psadt\7-zip\app.json"
 
@@ -75,7 +86,8 @@
                 GraphThumbprint (cert in the runner's cert store; preferred, esp. prod) and/or
                 ClientSecret (dev convenience; wins over the cert if set). Explicit parameters
                 override '.secret' fields. If neither '.secret' nor -ClientId is present, the
-                script falls back to delegated interactive sign-in.
+                script falls back to delegated interactive sign-in — see -SignIn for how that
+                prompt is shown, which matters as soon as the caller has no console window.
     Permission: DeviceManagementApps.ReadWrite.All — Application permission (admin consent)
                 for app-only auth, or delegated for the interactive fallback.
     The app is created without assignments — assign it in the portal (or extend this script).
@@ -103,6 +115,11 @@
     on every later run. Safe to run from a scheduled task or a pipeline.
 
 .VERSION
+    2026-09-04 - 1.5 - Stop the run when sign-in fails instead of carrying on unauthenticated
+                       and reporting an app that was never created; -SignIn picks how the
+                       delegated prompt is shown (Browser for hosts with no console window);
+                       one sentence instead of a pile of errors on Windows PowerShell 5.1,
+                       and saved UTF-8 with BOM so 5.1 can read that far
     2026-09-03 - 1.4 - Idempotent publishing: -Update creates the app when missing and
                        otherwise adds a new content version to the existing app and
                        re-asserts its metadata; -AppId targets one app directly;
@@ -136,8 +153,18 @@ param(
 
     [string]$AppId,
 
-    [switch]$AllowDuplicateName
+    [switch]$AllowDuplicateName,
+
+    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [string]$SignIn = 'Auto'
 )
+
+# Fails the same way whether the script is run or dot-sourced, and before anything reaches
+# Intune. See the note in Packwright.ps1 on why the BOM is what keeps this line reachable.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw ("Publish-IntuneWinApp needs PowerShell 7 — this is Windows PowerShell $($PSVersionTable.PSVersion). " +
+           'Start pwsh and run it from there (winget install Microsoft.PowerShell).')
+}
 
 function Publish-IntuneWinApp {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -165,7 +192,10 @@ function Publish-IntuneWinApp {
 
         [string]$AppId,
 
-        [switch]$AllowDuplicateName
+        [switch]$AllowDuplicateName,
+
+        [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+        [string]$SignIn = 'Auto'
     )
 
     begin {
@@ -221,11 +251,31 @@ function Publish-IntuneWinApp {
             }
         }
         elseif (-not $ctx -or ($ctx.Scopes -notcontains 'DeviceManagementApps.ReadWrite.All')) {
-            # Fallback: delegated interactive sign-in (no '.secret' and no -ClientId)
-            Write-Host "No app credentials found ('.secret' missing) - using delegated interactive sign-in." -ForegroundColor Yellow
-            $connect = @{ Scopes = @('DeviceManagementApps.ReadWrite.All'); NoWelcome = $true }
+            # Fallback: delegated interactive sign-in (no '.secret' and no -ClientId).
+            # By default the prompt is brokered by WAM, which parents itself to the console
+            # window of the process. A host without one — a GUI, a hidden window — gives it
+            # nothing to parent to and the prompt fails with an empty message, so those
+            # callers pass -SignIn Browser and get the plain browser flow instead.
+            Write-Host "No app credentials found ('.secret' missing) - signing in as you (-SignIn $SignIn). Finish the prompt to continue." -ForegroundColor Yellow
+            $connect = @{ Scopes = @('DeviceManagementApps.ReadWrite.All'); NoWelcome = $true; ErrorAction = 'Stop' }
             if ($authTenantId) { $connect.TenantId = $authTenantId }
-            Connect-MgGraph @connect
+            if ($SignIn -eq 'DeviceCode') { $connect.UseDeviceCode = $true }
+            if ($SignIn -eq 'Browser' -and (Get-Command Set-MgGraphOption -ErrorAction SilentlyContinue)) {
+                Set-MgGraphOption -EnableLoginByWAM $false
+            }
+            try { Connect-MgGraph @connect }
+            catch {
+                throw ("Interactive sign-in to Microsoft Graph failed: $($_.Exception.Message)" +
+                       $(if ($SignIn -eq 'Auto') { ' Retry with -SignIn Browser if no sign-in window appeared.' } else { '' }))
+            }
+        }
+
+        # Connect-MgGraph can report a failure without throwing. Stop here rather than let
+        # every Graph call below fail on its own with 'Authentication needed' — half of them
+        # non-terminating, which is how a run gets far enough to claim it created an app.
+        if (-not (Get-MgContext)) {
+            throw ('Not connected to Microsoft Graph. Run "Connect-MgGraph -Scopes DeviceManagementApps.ReadWrite.All" ' +
+                   'in this session, retry with -SignIn Browser, or set up app-only auth in ''.secret''.')
         }
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
@@ -568,8 +618,13 @@ function Publish-IntuneWinApp {
         else {
             Write-Host "Creating Win32 app '$displayName' in Intune..."
             $app = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps" `
-                       -Body ($appBody | ConvertTo-Json -Depth 20) -ContentType 'application/json'
+                       -Body ($appBody | ConvertTo-Json -Depth 20) -ContentType 'application/json' -ErrorAction Stop
             $appId = $app.id
+            # No id means the POST reported an error instead of creating anything; going on
+            # would upload content to a nonexistent app and blame the user for the leftovers.
+            if ([string]::IsNullOrWhiteSpace($appId)) {
+                throw "Intune returned no app id for '$displayName' — the app was not created."
+            }
             Write-Host "  App created: $appId"
         }
 
@@ -648,7 +703,8 @@ function Publish-IntuneWinApp {
                 # it serving the previous content version — retrying is safe.
                 Write-Warning "App '$displayName' ($appId) still runs its previous content version; nothing was changed over. Safe to retry."
             }
-            else {
+            elseif ($appId) {
+                # Only send anyone hunting through the portal when there is really something there.
                 Write-Warning "App '$displayName' ($appId) was created but content upload did not complete — delete it in the portal before retrying."
             }
             throw

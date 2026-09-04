@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build Intune .intunewin packages with automatic output folder, logging, and safe overwrite handling.
 
@@ -67,6 +67,8 @@
     Author    : Love A
     File Name : Build-IntuneWinApp.ps1 (can be used as a module .psm1 as well)
 .VERSION
+    2026-09-04 - 2.2 - Stops with one sentence on Windows PowerShell 5.1 instead of failing
+                       somewhere further in; saved UTF-8 with BOM so 5.1 can read that far
     2026-07-07 - 2.1 - Auto-download IntuneWinAppUtil.exe from GitHub when missing
     2026-07-06 - 2.0 - Direct script invocation with parameters (no more editing the last line),
                        setup file auto-detection, deterministic output detection, backup pruning,
@@ -94,6 +96,13 @@ param(
 
     [int]$KeepBackups
 )
+
+# Fails the same way whether the script is run or dot-sourced. See the note in
+# Packwright.ps1 on why the BOM is what keeps this line reachable.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw ("Build-IntuneWinApp needs PowerShell 7 — this is Windows PowerShell $($PSVersionTable.PSVersion). " +
+           'Start pwsh and run it from there (winget install Microsoft.PowerShell).')
+}
 
 function Build-IntuneWinApp {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]

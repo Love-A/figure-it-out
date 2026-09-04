@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Package an application and publish it to Intune — a guided GUI on top of
     Build-IntuneWinApp + Publish-IntuneWinApp.
@@ -50,6 +50,18 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
+    2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
+                       WAM prompt parents itself to the console window of the process,
+                       and a GUI has none, so it failed without a message and the
+                       publish carried on unauthenticated. Windows PowerShell 5.1 is
+                       turned away in a dialog instead of a wall of parse errors; the
+                       scripts are saved UTF-8 with BOM so 5.1 can read that far, and
+                       the self-test keeps the BOM from going missing again
+    2026-09-04 - 2.2 - Picking another installer in the wizard refreshes everything that
+                       came from the previous file (commands, hint, MSI product code,
+                       extracted logo, suggested folder name); hand-edited text is kept
+                       and pointed out. A hidden "use the MSI product code" option can
+                       no longer stay selected and write an empty product code.
     2026-09-03 - 2.1 - Built-in help: Help button in the header and F1, showing a short
                        usage guide written for the person packaging the app (the README
                        stays the reference for setup, sign-in and the command line)
@@ -79,6 +91,35 @@ param(
     [switch]$Wizard,
     [switch]$TestLoad
 )
+
+# Windows PowerShell 5.1 gets further than is good for anyone: the file parses, the window
+# opens, and then icon extraction quietly falls back to 32x32 instead of 256x256. Stop here
+# instead, and say it in a dialog too — the usual way to end up in 5.1 is double-clicking
+# the .ps1 in Explorer, where there is no console to read the error in.
+# (This check is only reachable because the script is saved as UTF-8 with a BOM. Without
+# one, 5.1 reads the em dashes as ANSI, every string after the first one breaks, and you
+# get the wall of parse errors instead. Self-test 'Scripts are saved UTF-8 with BOM' guards that.)
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $wrongVersion = @"
+Packwright needs PowerShell 7.
+
+This is Windows PowerShell $($PSVersionTable.PSVersion) — what Explorer uses when you
+double-click a .ps1 file. Start Packwright from PowerShell 7 instead:
+
+    pwsh -STA -File "$PSCommandPath"
+
+No PowerShell 7 on this machine? Install it with:  winget install Microsoft.PowerShell
+"@
+    # Console first: the dialog blocks until someone clicks it, and a run from a terminal
+    # (or with no desktop at all) should not have to wait for that to read the reason.
+    Write-Host $wrongVersion -ForegroundColor Red
+    try {
+        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+        [void][Windows.MessageBox]::Show($wrongVersion, 'Packwright needs PowerShell 7', 'OK', 'Error')
+    }
+    catch { }   # no WPF to show it in — the console text above is then all there is
+    exit 1
+}
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
@@ -1832,6 +1873,8 @@ The usual causes: the detection rule is not set; an app with the same name alrea
 The top right corner shows how publishing authenticates.
 
 With a .secret file next to the script, the tool signs in as an app registration and never prompts. Without one, a browser sign-in opens and your own Intune permissions decide what you are allowed to do.
+
+That browser window can open behind this one — if a publish seems to stall right after it starts, look for it in the taskbar. Publishing stops if the sign-in fails, so nothing is half-created in Intune.
 '@ }
 )
 
@@ -2485,7 +2528,11 @@ function Start-EngineRun {
         $built = Build-IntuneWinApp -SourceFolder $Source -SetupFile $Setup -PassThru
         $built
         if ($DoPublish -and $built) {
-            $built | Publish-IntuneWinApp -Confirm:$false -Update:$UpdateExisting -AllowDuplicateName:$AllowDuplicate
+            # -SignIn Browser: the default WAM prompt parents itself to the console window
+            # of the process, and a GUI has none to give it, so it fails with an empty
+            # message. The plain browser flow needs no window of ours.
+            $built | Publish-IntuneWinApp -Confirm:$false -Update:$UpdateExisting `
+                         -AllowDuplicateName:$AllowDuplicate -SignIn Browser
         }
     }
 
@@ -2702,6 +2749,20 @@ if ($TestLoad) {
     }
 
     Write-Host "Packwright self-test"
+
+    # The PowerShell 7 guard at the top of each script is only reachable if 5.1 can read the
+    # file. Saved without a BOM, 5.1 decodes the em dashes as ANSI, the stray quote byte ends
+    # the string it sits in, and the run dies in 41 parse errors before any guard is reached.
+    $noBom = @(foreach ($engine in $PSCommandPath, $script:EngineBuild, $script:EnginePublish) {
+        $head = [byte[]]::new(3)
+        $reader = [IO.File]::OpenRead($engine)
+        try { [void]$reader.Read($head, 0, 3) } finally { $reader.Dispose() }
+        if ($head[0] -ne 0xEF -or $head[1] -ne 0xBB -or $head[2] -ne 0xBF) { Split-Path -Leaf $engine }
+    })
+    Assert-Test 'Scripts are saved UTF-8 with BOM' ($noBom.Count -eq 0) $(
+        if ($noBom.Count) { "no BOM: $($noBom -join ', ') — PowerShell 5.1 cannot parse these, so the version guard never runs" }
+        else { 'all three readable by PowerShell 5.1' })
+
     Assert-Test 'Main window builds' ($ui.Count -ge 70) "$($ui.Count) named controls"
     Assert-Test 'Theme applied to main window' ($null -ne $window.FindResource('Accent')) 'Accent brush resolves'
     Assert-Test 'Start view is the landing screen' ($ui.ViewStart.Visibility -eq 'Visible' -and $ui.ViewEditor.Visibility -eq 'Collapsed')
