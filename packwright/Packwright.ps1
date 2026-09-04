@@ -62,6 +62,9 @@
                        a null array' from wherever settings were touched next. A run that
                        produces no result object is reported instead of throwing the same
                        error out of a dispatcher tick, which used to close the window.
+                       The background run's parameters carry a 'run' prefix: dot-sourcing
+                       an engine script runs its param() block in the same scope, and
+                       $OutputRoot was being reset to '' before the build ever saw it.
     2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
                        WAM prompt parents itself to the console window of the process,
                        and a GUI has none, so it failed without a message and the
@@ -2810,24 +2813,30 @@ function Start-EngineRun {
         if ($answer -ne 'Yes') { Set-StatusText 'Publishing cancelled.'; return }
     }
 
+    # Every parameter here carries a 'run' prefix on purpose. The engine scripts are brought
+    # in with dot-sourcing, which runs their own param() blocks in this very scope — so a
+    # parameter of ours that shares a name with one of theirs is silently overwritten by
+    # their empty default. $OutputRoot collided with Build-IntuneWinApp.ps1 exactly that way
+    # and reached the build as ''. The self-test checks the two sets of names stay disjoint.
     $runBody = {
         param(
-            [string]$BuildScript, [string]$PublishScript,
-            [string]$Source, [string]$Setup, [string]$OutputRoot,
-            [bool]$DoPublish, [bool]$UpdateExisting, [bool]$AllowDuplicate
+            [string]$runBuildScript, [string]$runPublishScript,
+            [string]$runSource, [string]$runSetup, [string]$runOutputRoot,
+            [bool]$runPublish, [bool]$runUpdate, [bool]$runAllowDuplicate
         )
-        . $BuildScript
-        . $PublishScript
-        $built = Build-IntuneWinApp -SourceFolder $Source -SetupFile $Setup -OutputRoot $OutputRoot -PassThru
+        . $runBuildScript
+        . $runPublishScript
+        $built = Build-IntuneWinApp -SourceFolder $runSource -SetupFile $runSetup `
+                     -OutputRoot $runOutputRoot -PassThru
         # Guarded: a bare '$built' emits $null into the output stream when the build produced
         # nothing, and the caller then has a null to trip over.
         if ($built) { $built }
-        if ($DoPublish -and $built) {
+        if ($runPublish -and $built) {
             # -SignIn Browser: the default WAM prompt parents itself to the console window
             # of the process, and a GUI has none to give it, so it fails with an empty
             # message. The plain browser flow needs no window of ours.
-            $built | Publish-IntuneWinApp -Confirm:$false -Update:$UpdateExisting `
-                         -AllowDuplicateName:$AllowDuplicate -SignIn Browser
+            $built | Publish-IntuneWinApp -Confirm:$false -Update:$runUpdate `
+                         -AllowDuplicateName:$runAllowDuplicate -SignIn Browser
         }
     }
 
@@ -2836,14 +2845,14 @@ function Start-EngineRun {
     $runspaceShell = [powershell]::Create()
     $runspaceShell.Runspace = $runspace
     [void]$runspaceShell.AddScript($runBody.ToString()).AddParameters(@{
-        BuildScript    = $script:EngineBuild
-        PublishScript  = $script:EnginePublish
-        Source         = $script:LoadedFolder
-        Setup          = "$($ui.CmbSetup.SelectedItem)"
-        OutputRoot     = Get-StudioOutputRoot
-        DoPublish      = $Publish
-        UpdateExisting = [bool]$ui.ChkUpdateExisting.IsChecked
-        AllowDuplicate = [bool]$ui.ChkAllowDuplicate.IsChecked
+        runBuildScript    = $script:EngineBuild
+        runPublishScript  = $script:EnginePublish
+        runSource         = $script:LoadedFolder
+        runSetup          = "$($ui.CmbSetup.SelectedItem)"
+        runOutputRoot     = Get-StudioOutputRoot
+        runPublish        = $Publish
+        runUpdate         = [bool]$ui.ChkUpdateExisting.IsChecked
+        runAllowDuplicate = [bool]$ui.ChkAllowDuplicate.IsChecked
     })
 
     $script:RunPS = $runspaceShell
@@ -3115,6 +3124,25 @@ if ($TestLoad) {
     Assert-Test 'No closure calls a function defined in this file' ($closureLeaks.Count -eq 0) $(
         if ($closureLeaks.Count) { "$($closureLeaks -join '; ') — use a plain scriptblock over `$script: state" }
         else { 'closures call only cmdlets and methods' })
+
+    # Dot-sourcing an engine script runs its own param() block in the caller's scope, so a run
+    # parameter that shares a name with one of theirs is overwritten by their empty default.
+    # That is how the output folder reached the build as '', and only a real build would show
+    # it — the suite never runs one. Compare the two sets of names instead.
+    $runBodyAst = $scriptAst.Find({ param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        "$($node.Left.Extent.Text)" -eq '$runBody' }, $true)
+    $runParamBlock = $runBodyAst.Right.Find({ param($node)
+        $node -is [System.Management.Automation.Language.ParamBlockAst] }, $true)
+    $runParams = @($runParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    $engineParams = @(foreach ($engine in $script:EngineBuild, $script:EnginePublish) {
+        $engineAst = [System.Management.Automation.Language.Parser]::ParseFile($engine, [ref]$null, [ref]$null)
+        if ($engineAst.ParamBlock) { $engineAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath } }
+    })
+    $clobbered = @($runParams | Where-Object { $engineParams -contains $_ })
+    Assert-Test 'Run parameters survive dot-sourcing the engines' ($clobbered.Count -eq 0) $(
+        if ($clobbered.Count) { "$($clobbered -join ', ') is also an engine parameter — dot-sourcing resets it" }
+        else { "$($runParams.Count) run parameters, none shared with the engines' $($engineParams.Count)" })
 
     # The shapes that used to take the whole window down through ShowDialog
     Assert-Test 'A run that produced nothing is survivable' (
