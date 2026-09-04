@@ -65,6 +65,10 @@
                        The background run's parameters carry a 'run' prefix: dot-sourcing
                        an engine script runs its param() block in the same scope, and
                        $OutputRoot was being reset to '' before the build ever saw it.
+                       Publishing checks for Microsoft.Graph.Authentication before the
+                       build rather than after it, and says where PowerShell looked.
+                       Self-test ends with a real end-to-end build through the run body,
+                       the one path the rest of the suite could never reach.
     2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
                        WAM prompt parents itself to the console window of the process,
                        and a GUI has none, so it failed without a message and the
@@ -2756,8 +2760,12 @@ $timer.Add_Tick({
     if (-not $script:RunHandle.IsCompleted) { return }
     $timer.Stop()
     $results = @()
+    $failed  = $false
     try { $results = @($runspaceShell.EndInvoke($script:RunHandle)) }
     catch {
+        # A throw inside the run surfaces here rather than on the error stream, so this counts
+        # as a reported failure — otherwise the "nothing happened" line below contradicts it.
+        $failed = $true
         if (-not $script:RunCancelled) {
             $message = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
             Write-GuiLog "ERROR: $(Format-RunError $message)"
@@ -2765,7 +2773,7 @@ $timer.Add_Tick({
         }
     }
     $reported = Show-RunResult -Results $results
-    if (-not $reported -and -not $script:RunCancelled -and $runspaceShell.Streams.Error.Count -eq 0) {
+    if (-not $reported -and -not $failed -and -not $script:RunCancelled -and $runspaceShell.Streams.Error.Count -eq 0) {
         Write-GuiLog 'The run finished without producing a package and without reporting an error. The build log above is the only record of what happened.'
         Set-StatusText 'Nothing was produced — see the log.'
     }
@@ -2780,6 +2788,66 @@ $timer.Add_Tick({
 
 # Build (and optionally publish) through the engine scripts, in a background runspace so
 # the window stays responsive. Arguments are passed as parameters, never string-concatenated.
+# Publishing needs Microsoft.Graph.Authentication. Worth knowing before spending minutes
+# compressing a package, and worth saying more than "install it" to someone who just did:
+# Install-Module from Windows PowerShell 5.1 lands in Documents\WindowsPowerShell, which
+# PowerShell 7 does not read, and -Scope CurrentUser while elevated installs into the
+# administrator's profile. Returns the message to show, or '' when the module is usable.
+function Get-GraphModuleWarning {
+    if (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue) { return '' }
+    # Keep the reason. 'Could not load it' on its own leaves the next person guessing at
+    # execution policy, share permissions and native DLLs in turn.
+    $loadError = $null
+    try   { Import-Module Microsoft.Graph.Authentication -ErrorAction Stop }
+    catch { $loadError = $_.Exception.Message }
+    if (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue) { return '' }
+
+    $onDisk = @(Get-Module -ListAvailable Microsoft.Graph.Authentication -ErrorAction SilentlyContinue)
+    if (-not $onDisk) {
+        return 'Microsoft.Graph.Authentication is not installed where this PowerShell looks. Install it from ' +
+               'PowerShell 7 (pwsh), as the account you run Packwright as, without elevating: ' +
+               'Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
+    }
+    $found = "$($onDisk[0].Path)"
+    $hint = if (Test-LocalPath $found) { '' } else {
+        ' It is in a network home directory. Install it on the local disk instead, from an elevated ' +
+        'pwsh: Install-Module Microsoft.Graph.Authentication -Scope AllUsers'
+    }
+    "Microsoft.Graph.Authentication was found at $found but could not be loaded.$hint" +
+        $(if ($loadError) { " PowerShell said: $loadError" } else { '' })
+}
+
+# What the background runspace actually executes. Script scope rather than a local inside
+# Start-EngineRun so the self-test can run the very same body end to end — this is the one
+# path the rest of the suite cannot reach, and three of the worst bugs have lived in it.
+#
+# Every parameter carries a 'run' prefix on purpose. The engine scripts are brought in with
+# dot-sourcing, which runs their own param() blocks in this very scope, so a parameter of
+# ours sharing a name with one of theirs is silently overwritten by their empty default.
+# $OutputRoot collided with Build-IntuneWinApp.ps1 exactly that way and reached the build
+# as ''. The self-test checks the two sets of names stay disjoint.
+$script:RunBody = {
+    param(
+        [string]$runBuildScript, [string]$runPublishScript,
+        [string]$runSource, [string]$runSetup, [string]$runOutputRoot,
+        [bool]$runPublish, [bool]$runUpdate, [bool]$runAllowDuplicate
+    )
+    . $runBuildScript
+    . $runPublishScript
+    $built = Build-IntuneWinApp -SourceFolder $runSource -SetupFile $runSetup `
+                 -OutputRoot $runOutputRoot -PassThru
+    # Guarded: a bare '$built' emits $null into the output stream when the build produced
+    # nothing, and the caller then has a null to trip over.
+    if ($built) { $built }
+    if ($runPublish -and $built) {
+        # -SignIn Browser: the default WAM prompt parents itself to the console window
+        # of the process, and a GUI has none to give it, so it fails with an empty
+        # message. The plain browser flow needs no window of ours.
+        $built | Publish-IntuneWinApp -Confirm:$false -Update:$runUpdate `
+                     -AllowDuplicateName:$runAllowDuplicate -SignIn Browser
+    }
+}
+
 function Start-EngineRun {
     param([bool]$Publish)
     if ($script:RunPS) { Set-StatusText 'A build is already running.'; return }
@@ -2793,6 +2861,16 @@ function Start-EngineRun {
     if ($pathWarning) { Write-GuiLog "WARNING: $pathWarning" }
 
     if ($Publish) {
+        # Before the build, not after it: the package can take minutes, and finding out then
+        # that the publish cannot even start wastes all of it.
+        $graphWarning = Get-GraphModuleWarning
+        if ($graphWarning) {
+            Write-GuiLog "ERROR: $graphWarning"
+            Set-StatusText 'Publishing needs Microsoft.Graph.Authentication — see the log.'
+            [void][Windows.MessageBox]::Show("$graphWarning`n`nNothing was built.",
+                'Publish to Intune', 'OK', 'Error')
+            return
+        }
         $detection = (Get-DetectionSummary).Text
         $duplicateNote = if ($ui.ChkUpdateExisting.IsChecked) {
             'If Intune already has an app with this name, it is updated with this package as a new version (assignments are kept).'
@@ -2813,38 +2891,11 @@ function Start-EngineRun {
         if ($answer -ne 'Yes') { Set-StatusText 'Publishing cancelled.'; return }
     }
 
-    # Every parameter here carries a 'run' prefix on purpose. The engine scripts are brought
-    # in with dot-sourcing, which runs their own param() blocks in this very scope — so a
-    # parameter of ours that shares a name with one of theirs is silently overwritten by
-    # their empty default. $OutputRoot collided with Build-IntuneWinApp.ps1 exactly that way
-    # and reached the build as ''. The self-test checks the two sets of names stay disjoint.
-    $runBody = {
-        param(
-            [string]$runBuildScript, [string]$runPublishScript,
-            [string]$runSource, [string]$runSetup, [string]$runOutputRoot,
-            [bool]$runPublish, [bool]$runUpdate, [bool]$runAllowDuplicate
-        )
-        . $runBuildScript
-        . $runPublishScript
-        $built = Build-IntuneWinApp -SourceFolder $runSource -SetupFile $runSetup `
-                     -OutputRoot $runOutputRoot -PassThru
-        # Guarded: a bare '$built' emits $null into the output stream when the build produced
-        # nothing, and the caller then has a null to trip over.
-        if ($built) { $built }
-        if ($runPublish -and $built) {
-            # -SignIn Browser: the default WAM prompt parents itself to the console window
-            # of the process, and a GUI has none to give it, so it fails with an empty
-            # message. The plain browser flow needs no window of ours.
-            $built | Publish-IntuneWinApp -Confirm:$false -Update:$runUpdate `
-                         -AllowDuplicateName:$runAllowDuplicate -SignIn Browser
-        }
-    }
-
     $runspace = [runspacefactory]::CreateRunspace()
     $runspace.Open()
     $runspaceShell = [powershell]::Create()
     $runspaceShell.Runspace = $runspace
-    [void]$runspaceShell.AddScript($runBody.ToString()).AddParameters(@{
+    [void]$runspaceShell.AddScript($script:RunBody.ToString()).AddParameters(@{
         runBuildScript    = $script:EngineBuild
         runPublishScript  = $script:EnginePublish
         runSource         = $script:LoadedFolder
@@ -3131,7 +3182,7 @@ if ($TestLoad) {
     # it — the suite never runs one. Compare the two sets of names instead.
     $runBodyAst = $scriptAst.Find({ param($node)
         $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-        "$($node.Left.Extent.Text)" -eq '$runBody' }, $true)
+        "$($node.Left.Extent.Text)" -eq '$script:RunBody' }, $true)
     $runParamBlock = $runBodyAst.Right.Find({ param($node)
         $node -is [System.Management.Automation.Language.ParamBlockAst] }, $true)
     $runParams = @($runParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
@@ -3143,6 +3194,11 @@ if ($TestLoad) {
     Assert-Test 'Run parameters survive dot-sourcing the engines' ($clobbered.Count -eq 0) $(
         if ($clobbered.Count) { "$($clobbered -join ', ') is also an engine parameter — dot-sourcing resets it" }
         else { "$($runParams.Count) run parameters, none shared with the engines' $($engineParams.Count)" })
+
+    $graphLoads = [bool](Get-Command Connect-MgGraph -ErrorAction SilentlyContinue)
+    Assert-Test 'Graph module check matches what this session can load' (
+        [bool](Get-GraphModuleWarning) -ne $graphLoads) $(
+        if ($graphLoads) { 'module loads, nothing to warn about' } else { 'module missing, warning raised' })
 
     # The shapes that used to take the whole window down through ShowDialog
     Assert-Test 'A run that produced nothing is survivable' (
@@ -3384,6 +3440,57 @@ if ($TestLoad) {
         [void](Open-PackageFolder -Folder $folder)
         Assert-Test "Real package opens: $(Split-Path -Leaf $folder)" ($ui.TxtName.Text.Length -gt 0) `
             ("name='{0}' ({1}), detection={2}, ready={3}" -f $ui.TxtName.Text, $ui.TagName.Text, (Get-DetTypeValue), (Update-Readiness))
+    }
+
+    # --- End to end: the real run body, in a real runspace -------------------------
+    # Everything above tests the studio with the engines stubbed out by never reaching them.
+    # This runs $script:RunBody itself — dot-sourcing the engine scripts, binding the run
+    # parameters, invoking IntuneWinAppUtil — which is where the bugs that cost the most
+    # have lived. Publishing is left out; everything up to the .intunewin is real.
+    $packagingTool = @((Join-Path $PSScriptRoot 'IntuneWinAppUtil.exe'), 'C:\IntuneWinAppUtil\IntuneWinAppUtil.exe') |
+                     Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $packagingTool -and "$env:PACKWRIGHT_TESTBUILD" -ne '1') {
+        Write-Host '  SKIP  End-to-end build (no IntuneWinAppUtil.exe here; set PACKWRIGHT_TESTBUILD=1 to let the engine fetch it)'
+    }
+    else {
+        $e2eOutput   = Join-Path $testRoot 'e2e'
+        $e2eRunspace = [runspacefactory]::CreateRunspace()
+        $e2eRunspace.Open()
+        $e2eShell = [powershell]::Create()
+        $e2eShell.Runspace = $e2eRunspace
+        [void]$e2eShell.AddScript($script:RunBody.ToString()).AddParameters(@{
+            runBuildScript    = $script:EngineBuild
+            runPublishScript  = $script:EnginePublish
+            runSource         = $scaffolded
+            runSetup          = 'nsis.exe'
+            runOutputRoot     = $e2eOutput
+            runPublish        = $false
+            runUpdate         = $false
+            runAllowDuplicate = $false
+        })
+        $e2eHandle  = $e2eShell.BeginInvoke()
+        $e2eFailure = $null
+        $e2eResults = @()
+        if ($e2eHandle.AsyncWaitHandle.WaitOne(300000)) {
+            try { $e2eResults = @($e2eShell.EndInvoke($e2eHandle)) } catch { $e2eFailure = $_.Exception.Message }
+        }
+        else { $e2eFailure = 'the build did not finish within five minutes'; $e2eShell.Stop() }
+        $e2eErrors = @($e2eShell.Streams.Error | ForEach-Object { "$_" })
+        $e2eBuilt  = @($e2eResults | Where-Object { $_ -and $_.PSObject.Properties['IntuneWinFile'] })
+
+        Assert-Test 'End-to-end build runs the engines without error' (
+            -not $e2eFailure -and $e2eErrors.Count -eq 0) $(
+            @(@($e2eFailure) + $e2eErrors | Where-Object { $_ })[0])
+        Assert-Test 'End-to-end build returns exactly one package' ($e2eBuilt.Count -eq 1) "$($e2eBuilt.Count) result(s)"
+        if ($e2eBuilt.Count -eq 1) {
+            $e2eFile = "$($e2eBuilt[0].IntuneWinFile)"
+            Assert-Test 'End-to-end .intunewin is on disk' (Test-Path -LiteralPath $e2eFile) (Split-Path -Leaf $e2eFile)
+            # The regression that started all this: a run parameter wiped by dot-sourcing left
+            # the engine falling back to its own default output folder instead of ours.
+            Assert-Test 'End-to-end build honoured the output folder it was given' (
+                $e2eFile.StartsWith($e2eOutput, [StringComparison]::OrdinalIgnoreCase)) "under $(Split-Path -Leaf $e2eOutput)"
+        }
+        $e2eShell.Dispose(); $e2eRunspace.Dispose()
     }
 
     # --- Wizard walkthrough -------------------------------------------------------

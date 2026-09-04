@@ -121,7 +121,9 @@
                        one sentence instead of a pile of errors on Windows PowerShell 5.1,
                        and saved UTF-8 with BOM so 5.1 can read that far; the .intunewin and
                        app.json paths resolve through .ProviderPath so a UNC path stays a
-                       plain filesystem path
+                       plain filesystem path; a missing Microsoft.Graph.Authentication is
+                       reported with the module path that was searched, since the usual
+                       cause is an install that landed somewhere this process cannot see
     2026-09-03 - 1.4 - Idempotent publishing: -Update creates the app when missing and
                        otherwise adds a new content version to the existing app and
                        re-asserts its metadata; -AppId targets one app directly;
@@ -203,8 +205,35 @@ function Publish-IntuneWinApp {
     begin {
         $graphBase = 'https://graph.microsoft.com/beta'
 
+        # Auto-loading usually finds it; ask explicitly so a module that is present but not
+        # auto-discovered still loads, and keep the reason when the load itself fails.
+        $graphLoadError = $null
         if (-not (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue)) {
-            throw 'Microsoft.Graph.Authentication is required. Install with: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
+            try   { Import-Module Microsoft.Graph.Authentication -ErrorAction Stop }
+            catch { $graphLoadError = $_.Exception.Message }
+        }
+        if (-not (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue)) {
+            # "Install it" is no help to someone who just did. The usual causes are an install
+            # that landed out of reach — Install-Module from Windows PowerShell 5.1 writes to
+            # Documents\WindowsPowerShell, which PowerShell 7 does not read, and -Scope CurrentUser
+            # while elevated installs into the administrator's profile — or a module sitting in a
+            # redirected home directory that this process is not allowed to load from.
+            $onDisk = @(Get-Module -ListAvailable Microsoft.Graph.Authentication -ErrorAction SilentlyContinue)
+            $detail = if ($onDisk) {
+                $found  = "$($onDisk[0].Path)"
+                $remote = $found.StartsWith('\\') -or
+                          $(try { [IO.DriveInfo]::new([IO.Path]::GetPathRoot($found)).DriveType -ne 'Fixed' } catch { $false })
+                "It is at $found but could not be loaded." +
+                    $(if ($remote) { ' That is a network location — install it on the local disk instead, from an ' +
+                                     'elevated pwsh: Install-Module Microsoft.Graph.Authentication -Scope AllUsers.' } else { '' }) +
+                    $(if ($graphLoadError) { " PowerShell said: $graphLoadError" } else { '' })
+            }
+            else {
+                'Install it from PowerShell 7 (pwsh), as the same account that runs this tool, without elevating: ' +
+                'Install-Module Microsoft.Graph.Authentication -Scope CurrentUser.' + [Environment]::NewLine +
+                "Searched: $($env:PSModulePath)"
+            }
+            throw "Microsoft.Graph.Authentication is required. $detail"
         }
 
         # App credentials from a gitignored '.secret' JSON file next to this script
