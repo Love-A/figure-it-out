@@ -45,7 +45,7 @@ Made so that a stand-in with little packaging experience can publish a simple ap
 
 The same installed-programs picker is available in the editor as **"Find the app on this computer..."**. The wizard's output is a plain package folder with `app.json`, so it works identically with the scripts.
 
-Run `.\Packwright.ps1 -TestLoad` to build every window and run the headless self-test suite without showing the UI — useful after any change. It prints a PASS/FAIL line per check and exits non-zero on failure. Set `PACKWRIGHT_TESTPACKAGES` to a semicolon-separated list of your own package folders to have them opened as part of the run.
+Run `.\Packwright.ps1 -TestLoad` to build every window and run the headless self-test suite without showing the UI — useful after any change. Run it that way, not as `pwsh -File Packwright.ps1 -TestLoad`: the two differ in scope handling, and a handler written as a `.GetNewClosure()` fails only under the first (a closure gets a module scope of its own, where the functions in the file are out of reach). A self-test reads the source for that pattern, since no run can be relied on to hit it. It prints a PASS/FAIL line per check and exits non-zero on failure. Set `PACKWRIGHT_TESTPACKAGES` to a semicolon-separated list of your own package folders to have them opened as part of the run.
 
 ## Settings — where Packwright keeps things
 

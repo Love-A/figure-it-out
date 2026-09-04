@@ -2112,9 +2112,12 @@ function Get-PathWarning {
 
 # The handlers in Show-StudioSettings are plain scriptblocks over $script:SetDlg, the same
 # way the wizard works off $script:Wz, and deliberately not .GetNewClosure(). A closure runs
-# in a module scope of its own: the functions defined in this file are not in scope there,
-# $ErrorActionPreference is back to its own default, and a $script: write lands somewhere the
-# caller never reads. These three helpers exist so the handlers have something to call.
+# in a module scope of its own: $ErrorActionPreference is back to its own default, a $script:
+# write lands somewhere the caller never reads, and — when the script was started the way
+# people actually start it, '.\Packwright.ps1' at a prompt — the functions defined in this
+# file are not in scope either, so the handler dies at click time with 'not recognized'.
+# ('pwsh -File Packwright.ps1' happens to resolve them, which is how that went unnoticed.)
+# These three helpers exist so the handlers have something to call.
 function Update-SettingsWarning {
     $c = $script:SetDlg.C
     $warning = Get-PathWarning -PackageRoot $c.SetTxtPackages.Text.Trim() -OutputRoot $c.SetTxtOutput.Text.Trim()
@@ -3070,8 +3073,9 @@ if ($TestLoad) {
         else { 'every Resolve-Path result uses .ProviderPath' })
 
     # A .GetNewClosure() scriptblock runs in a module scope of its own, where the functions
-    # defined in this file are not in scope. It fails at click time, not at load time, and
-    # only on some PowerShell builds — so it has to be caught here rather than by running it.
+    # defined in this file are not in scope when the script is started as '.\Packwright.ps1'.
+    # It fails at click time rather than at load time, and not at all under 'pwsh -File', so
+    # no amount of running the suite catches it — it has to be read out of the source.
     $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
     $definedHere = @($scriptAst.FindAll({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
