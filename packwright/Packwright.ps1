@@ -59,7 +59,9 @@
                        .GetNewClosure(): a closure runs in a module scope of its own and
                        cannot see the functions in this file. A settings.json that parses
                        to nothing is written over instead of throwing 'Cannot index into
-                       a null array' from wherever settings were touched next.
+                       a null array' from wherever settings were touched next. A run that
+                       produces no result object is reported instead of throwing the same
+                       error out of a dispatcher tick, which used to close the window.
     2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
                        WAM prompt parents itself to the console window of the process,
                        and a GUI has none, so it failed without a message and the
@@ -2682,6 +2684,32 @@ function Format-RunError {
     @($Text -split '\r?\n' | Where-Object { $_.Trim() })[0]
 }
 
+# Reports what a finished run produced; $true when there was anything to report. Split out of
+# the timer tick so the self-test can feed it the shapes that used to bring the window down:
+# a step that returns nothing leaves a $null in the results, and $null.PSObject.Properties[...]
+# throws 'Cannot index into a null array' — out of a dispatcher tick, which unwinds all the way
+# through ShowDialog. A run that produced nothing is something to report, not something to die on.
+function Show-RunResult {
+    param([object[]]$Results)
+    $reported = $false
+    foreach ($result in $Results) {
+        if (-not $result) { continue }
+        if ($result.PSObject.Properties['IntuneWinFile']) {
+            Write-GuiLog "Built $($result.IntuneWinFile) ($($result.SizeMB) MB)"
+            Set-StatusText "Package built: $($result.IntuneWinFile)"
+            $reported = $true
+        }
+        if ($result.PSObject.Properties['AppId']) {
+            Write-GuiLog "Published '$($result.DisplayName)' — app id $($result.AppId)"
+            Set-StatusText "'$($result.DisplayName)' is published in Intune. Assign groups in the portal."
+            $script:PortalUrl = $result.PortalUrl
+            $ui.BtnOpenPortal.Visibility = 'Visible'
+            $reported = $true
+        }
+    }
+    $reported
+}
+
 function Set-RunUiState {
     param([bool]$Busy)
     foreach ($name in 'BtnSave', 'BtnBuild', 'BtnPublish', 'BtnChangePkg', 'BtnRegPick', 'BtnIconAuto', 'BtnBrowseIcon') {
@@ -2733,17 +2761,10 @@ $timer.Add_Tick({
             Set-StatusText (Format-RunError $message)
         }
     }
-    foreach ($result in $results) {
-        if ($result.PSObject.Properties['IntuneWinFile']) {
-            Write-GuiLog "Built $($result.IntuneWinFile) ($($result.SizeMB) MB)"
-            Set-StatusText "Package built: $($result.IntuneWinFile)"
-        }
-        if ($result.PSObject.Properties['AppId']) {
-            Write-GuiLog "Published '$($result.DisplayName)' — app id $($result.AppId)"
-            Set-StatusText "'$($result.DisplayName)' is published in Intune. Assign groups in the portal."
-            $script:PortalUrl = $result.PortalUrl
-            $ui.BtnOpenPortal.Visibility = 'Visible'
-        }
+    $reported = Show-RunResult -Results $results
+    if (-not $reported -and -not $script:RunCancelled -and $runspaceShell.Streams.Error.Count -eq 0) {
+        Write-GuiLog 'The run finished without producing a package and without reporting an error. The build log above is the only record of what happened.'
+        Set-StatusText 'Nothing was produced — see the log.'
     }
     if ($script:RunCancelled) {
         Write-GuiLog 'Cancelled. If the upload had already started, check Intune for a half-created app.'
@@ -2798,7 +2819,9 @@ function Start-EngineRun {
         . $BuildScript
         . $PublishScript
         $built = Build-IntuneWinApp -SourceFolder $Source -SetupFile $Setup -OutputRoot $OutputRoot -PassThru
-        $built
+        # Guarded: a bare '$built' emits $null into the output stream when the build produced
+        # nothing, and the caller then has a null to trip over.
+        if ($built) { $built }
         if ($DoPublish -and $built) {
             # -SignIn Browser: the default WAM prompt parents itself to the console window
             # of the process, and a GUI has none to give it, so it fails with an empty
@@ -3092,6 +3115,17 @@ if ($TestLoad) {
     Assert-Test 'No closure calls a function defined in this file' ($closureLeaks.Count -eq 0) $(
         if ($closureLeaks.Count) { "$($closureLeaks -join '; ') — use a plain scriptblock over `$script: state" }
         else { 'closures call only cmdlets and methods' })
+
+    # The shapes that used to take the whole window down through ShowDialog
+    Assert-Test 'A run that produced nothing is survivable' (
+        (Show-RunResult -Results @($null)) -eq $false)
+    Assert-Test 'An empty result set is survivable' ((Show-RunResult -Results @()) -eq $false)
+    Assert-Test 'A build result is still reported past a null' (
+        Show-RunResult -Results @($null, [pscustomobject]@{ IntuneWinFile = 'C:\Out\x.intunewin'; SizeMB = 12.3 }))
+    Assert-Test 'A publish result is still reported past a null' (
+        Show-RunResult -Results @($null, [pscustomobject]@{
+            AppId = '0000'; DisplayName = 'Self Test App'; PortalUrl = 'https://intune.microsoft.com/' }))
+    $ui.BtnOpenPortal.Visibility = 'Collapsed'   # undo what reporting a publish turns on
 
     Assert-Test 'Local disk detection' (
         (Test-LocalPath 'C:\IntunePackages') -and

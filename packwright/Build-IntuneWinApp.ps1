@@ -265,6 +265,9 @@ function Build-IntuneWinApp {
             }
 
             if (-not $PSCmdlet.ShouldProcess($setupFullPath, 'Package with IntuneWinAppUtil.exe')) {
+                # The one path that returns no result object. Say so, or a caller that expected
+                # one is left explaining a build that produced nothing and reported nothing.
+                Write-BuildLog -LogFile $logFile -Message 'Skipped: packaging was not confirmed (-WhatIf, or confirmation declined).'
                 return
             }
 
