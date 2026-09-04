@@ -37,7 +37,7 @@ Then **Publish to Intune** builds the `.intunewin` and creates the app, with a l
 
 Made so that a stand-in with little packaging experience can publish a simple app. Pick **"I have an installer file"** on the start screen (or start with `-Wizard` / `-Installer <file>`) and a five-step wizard runs the whole flow:
 
-1. **Installation file** — point at the `.exe`/`.msi` you got from the vendor. The tool identifies the installer engine and prefills the silent commands: MSI (`/qn`), Inno Setup (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`), NSIS (`/S`), InstallShield (`/s /v"/qn"`), WiX Burn (`/quiet`). Name/publisher/version are read from the MSI properties or the exe's version info. You also pick where package folders are created (remembered in `%APPDATA%\Packwright\settings.json`). If you go back and pick a different file, everything the tool derived from the old one — commands, hint, MSI product code, extracted logo, suggested folder name — follows the new file; anything you typed yourself is left alone, with a note saying so.
+1. **Installation file** — point at the `.exe`/`.msi` you got from the vendor. The tool identifies the installer engine and prefills the silent commands: MSI (`/qn`), Inno Setup (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`), NSIS (`/S`), InstallShield (`/s /v"/qn"`), WiX Burn (`/quiet`). Name/publisher/version are read from the MSI properties or the exe's version info. You also pick where package folders are created (prefilled from **Settings**, see below). If you go back and pick a different file, everything the tool derived from the old one — commands, hint, MSI product code, extracted logo, suggested folder name — follows the new file; anything you typed yourself is left alone, with a note saying so.
 2. **App information** — how the app will appear in Intune/Company Portal, plus the install/uninstall commands. Everything prefilled where possible, everything editable.
 3. **Detection** — for MSI the product code is used automatically. For exe installers, click **"Choose installed program..."**: a searchable list of this computer's Apps & features entries; picking the app generates the uninstall-key registry rule (`DisplayVersion` ≥ version, WOW6432Node handled) and harvests a silent uninstall command from `QuietUninstallString` when available. If the app isn't installed yet, run the installer once on your machine first — that's the whole trick. Detection can also be deferred, but publishing stays blocked until it's set.
 4. **Logo** — optional Company Portal icon.
@@ -46,6 +46,19 @@ Made so that a stand-in with little packaging experience can publish a simple ap
 The same installed-programs picker is available in the editor as **"Find the app on this computer..."**. The wizard's output is a plain package folder with `app.json`, so it works identically with the scripts.
 
 Run `.\Packwright.ps1 -TestLoad` to build every window and run the headless self-test suite without showing the UI — useful after any change. It prints a PASS/FAIL line per check and exits non-zero on failure. Set `PACKWRIGHT_TESTPACKAGES` to a semicolon-separated list of your own package folders to have them opened as part of the run.
+
+## Settings — where Packwright keeps things
+
+**Settings** in the header opens them, and the first run asks once, so nobody has to go looking for the JSON file after something has already failed. Both live in `%APPDATA%\Packwright\settings.json`.
+
+| Setting | What it is | Default |
+|---|---|---|
+| `PackageRoot` | Where the wizard creates a folder per package (installer + `app.json`). | `%USERPROFILE%\IntunePackages` |
+| `OutputRoot` | Where built `.intunewin` files are written. | `Output`, next to the script |
+
+Both defaults are on a **local disk** deliberately. On a managed machine Documents is usually redirected to a network home directory, and packaging from there fails in ways that name the wrong culprit: the WindowsInstaller COM object refuses to open the MSI (`Could not read MSI properties from ...`), and `IntuneWinAppUtil.exe` reports `ERROR The setup file you specified cannot be accessed` — while still exiting 0, so the build only fails at the point where no `.intunewin` turns up. `%USERPROFILE%` stays local even when Documents does not, which is why the default hangs off it rather than off `MyDocuments`. The settings dialog says so if you point either folder at a share, and the build log repeats it for a package opened by hand from one.
+
+Paths are resolved with `.ProviderPath`, never `PathInfo.Path`: for a UNC path the latter is provider-qualified (`Microsoft.PowerShell.Core\FileSystem::\\server\share\...`), `Join-Path` carries the prefix along, and nothing outside PowerShell can open the result. The self-test scans all three scripts for that mistake.
 
 ## Quick start
 
@@ -239,6 +252,7 @@ MIT — see [LICENSE](LICENSE). `IntuneWinAppUtil.exe` is Microsoft's [Win32 Con
 
 Three components, versioned separately: **Studio** (`Packwright.ps1`, the GUI), **Build** (`Build-IntuneWinApp.ps1`) and **Publish** (`Publish-IntuneWinApp.ps1`). Each script's own `.VERSION` block is the authoritative changelog; this is the merged view, newest first.
 
+- **2026-09-04 — Studio 2.4 / Publish 1.5 / Build 2.2** — Settings dialog for the package folder and the output folder, reachable from the header and asked once on first run. Both default to a local disk instead of following a redirected Documents folder onto a network home directory, which used to surface as `Could not read MSI properties` and `The setup file you specified cannot be accessed`. Resolved paths use `.ProviderPath`, so a UNC path no longer reaches IntuneWinAppUtil.exe provider-qualified and unopenable.
 - **2026-09-04 — Studio 2.3 / Publish 1.5 / Build 2.2** — Windows PowerShell 5.1 is turned away with one sentence naming the version and the `pwsh` command to use, the studio in a dialog as well. It used to produce 41 parse errors, because the scripts were saved without a BOM and 5.1 read the em dashes as ANSI; they are UTF-8 with BOM now and the self-test checks it.
 - **2026-09-04 — Studio 2.3** — Asks for the delegated sign-in with `-SignIn Browser`, so the prompt actually appears when publishing from the GUI.
 - **2026-09-04 — Publish 1.5** — A failed sign-in stops the run. It used to be reported and then ignored, so the publish carried on unauthenticated, printed `App created:` with no id, and told you to go delete an app that was never created. `-SignIn` picks how the delegated prompt appears; the studio passes `Browser`, because the default WAM prompt needs a console window to parent itself to and a GUI has none.

@@ -68,7 +68,10 @@
     File Name : Build-IntuneWinApp.ps1 (can be used as a module .psm1 as well)
 .VERSION
     2026-09-04 - 2.2 - Stops with one sentence on Windows PowerShell 5.1 instead of failing
-                       somewhere further in; saved UTF-8 with BOM so 5.1 can read that far
+                       somewhere further in; saved UTF-8 with BOM so 5.1 can read that far.
+                       SourceFolder resolves through .ProviderPath, so a UNC source is no
+                       longer handed to IntuneWinAppUtil.exe provider-qualified — that was
+                       "ERROR The setup file you specified cannot be accessed"
     2026-07-07 - 2.1 - Auto-download IntuneWinAppUtil.exe from GitHub when missing
     2026-07-06 - 2.0 - Direct script invocation with parameters (no more editing the last line),
                        setup file auto-detection, deterministic output detection, backup pruning,
@@ -190,7 +193,10 @@ function Build-IntuneWinApp {
         if (-not (Test-Path -LiteralPath $SourceFolder -PathType Container)) {
             throw "SourceFolder not found: $SourceFolder"
         }
-        $resolvedSource = (Resolve-Path -LiteralPath $SourceFolder).Path
+        # .ProviderPath, never .Path: on a UNC path PathInfo.Path is provider-qualified
+        # ("Microsoft.PowerShell.Core\FileSystem::\\server\share\..."), and IntuneWinAppUtil.exe
+        # answers "The setup file you specified cannot be accessed" for a path it cannot parse.
+        $resolvedSource = (Resolve-Path -LiteralPath $SourceFolder).ProviderPath
 
         # Auto-detect setup file if not specified (kept in a local so pipeline items don't inherit it)
         $setup = $SetupFile

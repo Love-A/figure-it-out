@@ -119,7 +119,9 @@
                        and reporting an app that was never created; -SignIn picks how the
                        delegated prompt is shown (Browser for hosts with no console window);
                        one sentence instead of a pile of errors on Windows PowerShell 5.1,
-                       and saved UTF-8 with BOM so 5.1 can read that far
+                       and saved UTF-8 with BOM so 5.1 can read that far; the .intunewin and
+                       app.json paths resolve through .ProviderPath so a UNC path stays a
+                       plain filesystem path
     2026-09-03 - 1.4 - Idempotent publishing: -Update creates the app when missing and
                        otherwise adds a new content version to the existing app and
                        re-asserts its metadata; -AppId targets one app directly;
@@ -372,7 +374,8 @@ function Publish-IntuneWinApp {
     }
 
     process {
-        $Path = (Resolve-Path -LiteralPath $Path).Path
+        # .ProviderPath, never .Path — see the note in Build-IntuneWinApp.ps1 on UNC paths
+        $Path = (Resolve-Path -LiteralPath $Path).ProviderPath
         $meta = Get-IntuneWinMetadata -FilePath $Path
 
         # --- Locate and read manifest (app.json) ---
@@ -384,7 +387,7 @@ function Publish-IntuneWinApp {
         $candidates += (Join-Path -Path (Split-Path -Path $Path -Parent) -ChildPath 'app.json')
         foreach ($candidate in $candidates) {
             if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-                $resolved    = (Resolve-Path -LiteralPath $candidate).Path
+                $resolved    = (Resolve-Path -LiteralPath $candidate).ProviderPath
                 $manifest    = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
                 $manifestDir = Split-Path -Path $resolved -Parent
                 Write-Host "Using manifest: $resolved"

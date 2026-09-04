@@ -50,6 +50,11 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
+    2026-09-04 - 2.4 - Settings dialog (header button, and asked once on first run) for the
+                       package folder and the output folder, both defaulting to a local disk
+                       instead of a Documents folder redirected to a network home directory.
+                       Resolved paths use .ProviderPath, so a UNC path no longer reaches
+                       IntuneWinAppUtil.exe provider-qualified and unopenable.
     2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
                        WAM prompt parents itself to the console window of the process,
                        and a GUI has none, so it failed without a message and the
@@ -380,6 +385,8 @@ $script:MainXaml = @'
             <TextBlock x:Name="TxtAuthStatus" Style="{StaticResource Tiny}" MaxWidth="330" TextWrapping="NoWrap"
                        TextTrimming="CharacterEllipsis"/>
           </Border>
+          <Button x:Name="BtnSettings" Style="{StaticResource BtnDefault}" Content="Settings" Margin="8,0,0,0"
+                  ToolTip="Where packages and .intunewin files are kept"/>
           <Button x:Name="BtnHelp" Style="{StaticResource BtnDefault}" Content="Help" Margin="8,0,0,0"
                   ToolTip="How to use this tool (F1)"/>
         </StackPanel>
@@ -782,6 +789,63 @@ function Set-StudioSetting {
     $all[$Name] = $Value
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $script:SettingsFile) -Force
     ($all | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+}
+
+# On a managed machine Documents is usually redirected to a network home directory, and a
+# package folder there breaks the build in ways that read as something else entirely: the
+# WindowsInstaller COM object refuses to open the MSI, IntuneWinAppUtil.exe answers "the
+# setup file cannot be accessed", and 150 MB crosses the wire twice on the way to Intune.
+# Everything Packwright writes therefore defaults to a local disk, and the settings dialog
+# says so out loud if you point it somewhere else anyway.
+function Test-LocalPath {
+    param([string]$Path)
+    if (-not "$Path".Trim()) { return $false }
+    if ("$Path".StartsWith('\\')) { return $false }          # UNC — no drive to ask about
+    try {
+        $root = [IO.Path]::GetPathRoot($Path)
+        if (-not $root) { return $false }                    # relative path, nothing to judge
+        return ([IO.DriveInfo]::new($root).DriveType -eq 'Fixed')
+    }
+    catch { return $false }                                  # unparseable or a drive that is gone
+}
+
+# USERPROFILE stays on the local disk even when Documents is redirected, which is the whole
+# point; LOCALAPPDATA is the fallback for the odd machine where even that is not local.
+function Get-DefaultPackageRoot {
+    $preferred = Join-Path $env:USERPROFILE 'IntunePackages'
+    if (Test-LocalPath $preferred) { return $preferred }
+    Join-Path $env:LOCALAPPDATA 'Packwright\Packages'
+}
+
+function Get-DefaultOutputRoot { Join-Path $PSScriptRoot 'Output' }
+
+function Get-StudioPackageRoot {
+    $saved = "$(Get-StudioSetting 'PackageRoot')".Trim()
+    if ($saved) { $saved } else { Get-DefaultPackageRoot }
+}
+
+function Get-StudioOutputRoot {
+    $saved = "$(Get-StudioSetting 'OutputRoot')".Trim()
+    if ($saved) { $saved } else { Get-DefaultOutputRoot }
+}
+
+# True until the settings file exists, so the first run can ask where things should go
+# instead of leaving it to be discovered in %APPDATA% after something has already failed.
+function Test-FirstRun { -not (Test-Path -LiteralPath $script:SettingsFile) }
+
+# Anyone who ran an earlier version already has a settings.json and so never sees the
+# first-run dialog. If what it holds is the old MyDocuments default, that is not a choice
+# anyone made — move it to the local default. A share someone typed in on purpose is left
+# exactly where it is and only warned about. Returns what to log, or '' if nothing moved.
+# LegacyRoot is a parameter so the self-test can exercise the move on a machine where
+# Documents happens to be local and there would otherwise be nothing to move.
+function Repair-LegacyPackageRoot {
+    param([string]$LegacyRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'IntunePackages'))
+    $savedRoot = "$(Get-StudioSetting 'PackageRoot')".Trim()
+    if (-not $savedRoot -or $savedRoot -ine $LegacyRoot -or (Test-LocalPath $savedRoot)) { return '' }
+    $local = Get-DefaultPackageRoot
+    Set-StudioSetting -Name 'PackageRoot' -Value $local
+    "Package folder moved off the network home directory to $local — change it under Settings if you want it somewhere else."
 }
 
 # Most recently opened packages, newest first, folders that no longer exist dropped
@@ -1376,7 +1440,11 @@ function Open-PackageFolder {
         Write-GuiLog "ERROR: Folder not found: $Folder"
         return $false
     }
-    $Folder = (Resolve-Path -LiteralPath $Folder).Path
+    # .ProviderPath, never .Path: for a UNC path PathInfo.Path is provider-qualified
+    # ("Microsoft.PowerShell.Core\FileSystem::\\server\share\..."), Join-Path keeps the
+    # prefix, and everything outside PowerShell — IntuneWinAppUtil.exe, the WindowsInstaller
+    # COM object — then fails to open a path that looks perfectly fine in the log.
+    $Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
     $script:LoadedFolder  = $Folder
     $script:InitialValues = $null
     $script:PickedApp     = $null
@@ -1797,9 +1865,9 @@ function New-InstallerPackage {
         [string]$IconSource
     )
     $null = New-Item -ItemType Directory -Path $TargetFolder -Force
-    $TargetFolder = (Resolve-Path -LiteralPath $TargetFolder).Path
+    $TargetFolder = (Resolve-Path -LiteralPath $TargetFolder).ProviderPath
     $destination = Join-Path $TargetFolder ([IO.Path]::GetFileName($InstallerPath))
-    if ((Resolve-Path -LiteralPath $InstallerPath).Path -ine $destination) {
+    if ((Resolve-Path -LiteralPath $InstallerPath).ProviderPath -ine $destination) {
         Copy-Item -LiteralPath $InstallerPath -Destination $destination -Force
     }
     if ($IconSource -and (Test-Path -LiteralPath $IconSource)) {
@@ -1861,6 +1929,12 @@ If Intune already has an app with the same name, publishing stops before anythin
 A long upload can be cancelled. If the upload had already started, check Intune for a half-created app and remove it before trying again.
 
 Build only produces the .intunewin file in the Output folder without touching Intune.
+'@ }
+    @{ Title = 'Where things are kept'
+       Body  = @'
+Settings in the header holds the two folders Packwright writes to: the package folder, where the wizard creates a folder per package, and the output folder, where the built .intunewin files land. You are asked once, the first time the tool starts.
+
+Both default to a local disk on purpose. Documents is usually redirected to a network home directory on a managed machine, and packaging from there fails in ways that point at the wrong thing — the MSI properties come back empty, or the build stops with "the setup file cannot be accessed". Pick a folder on C:. The dialog says so if you pick something else, and the log repeats it when a build starts from a network path.
 '@ }
     @{ Title = 'If something goes wrong'
        Body  = @'
@@ -1946,6 +2020,165 @@ function Show-StudioHelp {
     else { $dialog.C.HBtnReadme.Visibility = 'Collapsed' }
     $dialog.C.HBtnClose.Add_Click({ $dialog.Window.Close() }.GetNewClosure())
     [void]$dialog.Window.ShowDialog()
+}
+#endregion
+
+#region ---- Settings dialog ------------------------------------------------------
+$script:SettingsXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings" Width="700" SizeToContent="Height" MinWidth="560"
+        WindowStartupLocation="CenterOwner" Background="#F2F3F5" FontFamily="Segoe UI" FontSize="12"
+        ShowInTaskbar="False" ResizeMode="NoResize">
+  <Window.Resources>
+<!--THEME-->
+  </Window.Resources>
+  <StackPanel>
+    <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,0,1">
+      <StackPanel Margin="22,16,22,14">
+        <TextBlock x:Name="SetTitle" Style="{StaticResource H1}" FontSize="18" Text="Settings"/>
+        <TextBlock x:Name="SetSubtitle" Style="{StaticResource Muted}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+      </StackPanel>
+    </Border>
+
+    <StackPanel Margin="22,18,22,8">
+      <TextBlock Style="{StaticResource FieldLabel}" Text="PACKAGE FOLDER"/>
+      <TextBlock Style="{StaticResource Tiny}" Margin="0,0,0,4" TextWrapping="Wrap"
+                 Text="Where the wizard creates a folder per package, with the installer and app.json in it."/>
+      <DockPanel>
+        <Button x:Name="SetBtnPackages" DockPanel.Dock="Right" Style="{StaticResource BtnDefault}"
+                Content="Browse..." Margin="8,0,0,0"/>
+        <TextBox x:Name="SetTxtPackages"/>
+      </DockPanel>
+
+      <TextBlock Style="{StaticResource FieldLabel}" Text="OUTPUT FOLDER" Margin="0,16,0,0"/>
+      <TextBlock Style="{StaticResource Tiny}" Margin="0,0,0,4" TextWrapping="Wrap"
+                 Text="Where the built .intunewin files are written before they are uploaded."/>
+      <DockPanel>
+        <Button x:Name="SetBtnOutput" DockPanel.Dock="Right" Style="{StaticResource BtnDefault}"
+                Content="Browse..." Margin="8,0,0,0"/>
+        <TextBox x:Name="SetTxtOutput"/>
+      </DockPanel>
+
+      <Border x:Name="SetPnlWarn" Background="{StaticResource WarnSoft}" BorderBrush="{StaticResource Warn}"
+              BorderThickness="1" CornerRadius="4" Padding="10,8" Margin="0,16,0,0" Visibility="Collapsed">
+        <TextBlock x:Name="SetTxtWarn" Foreground="{StaticResource Warn}" TextWrapping="Wrap"/>
+      </Border>
+
+      <Button x:Name="SetBtnDefaults" Style="{StaticResource BtnQuiet}" HorizontalAlignment="Left"
+              Content="Reset to the defaults" Margin="0,14,0,0"/>
+      <TextBlock x:Name="SetTxtFile" Style="{StaticResource Tiny}" Margin="0,10,0,0" TextWrapping="Wrap"/>
+    </StackPanel>
+
+    <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource Stroke}" BorderThickness="0,1,0,0" Margin="0,10,0,0">
+      <DockPanel Margin="22,12">
+        <Button x:Name="SetBtnSave" DockPanel.Dock="Right" Style="{StaticResource BtnPrimary}"
+                Content="Save" IsDefault="True"/>
+        <Button x:Name="SetBtnCancel" DockPanel.Dock="Right" Style="{StaticResource BtnQuiet}"
+                Content="Cancel" Margin="0,0,8,0" IsCancel="True"/>
+        <TextBlock Style="{StaticResource Tiny}" VerticalAlignment="Center"
+                   Text="Folders are created when they are first used."/>
+      </DockPanel>
+    </Border>
+  </StackPanel>
+</Window>
+'@
+
+# Warning text for the two folders, or '' when both are on a local disk. Kept separate from
+# the dialog so the self-test can exercise the rule without opening a window.
+function Get-PathWarning {
+    param([string]$PackageRoot, [string]$OutputRoot)
+    $remote = @()
+    if (-not (Test-LocalPath $PackageRoot)) { $remote += 'The package folder' }
+    if (-not (Test-LocalPath $OutputRoot))  { $remote += 'The output folder' }
+    if (-not $remote) { return '' }
+    ($remote -join ' and ') + ' is not on a local disk. A redirected Documents folder or a mapped ' +
+        'drive is the usual reason a build fails with "the setup file cannot be accessed", or the MSI ' +
+        'properties come back empty. Pick a folder on C: unless you know this share works.'
+}
+
+function Show-StudioSettings {
+    param([switch]$FirstRun)
+    $dialog = New-StudioWindow -Xaml $script:SettingsXaml
+    if ($window.IsVisible) { $dialog.Window.Owner = $window }
+    $c = $dialog.C
+
+    if ($FirstRun) {
+        $dialog.Window.Title = 'Welcome to Packwright'
+        $c.SetTitle.Text     = 'Where should Packwright keep things?'
+        $c.SetSubtitle.Text  = 'Two folders, both on a local disk by default. You can change them later from ' +
+                               'Settings in the header — this is only asked once.'
+        $c.SetBtnSave.Content = 'Get started'
+        $c.SetBtnCancel.Visibility = 'Collapsed'
+    }
+    else {
+        $c.SetSubtitle.Text = 'Where Packwright puts the packages it creates and the packages it builds.'
+    }
+    $c.SetTxtFile.Text = "Saved in $($script:SettingsFile)"
+
+    $c.SetTxtPackages.Text = Get-StudioPackageRoot
+    $c.SetTxtOutput.Text   = Get-StudioOutputRoot
+
+    $refresh = {
+        $warning = Get-PathWarning -PackageRoot $c.SetTxtPackages.Text.Trim() -OutputRoot $c.SetTxtOutput.Text.Trim()
+        $c.SetTxtWarn.Text     = $warning
+        $c.SetPnlWarn.Visibility = if ($warning) { 'Visible' } else { 'Collapsed' }
+    }.GetNewClosure()
+
+    $browse = {
+        param($box, $description)
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description = $description
+        if ($box.Text.Trim()) { $dlg.SelectedPath = $box.Text.Trim() }
+        if ($dlg.ShowDialog() -eq 'OK') { $box.Text = $dlg.SelectedPath }
+    }
+
+    $c.SetTxtPackages.Add_TextChanged($refresh)
+    $c.SetTxtOutput.Add_TextChanged($refresh)
+    $c.SetBtnPackages.Add_Click({ & $browse $c.SetTxtPackages 'Pick the folder where package folders are created' }.GetNewClosure())
+    $c.SetBtnOutput.Add_Click({ & $browse $c.SetTxtOutput 'Pick the folder where .intunewin files are written' }.GetNewClosure())
+    $c.SetBtnDefaults.Add_Click({
+        $c.SetTxtPackages.Text = Get-DefaultPackageRoot
+        $c.SetTxtOutput.Text   = Get-DefaultOutputRoot
+    }.GetNewClosure())
+
+    # Script scope, not a local: the click handler is a closure and has to write somewhere
+    # the caller can still read after ShowDialog returns.
+    $c.SetBtnSave.Add_Click({
+        $packages = $c.SetTxtPackages.Text.Trim()
+        $output   = $c.SetTxtOutput.Text.Trim()
+        foreach ($pair in @{ Name = 'Package'; Value = $packages }, @{ Name = 'Output'; Value = $output }) {
+            if (-not $pair.Value) {
+                [void][Windows.MessageBox]::Show("The $($pair.Name.ToLower()) folder cannot be empty.",
+                    'Settings', 'OK', 'Warning')
+                return
+            }
+            if (-not [IO.Path]::IsPathRooted($pair.Value)) {
+                [void][Windows.MessageBox]::Show("$($pair.Name) folder must be a full path, for example C:\IntunePackages.",
+                    'Settings', 'OK', 'Warning')
+                return
+            }
+        }
+        Set-StudioSetting -Name 'PackageRoot' -Value $packages
+        Set-StudioSetting -Name 'OutputRoot'  -Value $output
+        $script:SettingsSaved = $true
+        $dialog.Window.Close()
+    }.GetNewClosure())
+    $c.SetBtnCancel.Add_Click({ $dialog.Window.Close() }.GetNewClosure())
+
+    # A first run has no Cancel, so closing the window with the X still has to leave
+    # something on disk — otherwise the dialog comes back on every start.
+    $dialog.Window.Add_Closed({
+        if ($FirstRun -and -not $script:SettingsSaved) {
+            Set-StudioSetting -Name 'PackageRoot' -Value (Get-DefaultPackageRoot)
+            Set-StudioSetting -Name 'OutputRoot'  -Value (Get-DefaultOutputRoot)
+        }
+    }.GetNewClosure())
+
+    & $refresh
+    $script:SettingsSaved = $false
+    [void]$dialog.Window.ShowDialog()
+    $script:SettingsSaved
 }
 #endregion
 
@@ -2135,7 +2368,7 @@ function Clear-WizIcon {
 # the commands, the logo and the MSI detection in the later steps.
 function Read-WizInstaller {
     $wizard = $script:Wz
-    $path = (Resolve-Path -LiteralPath $wizard.C.WTxtInstaller.Text.Trim()).Path
+    $path = (Resolve-Path -LiteralPath $wizard.C.WTxtInstaller.Text.Trim()).ProviderPath
     $previous = $wizard.Info
     $wizard.Info = Get-InstallerInfo -Path $path
     $product = @($wizard.Info.Name, $wizard.Info.Version | Where-Object { $_ }) -join ' '
@@ -2171,7 +2404,7 @@ function Test-WizStep {
             if ([IO.Path]::GetExtension($path) -notin '.exe', '.msi') { Show-WizMessage 'The installation file must be an .exe or .msi.'; return $false }
             if (-not $c.WTxtRoot.Text.Trim()) { Show-WizMessage 'Pick a folder where the package should be created.'; return $false }
             # Read-WizInstaller fills in step 2 from the file; it runs for every new path
-            if (-not $wizard.Info -or $wizard.Info.FilePath -ine (Resolve-Path -LiteralPath $path).Path) { Read-WizInstaller }
+            if (-not $wizard.Info -or $wizard.Info.FilePath -ine (Resolve-Path -LiteralPath $path).ProviderPath) { Read-WizInstaller }
             return $true
         }
         2 {
@@ -2305,8 +2538,9 @@ function Show-PackageWizard {
     $script:Wz = New-WizState -Dialog $dialog
     $c = $dialog.C
 
-    $savedRoot = "$(Get-StudioSetting 'PackageRoot')"
-    $c.WTxtRoot.Text = if ($savedRoot.Trim()) { $savedRoot } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'IntunePackages' }
+    # Not MyDocuments: that is the folder redirection points at a network home directory on a
+    # managed machine, and a package built from there fails in ways that name the wrong culprit.
+    $c.WTxtRoot.Text = Get-StudioPackageRoot
 
     $c.WBtnInstaller.Add_Click({
         $dlg = New-Object Microsoft.Win32.OpenFileDialog
@@ -2381,7 +2615,7 @@ function Show-PackageWizard {
     $c.WBtnCancel.Add_Click({ $script:Wz.Window.DialogResult = $false })
 
     if ($InstallerPath -and (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
-        $c.WTxtInstaller.Text = (Resolve-Path -LiteralPath $InstallerPath).Path
+        $c.WTxtInstaller.Text = (Resolve-Path -LiteralPath $InstallerPath).ProviderPath
         try { Read-WizInstaller } catch { Write-GuiLog "WARNING: Could not read $InstallerPath : $($_.Exception.Message)" }
     }
 
@@ -2496,6 +2730,11 @@ function Start-EngineRun {
     try { Save-AppManifest | Out-Null }
     catch { Write-GuiLog "ERROR: $($_.Exception.Message)"; Set-StatusText 'Could not save app.json.'; return }
 
+    # A package opened by hand can still sit on a share, whatever the settings say. Name it
+    # in the log now, so the failure that follows is not read as a broken installer.
+    $pathWarning = Get-PathWarning -PackageRoot $script:LoadedFolder -OutputRoot (Get-StudioOutputRoot)
+    if ($pathWarning) { Write-GuiLog "WARNING: $pathWarning" }
+
     if ($Publish) {
         $detection = (Get-DetectionSummary).Text
         $duplicateNote = if ($ui.ChkUpdateExisting.IsChecked) {
@@ -2520,12 +2759,12 @@ function Start-EngineRun {
     $runBody = {
         param(
             [string]$BuildScript, [string]$PublishScript,
-            [string]$Source, [string]$Setup,
+            [string]$Source, [string]$Setup, [string]$OutputRoot,
             [bool]$DoPublish, [bool]$UpdateExisting, [bool]$AllowDuplicate
         )
         . $BuildScript
         . $PublishScript
-        $built = Build-IntuneWinApp -SourceFolder $Source -SetupFile $Setup -PassThru
+        $built = Build-IntuneWinApp -SourceFolder $Source -SetupFile $Setup -OutputRoot $OutputRoot -PassThru
         $built
         if ($DoPublish -and $built) {
             # -SignIn Browser: the default WAM prompt parents itself to the console window
@@ -2545,6 +2784,7 @@ function Start-EngineRun {
         PublishScript  = $script:EnginePublish
         Source         = $script:LoadedFolder
         Setup          = "$($ui.CmbSetup.SelectedItem)"
+        OutputRoot     = Get-StudioOutputRoot
         DoPublish      = $Publish
         UpdateExisting = [bool]$ui.ChkUpdateExisting.IsChecked
         AllowDuplicate = [bool]$ui.ChkAllowDuplicate.IsChecked
@@ -2582,6 +2822,8 @@ $ui.LstRecent.Add_KeyDown({
     }
 })
 $ui.BtnChangePkg.Add_Click({ Show-StartView })
+
+$ui.BtnSettings.Add_Click({ [void](Show-StudioSettings) })
 
 # Help: header button and F1 anywhere in the window
 $ui.BtnHelp.Add_Click({ Show-StudioHelp })
@@ -2726,6 +2968,19 @@ Update-DetectionUi
 Show-StartView
 
 if (-not $TestLoad) {
+    # Ask where things go before anything is created, rather than leaving it to be found in
+    # %APPDATA% after a build has already failed. On ContentRendered so the main window is up
+    # behind the dialog; handlers run in the order they are added, so this comes before the wizard.
+    if (Test-FirstRun) { $window.Add_ContentRendered({ [void](Show-StudioSettings -FirstRun) }) }
+
+    $moved = Repair-LegacyPackageRoot
+    if ($moved) { Write-GuiLog $moved }
+    $startupWarning = Get-PathWarning -PackageRoot (Get-StudioPackageRoot) -OutputRoot (Get-StudioOutputRoot)
+    if ($startupWarning) {
+        Write-GuiLog "WARNING: $startupWarning"
+        Set-StatusText 'A folder under Settings is not on a local disk — see the log.'
+    }
+
     if ($SourceFolder) { [void](Open-PackageFolder -Folder $SourceFolder) }
     if ($Installer)    { $window.Add_ContentRendered({ Show-PackageWizard -InstallerPath $Installer }.GetNewClosure()) }
     elseif ($Wizard)   { $window.Add_ContentRendered({ Show-PackageWizard }) }
@@ -2763,6 +3018,55 @@ if ($TestLoad) {
         if ($noBom.Count) { "no BOM: $($noBom -join ', ') — PowerShell 5.1 cannot parse these, so the version guard never runs" }
         else { 'all three readable by PowerShell 5.1' })
 
+    # PathInfo.Path is provider-qualified on a UNC path; only .ProviderPath is something
+    # IntuneWinAppUtil.exe or the WindowsInstaller COM object can open.
+    $providerQualified = @(foreach ($engine in $PSCommandPath, $script:EngineBuild, $script:EnginePublish) {
+        if ((Get-Content -LiteralPath $engine -Raw) -match 'Resolve-Path[^\r\n]*\)\.Path\b') { Split-Path -Leaf $engine }
+    })
+    # The detail strings deliberately avoid spelling out the pattern being searched for —
+    # this test reads its own source, and did fail on its own failure message once.
+    Assert-Test 'Resolved paths are plain filesystem paths' ($providerQualified.Count -eq 0) $(
+        if ($providerQualified.Count) { "a Resolve-Path result is read as .Path in $($providerQualified -join ', ') — use .ProviderPath" }
+        else { 'every Resolve-Path result uses .ProviderPath' })
+
+    Assert-Test 'Local disk detection' (
+        (Test-LocalPath 'C:\IntunePackages') -and
+        -not (Test-LocalPath '\\server\share\IntunePackages') -and
+        -not (Test-LocalPath 'IntunePackages') -and
+        -not (Test-LocalPath ''))
+    $defaultRoot = Get-DefaultPackageRoot
+    Assert-Test 'Default package folder is on a local disk' (Test-LocalPath $defaultRoot) $defaultRoot
+    Assert-Test 'Network package folder is called out' (
+        (Get-PathWarning -PackageRoot '\\server\share\pkg' -OutputRoot 'C:\Out') -match 'package folder')
+    Assert-Test 'Network output folder is called out' (
+        (Get-PathWarning -PackageRoot 'C:\Pkg' -OutputRoot '\\server\share\out') -match 'output folder')
+    Assert-Test 'Two local folders warn about nothing' (
+        -not (Get-PathWarning -PackageRoot 'C:\Pkg' -OutputRoot 'C:\Out'))
+
+    # Settings behaviour, against a throwaway file so the real settings.json is untouched
+    $realSettingsFile = $script:SettingsFile
+    try {
+        $script:SettingsFile = Join-Path ([IO.Path]::GetTempPath()) 'Packwright-selftest-settings.json'
+        Remove-Item -LiteralPath $script:SettingsFile -Force -ErrorAction SilentlyContinue
+        Assert-Test 'First run is detected while no settings exist' (Test-FirstRun)
+
+        $legacy = '\\server\home$\user\IntunePackages'
+        Set-StudioSetting -Name 'PackageRoot' -Value $legacy
+        Assert-Test 'Saved settings end the first run' (-not (Test-FirstRun))
+        $movedMessage = Repair-LegacyPackageRoot -LegacyRoot $legacy
+        Assert-Test 'Old network default is moved to a local folder' (
+            $movedMessage -and (Test-LocalPath (Get-StudioPackageRoot))) (Get-StudioPackageRoot)
+
+        $chosen = '\\server\share\ChosenOnPurpose'
+        Set-StudioSetting -Name 'PackageRoot' -Value $chosen
+        Assert-Test 'A share chosen on purpose is left alone' (
+            -not (Repair-LegacyPackageRoot -LegacyRoot $legacy) -and (Get-StudioPackageRoot) -eq $chosen)
+    }
+    finally {
+        Remove-Item -LiteralPath $script:SettingsFile -Force -ErrorAction SilentlyContinue
+        $script:SettingsFile = $realSettingsFile
+    }
+
     Assert-Test 'Main window builds' ($ui.Count -ge 70) "$($ui.Count) named controls"
     Assert-Test 'Theme applied to main window' ($null -ne $window.FindResource('Accent')) 'Accent brush resolves'
     Assert-Test 'Start view is the landing screen' ($ui.ViewStart.Visibility -eq 'Visible' -and $ui.ViewEditor.Visibility -eq 'Collapsed')
@@ -2775,6 +3079,9 @@ if ($TestLoad) {
 
     $helpDialog = New-StudioWindow -Xaml $script:HelpXaml
     Assert-Test 'Help window builds' ($helpDialog.Unresolved.Count -eq 0) "$($helpDialog.C.Count) controls"
+    $settingsDialog = New-StudioWindow -Xaml $script:SettingsXaml
+    Assert-Test 'Settings window builds' ($settingsDialog.Unresolved.Count -eq 0) "$($settingsDialog.C.Count) controls"
+    Assert-Test 'Settings is reachable from the header' ($null -ne $ui.BtnSettings)
     $emptyTopics = @($script:HelpTopics | Where-Object { -not "$($_.Title)".Trim() -or -not "$($_.Body)".Trim() })
     Assert-Test 'Every help topic has a title and body' ($emptyTopics.Count -eq 0) "$($script:HelpTopics.Count) topics"
     $helpBlocks = Add-HelpContent -Dialog $helpDialog
