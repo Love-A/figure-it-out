@@ -55,6 +55,11 @@
                        instead of a Documents folder redirected to a network home directory.
                        Resolved paths use .ProviderPath, so a UNC path no longer reaches
                        IntuneWinAppUtil.exe provider-qualified and unopenable.
+                       Dialog handlers are plain scriptblocks over $script: state, never
+                       .GetNewClosure(): a closure runs in a module scope of its own and
+                       cannot see the functions in this file. A settings.json that parses
+                       to nothing is written over instead of throwing 'Cannot index into
+                       a null array' from wherever settings were touched next.
     2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
                        WAM prompt parents itself to the console window of the process,
                        and a GUI has none, so it failed without a message and the
@@ -776,16 +781,24 @@ function Set-StatusText {
 #region ---- Persisted settings and recent packages ------------------------------
 $script:SettingsFile = Join-Path $env:APPDATA 'Packwright\settings.json'
 
+# Always a hashtable, whatever is on disk. An empty or half-written settings.json parses to
+# nothing at all, and indexing that throws 'Cannot index into a null array' from whichever
+# feature happened to touch settings next — a long way from the file that caused it.
+function Read-StudioSettings {
+    $all = $null
+    try { $all = Get-Content -LiteralPath $script:SettingsFile -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable }
+    catch { $all = $null }
+    if ($all -is [System.Collections.IDictionary]) { $all } else { @{} }
+}
+
 function Get-StudioSetting {
     param([string]$Name)
-    try { (Get-Content -LiteralPath $script:SettingsFile -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable)[$Name] }
-    catch { $null }
+    (Read-StudioSettings)[$Name]
 }
 
 function Set-StudioSetting {
     param([string]$Name, $Value)
-    $all = @{}
-    try { $all = Get-Content -LiteralPath $script:SettingsFile -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable } catch {}
+    $all = Read-StudioSettings
     $all[$Name] = $Value
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $script:SettingsFile) -Force
     ($all | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
@@ -2097,10 +2110,54 @@ function Get-PathWarning {
         'properties come back empty. Pick a folder on C: unless you know this share works.'
 }
 
+# The handlers in Show-StudioSettings are plain scriptblocks over $script:SetDlg, the same
+# way the wizard works off $script:Wz, and deliberately not .GetNewClosure(). A closure runs
+# in a module scope of its own: the functions defined in this file are not in scope there,
+# $ErrorActionPreference is back to its own default, and a $script: write lands somewhere the
+# caller never reads. These three helpers exist so the handlers have something to call.
+function Update-SettingsWarning {
+    $c = $script:SetDlg.C
+    $warning = Get-PathWarning -PackageRoot $c.SetTxtPackages.Text.Trim() -OutputRoot $c.SetTxtOutput.Text.Trim()
+    $c.SetTxtWarn.Text       = $warning
+    $c.SetPnlWarn.Visibility = if ($warning) { 'Visible' } else { 'Collapsed' }
+}
+
+function Select-SettingsFolder {
+    param([Parameter(Mandatory)]$Box, [Parameter(Mandatory)][string]$Description)
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = $Description
+    if ($Box.Text.Trim()) { $dlg.SelectedPath = $Box.Text.Trim() }
+    if ($dlg.ShowDialog() -eq 'OK') { $Box.Text = $dlg.SelectedPath }
+}
+
+# Validates both folders and writes them; $true only when they were actually saved.
+function Save-StudioSettings {
+    $c = $script:SetDlg.C
+    $packages = $c.SetTxtPackages.Text.Trim()
+    $output   = $c.SetTxtOutput.Text.Trim()
+    foreach ($folder in @{ Name = 'package'; Value = $packages }, @{ Name = 'output'; Value = $output }) {
+        if (-not $folder.Value) {
+            [void][Windows.MessageBox]::Show("The $($folder.Name) folder cannot be empty.",
+                'Settings', 'OK', 'Warning')
+            return $false
+        }
+        if (-not [IO.Path]::IsPathRooted($folder.Value)) {
+            [void][Windows.MessageBox]::Show(
+                "The $($folder.Name) folder must be a full path, for example C:\IntunePackages.",
+                'Settings', 'OK', 'Warning')
+            return $false
+        }
+    }
+    Set-StudioSetting -Name 'PackageRoot' -Value $packages
+    Set-StudioSetting -Name 'OutputRoot'  -Value $output
+    $true
+}
+
 function Show-StudioSettings {
     param([switch]$FirstRun)
     $dialog = New-StudioWindow -Xaml $script:SettingsXaml
     if ($window.IsVisible) { $dialog.Window.Owner = $window }
+    $script:SetDlg = @{ Window = $dialog.Window; C = $dialog.C; FirstRun = [bool]$FirstRun; Saved = $false }
     $c = $dialog.C
 
     if ($FirstRun) {
@@ -2119,66 +2176,39 @@ function Show-StudioSettings {
     $c.SetTxtPackages.Text = Get-StudioPackageRoot
     $c.SetTxtOutput.Text   = Get-StudioOutputRoot
 
-    $refresh = {
-        $warning = Get-PathWarning -PackageRoot $c.SetTxtPackages.Text.Trim() -OutputRoot $c.SetTxtOutput.Text.Trim()
-        $c.SetTxtWarn.Text     = $warning
-        $c.SetPnlWarn.Visibility = if ($warning) { 'Visible' } else { 'Collapsed' }
-    }.GetNewClosure()
-
-    $browse = {
-        param($box, $description)
-        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dlg.Description = $description
-        if ($box.Text.Trim()) { $dlg.SelectedPath = $box.Text.Trim() }
-        if ($dlg.ShowDialog() -eq 'OK') { $box.Text = $dlg.SelectedPath }
-    }
-
-    $c.SetTxtPackages.Add_TextChanged($refresh)
-    $c.SetTxtOutput.Add_TextChanged($refresh)
-    $c.SetBtnPackages.Add_Click({ & $browse $c.SetTxtPackages 'Pick the folder where package folders are created' }.GetNewClosure())
-    $c.SetBtnOutput.Add_Click({ & $browse $c.SetTxtOutput 'Pick the folder where .intunewin files are written' }.GetNewClosure())
+    $c.SetTxtPackages.Add_TextChanged({ Update-SettingsWarning })
+    $c.SetTxtOutput.Add_TextChanged({ Update-SettingsWarning })
+    $c.SetBtnPackages.Add_Click({
+        Select-SettingsFolder -Box $script:SetDlg.C.SetTxtPackages `
+            -Description 'Pick the folder where package folders are created'
+    })
+    $c.SetBtnOutput.Add_Click({
+        Select-SettingsFolder -Box $script:SetDlg.C.SetTxtOutput `
+            -Description 'Pick the folder where .intunewin files are written'
+    })
     $c.SetBtnDefaults.Add_Click({
-        $c.SetTxtPackages.Text = Get-DefaultPackageRoot
-        $c.SetTxtOutput.Text   = Get-DefaultOutputRoot
-    }.GetNewClosure())
-
-    # Script scope, not a local: the click handler is a closure and has to write somewhere
-    # the caller can still read after ShowDialog returns.
+        $script:SetDlg.C.SetTxtPackages.Text = Get-DefaultPackageRoot
+        $script:SetDlg.C.SetTxtOutput.Text   = Get-DefaultOutputRoot
+    })
     $c.SetBtnSave.Add_Click({
-        $packages = $c.SetTxtPackages.Text.Trim()
-        $output   = $c.SetTxtOutput.Text.Trim()
-        foreach ($pair in @{ Name = 'Package'; Value = $packages }, @{ Name = 'Output'; Value = $output }) {
-            if (-not $pair.Value) {
-                [void][Windows.MessageBox]::Show("The $($pair.Name.ToLower()) folder cannot be empty.",
-                    'Settings', 'OK', 'Warning')
-                return
-            }
-            if (-not [IO.Path]::IsPathRooted($pair.Value)) {
-                [void][Windows.MessageBox]::Show("$($pair.Name) folder must be a full path, for example C:\IntunePackages.",
-                    'Settings', 'OK', 'Warning')
-                return
-            }
-        }
-        Set-StudioSetting -Name 'PackageRoot' -Value $packages
-        Set-StudioSetting -Name 'OutputRoot'  -Value $output
-        $script:SettingsSaved = $true
-        $dialog.Window.Close()
-    }.GetNewClosure())
-    $c.SetBtnCancel.Add_Click({ $dialog.Window.Close() }.GetNewClosure())
+        if (Save-StudioSettings) { $script:SetDlg.Saved = $true; $script:SetDlg.Window.Close() }
+    })
+    $c.SetBtnCancel.Add_Click({ $script:SetDlg.Window.Close() })
 
     # A first run has no Cancel, so closing the window with the X still has to leave
     # something on disk — otherwise the dialog comes back on every start.
     $dialog.Window.Add_Closed({
-        if ($FirstRun -and -not $script:SettingsSaved) {
+        if ($script:SetDlg.FirstRun -and -not $script:SetDlg.Saved) {
             Set-StudioSetting -Name 'PackageRoot' -Value (Get-DefaultPackageRoot)
             Set-StudioSetting -Name 'OutputRoot'  -Value (Get-DefaultOutputRoot)
         }
-    }.GetNewClosure())
+    })
 
-    & $refresh
-    $script:SettingsSaved = $false
+    Update-SettingsWarning
     [void]$dialog.Window.ShowDialog()
-    $script:SettingsSaved
+    $saved = $script:SetDlg.Saved
+    $script:SetDlg = $null
+    $saved
 }
 #endregion
 
@@ -2982,8 +3012,13 @@ if (-not $TestLoad) {
     }
 
     if ($SourceFolder) { [void](Open-PackageFolder -Folder $SourceFolder) }
-    if ($Installer)    { $window.Add_ContentRendered({ Show-PackageWizard -InstallerPath $Installer }.GetNewClosure()) }
-    elseif ($Wizard)   { $window.Add_ContentRendered({ Show-PackageWizard }) }
+    # $script: rather than a closure over $Installer: a closure would not find
+    # Show-PackageWizard, since it runs in a module scope of its own.
+    if ($Installer) {
+        $script:PendingInstaller = $Installer
+        $window.Add_ContentRendered({ Show-PackageWizard -InstallerPath $script:PendingInstaller })
+    }
+    elseif ($Wizard) { $window.Add_ContentRendered({ Show-PackageWizard }) }
 }
 #endregion
 
@@ -3002,6 +3037,11 @@ if ($TestLoad) {
             Write-Host ("  FAIL  {0}{1}" -f $Name, $(if ($Detail) { " — $Detail" } else { '' })) -ForegroundColor Red
         }
     }
+
+    # The suite opens scaffolded packages, and opening one adds it to the recent list. Point
+    # settings at a throwaway file for the whole run so a test never edits the real one.
+    $script:SettingsFile = Join-Path ([IO.Path]::GetTempPath()) 'Packwright-selftest-settings.json'
+    Remove-Item -LiteralPath $script:SettingsFile -Force -ErrorAction SilentlyContinue
 
     Write-Host "Packwright self-test"
 
@@ -3029,6 +3069,26 @@ if ($TestLoad) {
         if ($providerQualified.Count) { "a Resolve-Path result is read as .Path in $($providerQualified -join ', ') — use .ProviderPath" }
         else { 'every Resolve-Path result uses .ProviderPath' })
 
+    # A .GetNewClosure() scriptblock runs in a module scope of its own, where the functions
+    # defined in this file are not in scope. It fails at click time, not at load time, and
+    # only on some PowerShell builds — so it has to be caught here rather than by running it.
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
+    $definedHere = @($scriptAst.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+    $closureLeaks = @($scriptAst.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
+        "$($node.Member)" -eq 'GetNewClosure' -and
+        $node.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true) |
+        ForEach-Object {
+            $_.Expression.FindAll({ param($node)
+                $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
+                Where-Object { $definedHere -contains $_.GetCommandName() } |
+                ForEach-Object { "$($_.GetCommandName()) on line $($_.Extent.StartLineNumber)" }
+        })
+    Assert-Test 'No closure calls a function defined in this file' ($closureLeaks.Count -eq 0) $(
+        if ($closureLeaks.Count) { "$($closureLeaks -join '; ') — use a plain scriptblock over `$script: state" }
+        else { 'closures call only cmdlets and methods' })
+
     Assert-Test 'Local disk detection' (
         (Test-LocalPath 'C:\IntunePackages') -and
         -not (Test-LocalPath '\\server\share\IntunePackages') -and
@@ -3049,6 +3109,23 @@ if ($TestLoad) {
         $script:SettingsFile = Join-Path ([IO.Path]::GetTempPath()) 'Packwright-selftest-settings.json'
         Remove-Item -LiteralPath $script:SettingsFile -Force -ErrorAction SilentlyContinue
         Assert-Test 'First run is detected while no settings exist' (Test-FirstRun)
+
+        # A settings.json that parses to nothing used to take the next write down with
+        # 'Cannot index into a null array', from wherever settings happened to be touched next.
+        $damaged = @{ 'an empty file' = ''; 'whitespace' = "  `r`n "; 'literal null' = 'null'
+                      'a JSON array' = '[1,2]'; 'truncated JSON' = '{"Recent":' }
+        $survived = @(foreach ($case in $damaged.GetEnumerator()) {
+            [IO.File]::WriteAllText($script:SettingsFile, $case.Value)
+            try {
+                $null = Get-StudioSetting 'PackageRoot'
+                Set-StudioSetting -Name 'PackageRoot' -Value 'C:\Pkg'
+                if ((Get-StudioSetting 'PackageRoot') -ne 'C:\Pkg') { "$($case.Key): wrote but did not read back" }
+            }
+            catch { "$($case.Key): $($_.Exception.Message)" }
+        })
+        Assert-Test 'Damaged settings.json is written over, not thrown on' ($survived.Count -eq 0) $(
+            if ($survived.Count) { $survived -join '; ' } else { "$($damaged.Count) broken files handled" })
+        Remove-Item -LiteralPath $script:SettingsFile -Force -ErrorAction SilentlyContinue
 
         $legacy = '\\server\home$\user\IntunePackages'
         Set-StudioSetting -Name 'PackageRoot' -Value $legacy
@@ -3082,6 +3159,26 @@ if ($TestLoad) {
     $settingsDialog = New-StudioWindow -Xaml $script:SettingsXaml
     Assert-Test 'Settings window builds' ($settingsDialog.Unresolved.Count -eq 0) "$($settingsDialog.C.Count) controls"
     Assert-Test 'Settings is reachable from the header' ($null -ne $ui.BtnSettings)
+
+    # Drive the dialog's own handlers, which is where a closure used to lose sight of the
+    # functions in this file and fail at click time rather than at load time. Only valid
+    # paths: the rejection path opens a message box, which a headless run cannot dismiss.
+    $script:SetDlg = @{ Window = $settingsDialog.Window; C = $settingsDialog.C; FirstRun = $false; Saved = $false }
+    $settingsDialog.C.SetTxtPackages.Text = 'C:\SelfTestPackages'
+    $settingsDialog.C.SetTxtOutput.Text   = 'C:\SelfTestOutput'
+    Update-SettingsWarning
+    Assert-Test 'Settings dialog stays quiet for local folders' ($settingsDialog.C.SetPnlWarn.Visibility -eq 'Collapsed')
+    $settingsDialog.C.SetTxtPackages.Text = '\\server\share\pkg'
+    Update-SettingsWarning
+    Assert-Test 'Settings dialog warns about a share' (
+        $settingsDialog.C.SetPnlWarn.Visibility -eq 'Visible' -and
+        $settingsDialog.C.SetTxtWarn.Text -match 'package folder')
+    $settingsDialog.C.SetTxtPackages.Text = 'C:\SelfTestPackages'
+    Assert-Test 'Settings dialog saves both folders' (
+        (Save-StudioSettings) -and
+        (Get-StudioSetting 'PackageRoot') -eq 'C:\SelfTestPackages' -and
+        (Get-StudioSetting 'OutputRoot')  -eq 'C:\SelfTestOutput') "$(Get-StudioPackageRoot) / $(Get-StudioOutputRoot)"
+    $script:SetDlg = $null
     $emptyTopics = @($script:HelpTopics | Where-Object { -not "$($_.Title)".Trim() -or -not "$($_.Body)".Trim() })
     Assert-Test 'Every help topic has a title and body' ($emptyTopics.Count -eq 0) "$($script:HelpTopics.Count) topics"
     $helpBlocks = Add-HelpContent -Dialog $helpDialog
