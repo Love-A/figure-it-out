@@ -1,0 +1,22 @@
+{
+  "displayName": "7-Zip 24.08 x64",
+  "description": "7-Zip file archiver (packaged with PSADT).",
+  "publisher": "Igor Pavlov",
+  "version": "24.08",
+  "owner": "IT Department",
+  "notes": "",
+  "informationUrl": "",
+  "installCommandLine": "Invoke-AppDeployToolkit.exe -DeploymentType Install -DeployMode Silent",
+  "uninstallCommandLine": "Invoke-AppDeployToolkit.exe -DeploymentType Uninstall -DeployMode Silent",
+  "runAsAccount": "system",
+  "restartBehavior": "suppress",
+  "architecture": "x64",
+  "minimumWindowsRelease": "1607",
+  "icon": "icon.png",
+  "detection": {
+    "type": "file",
+    "path": "C:\\Program Files\\7-Zip",
+    "fileOrFolderName": "7zFM.exe",
+    "detectionType": "exists"
+  }
+}
