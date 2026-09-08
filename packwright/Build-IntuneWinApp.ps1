@@ -67,6 +67,16 @@
     Author    : Love A
     File Name : Build-IntuneWinApp.ps1 (can be used as a module .psm1 as well)
 .VERSION
+    2026-09-08 - 2.3 - A build that wrote no .intunewin can no longer report one that was
+                       already in the output folder. IntuneWinAppUtil.exe exits 0 even when
+                       it writes nothing, and the fallback that looks for the newest
+                       .intunewin had no time bound: a package left there by an earlier
+                       build of a differently named setup file was hashed, reported as
+                       Produced, and handed to the publish step, which uploaded months-old
+                       content as a new version. Candidates must now be newer than the run,
+                       and the error names the files it left alone and why the tool wrote
+                       nothing. Packwright's self-test drives this through the real fallback
+                       with only the call to the tool stubbed.
     2026-09-04 - 2.2 - Stops with one sentence on Windows PowerShell 5.1 instead of failing
                        somewhere further in; saved UTF-8 with BOM so 5.1 can read that far.
                        SourceFolder resolves through .ProviderPath, so a UNC source is no
@@ -291,12 +301,27 @@ function Build-IntuneWinApp {
             }
             $producedPath = $expectedPath
             if (-not (Test-Path -LiteralPath $producedPath)) {
-                # Fallback: newest .intunewin in this package folder (never other packages)
-                $candidate = Get-ChildItem -LiteralPath $outputFolder -Filter *.intunewin -File -ErrorAction SilentlyContinue |
-                             Where-Object { $_.Name -notlike '*.bak.intunewin' } |
+                # Fallback: newest .intunewin in this package folder (never other packages),
+                # and never one from an earlier run. IntuneWinAppUtil.exe exits 0 even when
+                # it writes nothing — a source folder it cannot read is the usual reason —
+                # so without the timestamp this picked up whatever a previous build of a
+                # differently named setup file had left here, hashed it, reported success
+                # and handed months-old content to the publish step. The .bak rename only
+                # covers the file this build would have written under the same name.
+                $freshEnough = $started.AddSeconds(-5)   # slack for filesystem timestamps
+                $inFolder = @(Get-ChildItem -LiteralPath $outputFolder -Filter *.intunewin -File -ErrorAction SilentlyContinue |
+                              Where-Object { $_.Name -notlike '*.bak.intunewin' })
+                $candidate = $inFolder | Where-Object { $_.LastWriteTime -ge $freshEnough } |
                              Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if (-not $candidate) {
-                    throw "Build reported success but no .intunewin file was found in $outputFolder"
+                    $ignored = @($inFolder | Where-Object { $_.LastWriteTime -lt $freshEnough })
+                    throw ("Build reported success but wrote no .intunewin file in $outputFolder." +
+                           $(if ($ignored.Count) {
+                               " $($ignored.Count) older file(s) are there ($(($ignored | Select-Object -First 3 |
+                                 ForEach-Object { $_.Name }) -join ', ')) and were left alone — they are not this build."
+                           } else { '' }) +
+                           ' IntuneWinAppUtil.exe exits 0 even when it writes nothing; a source folder it cannot read' +
+                           ' (a redirected Documents folder or a mapped drive) is the usual reason.')
                 }
                 $producedPath = $candidate.FullName
             }

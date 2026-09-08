@@ -115,6 +115,25 @@
     on every later run. Safe to run from a scheduled task or a pipeline.
 
 .VERSION
+    2026-09-08 - 1.6 - A duplicate-name check that could not run stops the publish instead
+                       of being warned about and ignored. A failed lookup left the run
+                       reading as "Intune has no app of this name": without -Update that
+                       created the very duplicate the check exists to prevent, and with
+                       -Update it created a second app rather than updating the first, so
+                       the existing app kept its assignments and its old content and no
+                       device ever saw the new version. Throttling on a filtered mobileApps
+                       query is the ordinary way in, and retrying costs nothing.
+                       -AllowDuplicateName still skips the check, which is what it is for,
+                       and is now refused alongside -AppId as well as -Update: naming the
+                       app to update contradicts creating a second one either way, and
+                       -AppId used to slip past the check and then be ignored.
+                       A block upload is retried on the failures that pass — no response,
+                       408, 429 and 5xx, four attempts with a short backoff. One transient
+                       500 used to throw away the whole upload, which for an 8 GB package
+                       is an hour of it. Retrying a block is safe: the block id is
+                       unchanged and nothing is visible until the block list is committed.
+                       A 403 is not retried; that is an expired SAS uri, and renewal
+                       already handles it.
     2026-09-04 - 1.5 - Stop the run when sign-in fails instead of carrying on unauthenticated
                        and reporting an app that was never created; -SignIn picks how the
                        delegated prompt is shown (Browser for hosts with no console window);
@@ -358,6 +377,31 @@ function Publish-IntuneWinApp {
             throw "Timed out waiting for uploadState '$State' (last: $($file.uploadState))."
         }
 
+        # One PUT of one block, retried on the failures that pass. A single transient 500 or
+        # a dropped connection used to throw the whole upload away, and an 8 GB package is an
+        # hour of it. Retrying a block is safe: the block id is unchanged, so a block that did
+        # land is simply written again, and nothing is visible to Intune until the block list
+        # is committed. A 403 is not retried — that is an expired SAS uri, which needs renewing
+        # rather than repeating, and the renewal below handles it.
+        function Send-BlobPut {
+            param([string]$Uri, $Body, [hashtable]$Headers = @{}, [int]$Attempts = 4)
+            for ($attempt = 1; ; $attempt++) {
+                try { return Invoke-WebRequest -Method Put -Uri $Uri -Body $Body -Headers $Headers -UseBasicParsing }
+                catch {
+                    # No response at all (a dropped connection or a timeout) reads as 0
+                    $status = [int]$_.Exception.Response.StatusCode
+                    $worthRetrying = $attempt -lt $Attempts -and
+                                     ($status -eq 0 -or $status -eq 408 -or $status -eq 429 -or $status -ge 500)
+                    if (-not $worthRetrying) { throw }
+                    $backoff = [int][Math]::Min(30, [Math]::Pow(2, $attempt))
+                    Write-Warning ("Uploading a block failed (attempt $attempt of $Attempts" +
+                                   $(if ($status) { ", HTTP $status" } else { ', no response' }) +
+                                   "): $($_.Exception.Message) Retrying in $backoff s.")
+                    Start-Sleep -Seconds $backoff
+                }
+            }
+        }
+
         # Chunked block blob upload to the Azure Storage SAS uri Intune hands out
         function Send-IntuneAzureBlob {
             param([string]$FilePath, [string]$SasUri, [string]$FileUri)
@@ -379,7 +423,7 @@ function Publish-IntuneWinApp {
                         $body = $buffer
                     }
                     $uri = '{0}&comp=block&blockid={1}' -f $SasUri, [Uri]::EscapeDataString($blockId)
-                    Invoke-WebRequest -Method Put -Uri $uri -Body $body -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } -UseBasicParsing | Out-Null
+                    Send-BlobPut -Uri $uri -Body $body -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } | Out-Null
                     $index++
                     $totalRead += $read
                     Write-Progress -Activity 'Uploading content to Intune' -Status ('{0:N1} / {1:N1} MB' -f ($totalRead / 1MB), ($stream.Length / 1MB)) -PercentComplete ([int](100 * $totalRead / $stream.Length))
@@ -395,7 +439,7 @@ function Publish-IntuneWinApp {
                 $blockList = '<?xml version="1.0" encoding="utf-8"?><BlockList>' +
                              (($blockIds | ForEach-Object { "<Latest>$_</Latest>" }) -join '') +
                              '</BlockList>'
-                Invoke-WebRequest -Method Put -Uri "$SasUri&comp=blocklist" -Body $blockList -UseBasicParsing | Out-Null
+                Send-BlobPut -Uri "$SasUri&comp=blocklist" -Body $blockList | Out-Null
                 Write-Progress -Activity 'Uploading content to Intune' -Completed
             }
             finally { $stream.Dispose() }
@@ -595,8 +639,12 @@ function Publish-IntuneWinApp {
         # version to the existing app and re-assert its metadata. Without -Update an
         # existing app is left alone and publishing stops, so nobody creates a
         # duplicate by re-running a publish.
-        if ($Update -and $AllowDuplicateName) {
-            throw '-Update and -AllowDuplicateName contradict each other: one replaces the app that is already there, the other creates a second one. Pick one.'
+        # -AppId is a way of saying which app to update, so it contradicts -AllowDuplicateName
+        # exactly as -Update does. It used to slip past this check and then be ignored, which
+        # is the right outcome by luck rather than by decision.
+        if (($Update -or $AppId) -and $AllowDuplicateName) {
+            $named = if ($AppId) { '-AppId' } else { '-Update' }
+            throw "$named and -AllowDuplicateName contradict each other: one replaces the app that is already there, the other creates a second one. Pick one."
         }
 
         $targetApp = $null
@@ -610,11 +658,27 @@ function Publish-IntuneWinApp {
         elseif (-not $AllowDuplicateName) {
             $nameFilter = "isof('microsoft.graph.win32LobApp') and displayName eq '$($displayName -replace "'", "''")'"
             $existingApps = @()
+            $lookupError  = $null
             try {
                 $existingApps = @((Invoke-MgGraphRequest -Method GET -Uri (
                     "$graphBase/deviceAppManagement/mobileApps?`$filter=" + [Uri]::EscapeDataString($nameFilter))).value)
             }
-            catch { Write-Warning "Could not check Intune for an existing app named '$displayName': $($_.Exception.Message)" }
+            catch { $lookupError = $_.Exception.Message }
+
+            # A check that cannot be performed is not a check that passed. This used to be a
+            # warning, and the run then carried on as though Intune held no app of this name:
+            # without -Update that creates the duplicate the check exists to prevent, and with
+            # -Update it creates a second app instead of updating the first — so the existing
+            # app keeps its assignments and its old content, and no device sees the new version.
+            # Graph throttling on a filtered mobileApps query is the ordinary way to get here,
+            # and retrying costs nothing. -AllowDuplicateName is the way to say the answer
+            # does not matter; it skips this whole check.
+            if ($lookupError) {
+                throw ("Could not ask Intune whether an app named '$displayName' already exists: $lookupError " +
+                       'Nothing was created, because the answer decides whether this run creates an app or updates ' +
+                       'one. Retry, pass -AppId to name the app to update, or pass -AllowDuplicateName if a second ' +
+                       'app of this name is what you want.')
+            }
 
             if ($existingApps.Count -gt 1) {
                 $candidates = @($existingApps | ForEach-Object { "$($_.id) (v$($_.displayVersion))" }) -join ', '

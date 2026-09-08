@@ -66,6 +66,30 @@
                        runs and reports success. Two more are stated without blocking —
                        the setup file's own version against the package's, and an
                        uninstall command still removing the MSI that was replaced.
+                       Opening a package folder drops what was cached about the MSIs in it.
+                       That cache is keyed by full path and lived as long as the process,
+                       so a new release shipped under the same file name went on answering
+                       with the previous product code — the code the rule is written from.
+                       Two more from a read of the whole file. The installed-app picker
+                       matches with IndexOf rather than -like: a '[' in the search box
+                       opened a character class, -like refused it, and the exception came
+                       out of a TextChanged handler with nothing above it to catch — the
+                       process exited, unsaved edits with it, and entries really are named
+                       'Java 8 Update 391 [64-bit]'. And a manifest value none of the
+                       dropdowns offers is added to the list instead of dropped: dropping
+                       it left the combo on the previously opened package's selection, the
+                       editor showed that, and saving wrote it back — so an app.json with
+                       architecture 'neutral' or detectionType 'doesNotExist', both legal
+                       to Intune, came back rewritten.
+                       Closing the window during a run is asked about first and stops the
+                       run before the window goes: the runspace died with the window, so a
+                       publish interrupted that way could leave an app in Intune with no
+                       content — what Cancel warns about, and the X did not.
+                       The 8 MB scan that identifies the installer engine reads in a loop.
+                       Read is allowed to come back short of what it was asked for, and a
+                       single call left the rest of the buffer as zeros, so an ordinary
+                       Inno installer on a share could come back as 'unknown' with no
+                       silent switches.
     2026-09-04 - 2.4 - Settings dialog (header button, and asked once on first run) for the
                        package folder and the output folder, both defaulting to a local disk
                        instead of a Documents folder redirected to a network home directory.
@@ -992,6 +1016,23 @@ function Find-PayloadFile {
 # Every file name in the open package, cached per folder. Recursive, because PSADT keeps
 # the vendor payload under Files\ while the install command names it bare. Refreshed on
 # open and on a setup-file change, never per keystroke — Update-Readiness runs on those.
+# Everything cached about the files in one package folder. Cleared when the folder is opened
+# and when the setup file changes, because the usual reason for either is that a new vendor
+# binary just landed in it. The MSI property cache matters most: it is keyed by full path, so
+# a new release shipped under the same file name would otherwise keep answering with the
+# previous product code — and that code is what the detection rule gets written from.
+function Clear-PackageCache {
+    param([Parameter(Mandatory)][string]$Folder)
+    $folderKey = $Folder.ToLowerInvariant()
+    $script:MsiListCache.Remove($folderKey)
+    $script:PkgFileCache.Remove($folderKey)
+    # With the separator, so a sibling folder named like a prefix of this one is left alone
+    $pathPrefix = $folderKey.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($cached in @($script:MsiPropCache.Keys | Where-Object { $_.StartsWith($pathPrefix) })) {
+        $script:MsiPropCache.Remove($cached)
+    }
+}
+
 function Get-PackageFileName {
     param([switch]$Refresh)
     if (-not $script:LoadedFolder) { return @() }
@@ -1098,12 +1139,25 @@ function Get-InstallerInfo {
         if ($rawVersion) { $info.Version = ($rawVersion -split '\s')[0] }
     } catch {}
 
+    # Read returns what it has to hand, not what it was asked for, and is allowed to come
+    # back short well before the end of the file — likeliest from a share, which is where
+    # these installers often sit. A single call left the rest of the buffer as zeros, so the
+    # engine signature was simply not there and a perfectly ordinary Inno installer came back
+    # as 'unknown' with no silent switches. Loop until the buffer is full or the file ends.
     $length = [int][Math]::Min($file.Length, 8MB)
     $bytes = [byte[]]::new($length)
+    $filled = 0
     $stream = [IO.File]::OpenRead($file.FullName)
-    try { [void]$stream.Read($bytes, 0, $length) } finally { $stream.Dispose() }
-    $ascii = [Text.Encoding]::ASCII.GetString($bytes)
-    $wide  = [Text.Encoding]::Unicode.GetString($bytes)
+    try {
+        while ($filled -lt $length) {
+            $got = $stream.Read($bytes, $filled, $length - $filled)
+            if ($got -le 0) { break }      # the file is shorter than it said it was
+            $filled += $got
+        }
+    }
+    finally { $stream.Dispose() }
+    $ascii = [Text.Encoding]::ASCII.GetString($bytes, 0, $filled)
+    $wide  = [Text.Encoding]::Unicode.GetString($bytes, 0, $filled - ($filled % 2))
 
     $engines = @(
         @{ Engine = 'Inno Setup'; Signature = 'Inno Setup'
@@ -1164,6 +1218,24 @@ function Get-InstalledApp {
     }
     $script:InstalledApps = @($apps | Sort-Object DisplayName, Bitness)
     $script:InstalledApps
+}
+
+# Substring match on name or publisher, for the picker's search box. Split out of the
+# handler so the self-test can feed it the text that used to bring the process down.
+#
+# IndexOf, never -like: the filter is whatever was typed, and a lone '[' opens a character
+# class that -like refuses with a WildcardPatternException. Thrown from a TextChanged
+# handler under $ErrorActionPreference = 'Stop' that does not stop at the dialog — WPF has
+# no handler above it, so PowerShell prints 'an error that was not properly handled' and
+# exits the process, taking any unsaved edits with it. It is one keystroke away: real
+# entries in Apps and features are named things like 'Java 8 Update 391 [64-bit]'.
+function Select-InstalledApp {
+    param([object[]]$All, [string]$Filter)
+    $needle = "$Filter".Trim()
+    if (-not $needle) { return @($All) }
+    @($All | Where-Object {
+        "$($_.DisplayName)".IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        "$($_.Publisher)".IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
 }
 
 # Registry detection block (app.json schema) from a picked installed app
@@ -1294,13 +1366,25 @@ function Get-ComboValue {
     if ($Combo.SelectedItem -is [Windows.Controls.ComboBoxItem]) { "$($Combo.SelectedItem.Content)" } else { "$($Combo.Text)" }
 }
 
+# Select Value in the combo. A value the list does not offer is added to it rather than
+# dropped, because dropping it did not leave the combo empty — it left it on whatever the
+# previously opened package had selected, the UI then showed that instead, and saving wrote
+# it back over the manifest. Intune accepts more than these lists offer: applicableArchitectures
+# is a flags enum ('neutral', comma combinations), and the registry and file detection types
+# have doesNotExist, modifiedDate, createdDate and sizeInMB besides the four here. Adding the
+# value keeps app.json round-tripping through the editor untouched, and shows what it says.
 function Set-ComboValue {
     param($Combo, [string]$Value)
     if (-not $Value) { return }
     foreach ($item in $Combo.Items) {
         if ($item -is [Windows.Controls.ComboBoxItem] -and "$($item.Content)" -eq $Value) { $Combo.SelectedItem = $item; return }
     }
-    if ($Combo.IsEditable) { $Combo.Text = $Value }
+    if ($Combo.IsEditable) { $Combo.Text = $Value; return }
+    $added = New-Object Windows.Controls.ComboBoxItem
+    $added.Content = $Value
+    [void]$Combo.Items.Add($added)
+    $Combo.SelectedItem = $added
+    Write-GuiLog "'$Value' is not one of the values $($Combo.Name) offers — it was added to the list and left as it is."
 }
 
 function Get-DetTypeValue { "$($ui.CmbDetType.SelectedItem.Tag)" }
@@ -1601,8 +1685,7 @@ function Open-PackageFolder {
     $script:LoadedFolder  = $Folder
     $script:InitialValues = $null
     $script:PickedApp     = $null
-    $script:MsiListCache.Remove($Folder.ToLowerInvariant())
-    $script:PkgFileCache.Remove($Folder.ToLowerInvariant())
+    Clear-PackageCache -Folder $Folder
     $script:Loading = $true
 
     try {
@@ -1740,8 +1823,7 @@ function Update-SetupSelection {
     if (-not $setup) { return }
     # What changed is most likely the folder's contents — a new vendor binary dropped in
     # beside the old one — so re-read the file list before judging what the commands name.
-    [void](Get-PackageFileName -Refresh)
-    [void](Find-PackageMsi -Refresh)
+    Clear-PackageCache -Folder $script:LoadedFolder
     $defaults = Get-SetupDefault -Folder $script:LoadedFolder -Setup $setup
     foreach ($pair in @(
         @{ Box = $ui.TxtInstall;   New = $defaults.Install;   Old = $script:DerivedInstall }
@@ -2067,10 +2149,7 @@ function Show-InstalledAppPicker {
     $dialog.C.PLstApps.ItemsSource = $script:Pick.All
     $dialog.C.PTxtCount.Text = "$($script:Pick.All.Count) programs installed"
     $dialog.C.PTxtFilter.Add_TextChanged({
-        $filter = $script:Pick.C.PTxtFilter.Text.Trim()
-        $shown = if ($filter) {
-            @($script:Pick.All | Where-Object { $_.DisplayName -like "*$filter*" -or $_.Publisher -like "*$filter*" })
-        } else { $script:Pick.All }
+        $shown = Select-InstalledApp -All $script:Pick.All -Filter $script:Pick.C.PTxtFilter.Text
         $script:Pick.C.PLstApps.ItemsSource = $shown
         $script:Pick.C.PTxtCount.Text = "$(@($shown).Count) of $($script:Pick.All.Count) programs"
     })
@@ -2904,6 +2983,7 @@ function Show-PackageWizard {
 $script:RunPS = $null
 $script:RunHandle = $null
 $script:RunCancelled = $false
+$script:RunPublishes = $false    # this run reaches Intune, so interrupting it can leave a mark
 $script:StreamIdx = @{ Info = 0; Warn = 0; Err = 0 }
 
 # Graph errors arrive as a whole HTTP dump; dig out the sentence a human can act on
@@ -2941,6 +3021,27 @@ function Show-RunResult {
         }
     }
     $reported
+}
+
+# What to say before a close that would interrupt a running build, or '' when nothing is
+# running. Split out of the handler because the handler itself ends in a message box, which
+# a headless run cannot dismiss — the text is the part worth checking.
+#
+# Closing the window takes the runspace with it: the script continues past ShowDialog, the
+# process ends, and an upload in flight ends with it. For a publish that can leave an app in
+# Intune with no content, which is exactly what the Cancel button warns about — the X used to
+# warn about nothing at all.
+function Get-RunInterruptWarning {
+    if (-not $script:RunPS) { return '' }
+    if ($script:RunPublishes) {
+        "Packwright is still publishing to Intune.`n`nClosing the window now stops the upload " +
+        "partway. The app may be left in Intune without any content, and you would have to delete " +
+        "it in the portal before publishing again.`n`nClose anyway?"
+    }
+    else {
+        "Packwright is still building the package.`n`nClosing the window now stops the build. " +
+        "Nothing has reached Intune, so there is nothing to clean up.`n`nClose anyway?"
+    }
 }
 
 function Set-RunUiState {
@@ -3133,6 +3234,7 @@ function Start-EngineRun {
     })
 
     $script:RunPS = $runspaceShell
+    $script:RunPublishes = $Publish
     $script:RunCancelled = $false
     $script:StreamIdx = @{ Info = 0; Warn = 0; Err = 0 }
     $script:RunHandle = $runspaceShell.BeginInvoke()
@@ -3297,6 +3399,22 @@ $ui.BtnCancelRun.Add_Click({
 })
 $ui.BtnOpenPortal.Add_Click({ if ($script:PortalUrl) { Start-Process $script:PortalUrl } })
 
+# A close that would interrupt a run has to be asked about — the runspace dies with the
+# window, and for a publish that can leave a half-created app behind. Declining keeps the
+# window; agreeing stops the run first, so the upload is not simply abandoned mid-block.
+$window.Add_Closing({
+    param($sender, $eventArgs)
+    $warning = Get-RunInterruptWarning
+    if (-not $warning) { return }
+    if ([Windows.MessageBox]::Show($warning, 'Packwright', 'YesNo', 'Warning') -ne 'Yes') {
+        $eventArgs.Cancel = $true
+        return
+    }
+    $script:RunCancelled = $true
+    $timer.Stop()
+    try { $script:RunPS.Stop() } catch { }
+})
+
 # Drag a package folder or an installer onto the window
 $window.Add_DragOver({
     param($sender, $eventArgs)
@@ -3441,6 +3559,19 @@ if ($TestLoad) {
         [bool](Get-GraphModuleWarning) -ne $graphLoads) $(
         if ($graphLoads) { 'module loads, nothing to warn about' } else { 'module missing, warning raised' })
 
+    # Closing the window takes the runspace with it, so a close mid-run has to be asked
+    # about. The handler ends in a message box a headless run cannot dismiss; the text it
+    # would show is the part worth checking.
+    Assert-Test 'Nothing to warn about when no run is going' ((Get-RunInterruptWarning) -eq '')
+    $script:RunPS = 'a run, as far as this check is concerned'
+    $script:RunPublishes = $false
+    Assert-Test 'Interrupting a build says nothing reached Intune' (
+        (Get-RunInterruptWarning) -match 'nothing to clean up') (Get-RunInterruptWarning)
+    $script:RunPublishes = $true
+    Assert-Test 'Interrupting a publish warns about the app left behind' (
+        (Get-RunInterruptWarning) -match 'without any content') (Get-RunInterruptWarning)
+    $script:RunPS = $null; $script:RunPublishes = $false
+
     # The shapes that used to take the whole window down through ShowDialog
     Assert-Test 'A run that produced nothing is survivable' (
         (Show-RunResult -Results @($null)) -eq $false)
@@ -3580,6 +3711,24 @@ if ($TestLoad) {
         Assert-Test "Engine detection $name" ($engineInfo.Engine -eq $expectedEngines[$name]) "$($engineInfo.Engine) / $($engineInfo.InstallCommand)"
     }
 
+    # The signature scan reads up to 8 MB, and Read is allowed to come back short of what it
+    # was asked for. It used to be one call, so a short read left the rest of the buffer as
+    # zeros and the signature was not there to find. Put one at the far end of a file that
+    # takes more than a single comfortable read and check it still turns up.
+    $tailFile = Join-Path $testRoot 'tail.exe'
+    $tailStream = [IO.File]::Create($tailFile)
+    try {
+        $filler = [byte[]]::new(4MB)
+        $tailStream.Write($filler, 0, $filler.Length)
+        $marker = [Text.Encoding]::ASCII.GetBytes('padding Inno Setup Setup Data padding')
+        $tailStream.Write($marker, 0, $marker.Length)
+    }
+    finally { $tailStream.Dispose() }
+    $tailInfo = Get-InstallerInfo -Path $tailFile
+    Assert-Test 'A signature at the far end of a large file is found' ($tailInfo.Engine -eq 'Inno Setup') `
+        "$($tailInfo.Engine) in a $([int]((Get-Item -LiteralPath $tailFile).Length / 1MB)) MB file"
+    Remove-Item -LiteralPath $tailFile -Force
+
     # --- Scaffold, open, readiness ----------------------------------------------
     $scaffoldManifest = [ordered]@{
         displayName = 'Self Test App'; publisher = 'IT'; version = '1.0'
@@ -3682,6 +3831,17 @@ if ($TestLoad) {
     $script:MsiPropCache[$fakeMsi.ToLowerInvariant()] = @{ ProductCode = '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}' }
     [void](Find-PackageMsi -Refresh)
     Assert-Test 'Product code read from the MSI in the package' ((Get-PackageProductCode) -eq '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}') (Get-PackageProductCode)
+    # The property cache is keyed by full path, so a new release under the same file name
+    # would keep answering with the previous product code — and that is the code the
+    # detection rule is written from. Clearing it is what makes opening a folder honest.
+    $siblingKey = ($scaffolded.ToLowerInvariant() + '0\other.msi')
+    $script:MsiPropCache[$siblingKey] = @{ ProductCode = '{99999999-9999-9999-9999-999999999999}' }
+    Clear-PackageCache -Folder $scaffolded
+    Assert-Test 'Opening a folder drops what was cached about its MSIs' (-not $script:MsiPropCache.ContainsKey($fakeMsi.ToLowerInvariant()))
+    Assert-Test 'A folder whose name is a prefix of this one is left alone' ($script:MsiPropCache.ContainsKey($siblingKey))
+    $script:MsiPropCache.Remove($siblingKey)
+    $script:MsiPropCache[$fakeMsi.ToLowerInvariant()] = @{ ProductCode = '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}' }
+    [void](Find-PackageMsi -Refresh)
     Set-DetTypeValue 'msi'
     $ui.TxtProductCode.Text = '{11111111-2222-3333-4444-555555555555}'
     $staleRule = Get-DetectionSummary
@@ -3714,6 +3874,57 @@ if ($TestLoad) {
     Set-ComboValue $ui.CmbDetCheck 'exists'
     Assert-Test 'File summary' ((Get-DetectionSummary).Ok -and $ui.TxtDetSummary.Text -match 'app\.exe exists')
     Assert-Test 'Comparison value hidden when check is exists' ($ui.TxtDetValue.Visibility -eq 'Collapsed')
+
+    # --- The picker's search box takes whatever was typed --------------------------
+    # '[' opened a character class that -like refused with a WildcardPatternException,
+    # thrown from a TextChanged handler with nothing above it to catch it: PowerShell
+    # printed 'an error that was not properly handled' and exited the process.
+    $pickSample = @(
+        [pscustomobject]@{ DisplayName = 'Java 8 Update 391 [64-bit]'; Publisher = 'Oracle' }
+        [pscustomobject]@{ DisplayName = 'Google Chrome';              Publisher = 'Google LLC' }
+        [pscustomobject]@{ DisplayName = '7-Zip 24.08 (x64)';          Publisher = 'Igor Pavlov' }
+    )
+    foreach ($case in @(
+        @{ Filter = 'java';     Count = 1 }   # matching is case-insensitive
+        @{ Filter = 'google';   Count = 1 }   # ...and covers the publisher
+        @{ Filter = '[';        Count = 1 }   # the keystroke that used to end the process
+        @{ Filter = '[64-bit]'; Count = 1 }
+        @{ Filter = ']';        Count = 1 }
+        @{ Filter = '*';        Count = 0 }   # a literal star, not "everything"
+        @{ Filter = '?';        Count = 0 }
+        @{ Filter = '';         Count = 3 })) {
+        $hits = @(Select-InstalledApp -All $pickSample -Filter $case.Filter)
+        Assert-Test "Picker filter '$($case.Filter)'" ($hits.Count -eq $case.Count) "$($hits.Count) hit(s), expected $($case.Count)"
+    }
+
+    # --- A manifest value the dropdowns do not offer ------------------------------
+    # These lists are shorter than what Intune accepts. An unlisted value used to leave the
+    # combo on the previously opened package's selection, and saving wrote that back — the
+    # editor quietly rewriting a manifest that was correct.
+    $oddManifest = [ordered]@{
+        displayName = 'Odd Values'; publisher = 'IT'; version = '1.0'
+        installCommandLine = '"nsis.exe" /S'; uninstallCommandLine = ''
+        runAsAccount = 'system'; restartBehavior = 'suppress'
+        architecture = 'x86,x64,arm64'; minimumWindowsRelease = 'Windows11_24H2'
+        detection = [ordered]@{
+            type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Odd'
+            valueName = 'DisplayVersion'; detectionType = 'doesNotExist'; operator = 'notConfigured'
+            check32BitOn64System = $false
+        }
+    }
+    $oddPackage = New-InstallerPackage -InstallerPath (Join-Path $testRoot 'nsis.exe') `
+        -TargetFolder (Join-Path $testRoot 'pkg\Odd Values') -Manifest $oddManifest
+    # Opened after a package that had x64 selected, which is what used to be saved instead
+    Assert-Test 'Package with unlisted values opens' (Open-PackageFolder -Folder $oddPackage)
+    Assert-Test 'An unlisted architecture survives the editor' ((Get-ComboValue $ui.CmbArch) -eq 'x86,x64,arm64') (Get-ComboValue $ui.CmbArch)
+    Assert-Test 'An unlisted detection type survives the editor' ((Get-ComboValue $ui.CmbDetCheck) -eq 'doesNotExist') (Get-ComboValue $ui.CmbDetCheck)
+    $oddSaved = Get-Content -LiteralPath (Save-AppManifest) -Raw | ConvertFrom-Json
+    Assert-Test 'Saving does not rewrite them' (
+        $oddSaved.architecture -eq 'x86,x64,arm64' -and
+        $oddSaved.detection.detectionType -eq 'doesNotExist' -and
+        $oddSaved.minimumWindowsRelease -eq 'Windows11_24H2') `
+        "architecture=$($oddSaved.architecture), detectionType=$($oddSaved.detection.detectionType), minOS=$($oddSaved.minimumWindowsRelease)"
+    $ui.TxtLog.Clear()   # the three lines above are logged on purpose
 
     # --- Icon extraction ----------------------------------------------------------
     $iconPackage = Join-Path $testRoot 'iconpkg'
@@ -3764,6 +3975,181 @@ if ($TestLoad) {
         Assert-Test "Real package opens: $(Split-Path -Leaf $folder)" ($ui.TxtName.Text.Length -gt 0) `
             ("name='{0}' ({1}), detection={2}, ready={3}" -f $ui.TxtName.Text, $ui.TagName.Text, (Get-DetTypeValue), (Update-Readiness))
     }
+
+    # --- The build engine when the tool writes nothing and exits 0 -----------------
+    # IntuneWinAppUtil.exe does exactly that when it cannot read the source folder, which is
+    # what a redirected Documents folder gets you. The build then falls back to the newest
+    # .intunewin in the package's output folder — and that used to include one left there by
+    # an earlier build of a differently named setup file, so the run hashed months-old
+    # content, reported success and handed it to the publish step. Only the call to the
+    # external tool is stubbed; the wait, the fallback and the message below it are real.
+    $stubDir = Join-Path $testRoot 'stubengine'
+    $stubSrc = Join-Path $stubDir 'src'
+    $stubOut = Join-Path $stubDir 'out'
+    $stubPkg = Join-Path $stubOut 'src'
+    foreach ($folder in $stubSrc, $stubPkg) { $null = New-Item -ItemType Directory -Path $folder -Force }
+    $stubCall   = '$toolOutput = & $toolPath -c $resolvedSource -s $setup -o $outputFolder -q 2>&1'
+    $engineText = Get-Content -LiteralPath $script:EngineBuild -Raw
+    Assert-Test 'The build engine still invokes the tool the way the stub expects' ($engineText.Contains($stubCall))
+    $stubEngine = Join-Path $stubDir 'Build-IntuneWinApp.ps1'
+    $engineText.Replace($stubCall, '$toolOutput = @(); $global:LASTEXITCODE = 0') |
+        Set-Content -LiteralPath $stubEngine -Encoding utf8BOM
+    # Only Test-Path'd — the invocation above it is gone
+    Set-Content -LiteralPath (Join-Path $stubDir 'IntuneWinAppUtil.exe') -Value 'stub'
+    Set-Content -LiteralPath (Join-Path $stubSrc 'setup.msi') -Value 'x'
+    $stalePackage = Join-Path $stubPkg 'Invoke-AppDeployToolkit.intunewin'
+    Set-Content -LiteralPath $stalePackage -Value 'the package an earlier build left here'
+    (Get-Item -LiteralPath $stalePackage).LastWriteTime = (Get-Date).AddMonths(-6)
+
+    # Its own runspace, because dot-sourcing an engine runs its param() block in this scope
+    $stubRunspace = [runspacefactory]::CreateRunspace()
+    $stubRunspace.Open()
+    $stubShell = [powershell]::Create()
+    $stubShell.Runspace = $stubRunspace
+    [void]$stubShell.AddScript({
+        param([string]$stubEnginePath, [string]$stubSourceFolder, [string]$stubOutputBase)
+        . $stubEnginePath
+        try {
+            $result = Build-IntuneWinApp -SourceFolder $stubSourceFolder -OutputRoot $stubOutputBase `
+                          -PassThru -Quiet -Confirm:$false
+            if ($result) { "REPORTED:$($result.IntuneWinFile)" } else { 'NOTHING' }
+        }
+        catch { "THREW:$($_.Exception.Message)" }
+    }.ToString()).AddParameters(@{
+        stubEnginePath = $stubEngine; stubSourceFolder = $stubSrc; stubOutputBase = $stubOut })
+    $stubOutcome = "$(@($stubShell.Invoke()) | Select-Object -Last 1)"
+    $stubShell.Dispose(); $stubRunspace.Dispose()
+
+    Assert-Test 'A build that wrote nothing does not report an older package' `
+        ($stubOutcome -notlike 'REPORTED:*') $stubOutcome
+    Assert-Test 'It says which file it left alone, and why the tool wrote nothing' (
+        $stubOutcome -like 'THREW:*' -and $stubOutcome -match 'Invoke-AppDeployToolkit\.intunewin' -and
+        $stubOutcome -match 'exits 0 even when it writes nothing') $stubOutcome
+
+    # --- The publish engine when Intune cannot be asked about the name -------------
+    # The duplicate-name check used to warn and carry on when its Graph query failed, which
+    # reads as "Intune has no app of this name": without -Update that creates the duplicate
+    # the check exists to prevent, and with -Update it creates a second app instead of
+    # updating the first — so the real app keeps its assignments and its old content and no
+    # device ever sees the new version. Throttling on a filtered mobileApps query is the
+    # ordinary way in. Graph is stubbed here, so this needs no module, tenant or network.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $stageRoot = Join-Path $testRoot 'pubstage'
+    foreach ($leaf in 'IntuneWinPackage\Metadata', 'IntuneWinPackage\Contents') {
+        $null = New-Item -ItemType Directory -Path (Join-Path $stageRoot $leaf) -Force
+    }
+    # The two entries Publish-IntuneWinApp reads out of a .intunewin
+    @('<ApplicationInfo ToolVersion="1.8.6"><Name>Publish Probe</Name>'
+      '<UnencryptedContentSize>1024</UnencryptedContentSize><SetupFile>setup.msi</SetupFile>'
+      '<EncryptionInfo><EncryptionKey>a2V5</EncryptionKey><MacKey>bWFj</MacKey>'
+      '<InitializationVector>aXY=</InitializationVector><Mac>bQ==</Mac>'
+      '<ProfileIdentifier>ProfileVersion1</ProfileIdentifier><FileDigest>ZA==</FileDigest>'
+      '<FileDigestAlgorithm>SHA256</FileDigestAlgorithm></EncryptionInfo></ApplicationInfo>') -join '' |
+        Set-Content -LiteralPath (Join-Path $stageRoot 'IntuneWinPackage\Metadata\Detection.xml') -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $stageRoot 'IntuneWinPackage\Contents\IntunePackage.intunewin') -Value 'payload'
+    $probePackage = Join-Path $testRoot 'Publish Probe.intunewin'
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($stageRoot, $probePackage)
+    ([ordered]@{
+        displayName = 'Publish Probe'; publisher = 'IT'; version = '1.0'
+        installCommandLine = 'msiexec /i "setup.msi" /qn'; uninstallCommandLine = 'msiexec /x "setup.msi" /qn'
+        detection = [ordered]@{ type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\PublishProbe'; detectionType = 'exists' }
+    } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $testRoot 'app.json') -Encoding UTF8
+
+    $publishProbe = {
+        param([string]$stubPublishScript, [string]$stubPackagePath, [hashtable]$stubArgs,
+              [bool]$stubThrottleLookup, [int]$stubBlobFailures)
+        # Get-Command finds these instead of the real module, so no tenant is ever touched,
+        # and the whole create-upload-commit chain runs against them.
+        $script:StubCalls     = @()
+        $script:StubCommitted = $false
+        $script:StubBlobLeft  = $stubBlobFailures
+        function Connect-MgGraph { }
+        function Set-MgGraphOption { }
+        function Get-MgContext {
+            [pscustomobject]@{ ClientId = $null; AuthType = 'Delegated'; TenantId = 'selftest'
+                               Scopes = @('DeviceManagementApps.ReadWrite.All') }
+        }
+        function Invoke-MgGraphRequest {
+            param($Method, $Uri, $Body, $ContentType)
+            $script:StubCalls += "$Method $Uri"
+            if ($Uri -like '*$filter=*') {
+                if ($stubThrottleLookup) { throw 'Request_ThrottledTemporarily: too many requests' }
+                return @{ value = @() }
+            }
+            if ($Uri -like '*/commit')                                  { $script:StubCommitted = $true; return @{} }
+            if ($Method -eq 'GET' -and $Uri -like '*/files/*') {
+                if ($script:StubCommitted) { return @{ uploadState = 'commitFileSuccess' } }
+                return @{ uploadState = 'azureStorageUriRequestSuccess'; azureStorageUri = 'https://stub.invalid/c?sv=stub' }
+            }
+            if ($Method -eq 'POST' -and $Uri -like '*/contentVersions') { return @{ id = '1' } }
+            if ($Method -eq 'POST' -and $Uri -like '*/files')           { return @{ id = 'stub-file-1' } }
+            if ($Method -eq 'POST' -and $Uri -like '*/mobileApps')      { return @{ id = 'stub-app-0001' } }
+            if ($Method -eq 'PATCH')                                    { return @{} }
+            throw "the stub was asked for something this test does not model: $Method $Uri"
+        }
+        # Azure Storage, refusing the first $stubBlobFailures block PUTs with a status the
+        # engine is meant to retry rather than give up on
+        function Invoke-WebRequest {
+            param($Method, $Uri, $Body, $Headers, [switch]$UseBasicParsing)
+            $script:StubCalls += 'PUT-BLOB'
+            if ($script:StubBlobLeft -gt 0) {
+                $script:StubBlobLeft--
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new(
+                    'stubbed 500 from Azure Storage',
+                    [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::InternalServerError))
+            }
+            @{ StatusCode = 201 }
+        }
+        . $stubPublishScript
+        $outcome = try {
+            $published = Publish-IntuneWinApp -Path $stubPackagePath -Confirm:$false @stubArgs
+            "RETURNED:$($published.Action):$($published.AppId)"
+        } catch { "THREW:$($_.Exception.Message)" }
+        "$outcome@@$($script:StubCalls -join ' | ')"
+    }
+    function Invoke-PublishProbe {
+        param([hashtable]$Arguments = @{}, [bool]$ThrottleLookup = $false, [int]$BlobFailures = 0)
+        $probeRunspace = [runspacefactory]::CreateRunspace()
+        $probeRunspace.Open()
+        $probeShell = [powershell]::Create()
+        $probeShell.Runspace = $probeRunspace
+        [void]$probeShell.AddScript($publishProbe.ToString()).AddParameters(@{
+            stubPublishScript = $script:EnginePublish; stubPackagePath = $probePackage
+            stubArgs = $Arguments; stubThrottleLookup = $ThrottleLookup; stubBlobFailures = $BlobFailures })
+        $answer = "$(@($probeShell.Invoke()) | Select-Object -Last 1)"
+        $probeShell.Dispose(); $probeRunspace.Dispose()
+        @{ Outcome = ($answer -split '@@')[0]; Calls = "$(($answer -split '@@')[1])" }
+    }
+
+    $throttled = Invoke-PublishProbe -Arguments @{ Update = $true } -ThrottleLookup $true
+    Assert-Test 'A name check that could not run stops the publish' (
+        $throttled.Outcome -like 'THREW:*Could not ask Intune whether an app named*') $throttled.Outcome
+    Assert-Test 'Nothing was created when the name check could not run' (
+        $throttled.Calls -notmatch 'POST') "calls: $($throttled.Calls)"
+    Assert-Test 'The message offers the two ways past it' (
+        $throttled.Outcome -match '-AppId' -and $throttled.Outcome -match '-AllowDuplicateName') $throttled.Outcome
+    # The documented escape hatch: saying duplicates are fine skips the check entirely
+    $duplicatesOk = Invoke-PublishProbe -Arguments @{ AllowDuplicateName = $true } -ThrottleLookup $true
+    Assert-Test '-AllowDuplicateName does not ask about the name at all' (
+        $duplicatesOk.Calls -notmatch '\$filter' -and $duplicatesOk.Outcome -like 'RETURNED:Created:*') `
+        "$($duplicatesOk.Outcome) — calls: $($duplicatesOk.Calls)"
+
+    # -AppId says which app to update, so it contradicts -AllowDuplicateName the same way
+    # -Update does. It used to slip past the check and then be ignored.
+    $contradiction = Invoke-PublishProbe -Arguments @{ AppId = 'stub-app-0001'; AllowDuplicateName = $true }
+    Assert-Test 'AppId and AllowDuplicateName are refused together' (
+        $contradiction.Outcome -like 'THREW:*-AppId and -AllowDuplicateName contradict*' -and
+        -not $contradiction.Calls) $contradiction.Outcome
+
+    # A transient 500 from Azure Storage used to throw away the whole upload. Two refusals
+    # here: three PUTs for the one block, then one for the block list.
+    $retried = Invoke-PublishProbe -Arguments @{ AllowDuplicateName = $true } -BlobFailures 2
+    Assert-Test 'A block that fails on a passing error is uploaded again' (
+        $retried.Outcome -like 'RETURNED:Created:*' -and
+        @($retried.Calls -split ' \| ' | Where-Object { $_ -eq 'PUT-BLOB' }).Count -eq 4) `
+        "$($retried.Outcome) — $(@($retried.Calls -split ' \| ' | Where-Object { $_ -eq 'PUT-BLOB' }).Count) block PUTs"
+    Assert-Test 'The content is committed and the app pointed at it' (
+        $retried.Calls -match '/commit' -and $retried.Calls -match 'PATCH') "calls: $($retried.Calls)"
 
     # --- End to end: the real run body, in a real runspace -------------------------
     # Everything above tests the studio with the engines stubbed out by never reaching them.
