@@ -50,6 +50,22 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
+    2026-09-08 - 2.5 - What a package folder carries over from the previous release is
+                       caught instead of published. A command naming a file the package
+                       does not hold is a checklist item rather than a line in the log:
+                       'msiexec /i "7z2408-x64.msi"' in a folder that now holds
+                       7z2501-x64.msi used to build, publish, and fail on every device.
+                       So did an empty install command, which nothing checked at all.
+                       Changing the setup file rewrites a command that is provably broken,
+                       and the MSI product code follows the setup file instead of only
+                       filling an empty box; an 'msi' rule holding another MSI's code no
+                       longer counts as a finished rule. A version comparison set from the
+                       version field follows it, and one that does not match is stated
+                       under the checklist: a rule left on 24.08 in a 25.01 package makes
+                       Intune treat the old release as installed, so the upgrade never
+                       runs and reports success. Two more are stated without blocking —
+                       the setup file's own version against the package's, and an
+                       uninstall command still removing the MSI that was replaced.
     2026-09-04 - 2.4 - Settings dialog (header button, and asked once on first run) for the
                        package folder and the output folder, both defaulting to a local disk
                        instead of a Documents folder redirected to a network home directory.
@@ -701,8 +717,11 @@ $script:MainXaml = @'
                   <TextBlock x:Name="ChkSetup" Style="{StaticResource Body}" Margin="0,2"/>
                   <TextBlock x:Name="ChkName" Style="{StaticResource Body}" Margin="0,2"/>
                   <TextBlock x:Name="ChkPublisher" Style="{StaticResource Body}" Margin="0,2"/>
+                  <TextBlock x:Name="ChkCommand" Style="{StaticResource Body}" Margin="0,2"/>
                   <TextBlock x:Name="ChkDetection" Style="{StaticResource Body}" Margin="0,2"/>
                 </StackPanel>
+                <!-- Things that are probably wrong but cannot be proven wrong: shown, never blocking -->
+                <TextBlock x:Name="TxtReadyWarn" Style="{StaticResource Body}" Margin="0,10,0,0" Visibility="Collapsed"/>
                 <TextBlock x:Name="TxtReadyNote" Style="{StaticResource Tiny}" Margin="0,10,0,0"/>
               </StackPanel>
             </Border>
@@ -771,8 +790,12 @@ $script:PickedApp     = $null    # installed app picked for detection (icon sour
 $script:PortalUrl     = $null
 $script:MsiPropCache  = @{}
 $script:MsiListCache  = @{}
+$script:PkgFileCache  = @{}      # file names in the open package, for judging the commands
 $script:InstalledApps = $null
 $script:IconApiReady  = $null
+$script:DerivedVersion = $null   # version the selected setup file reports about itself
+$script:DetValueTracksVersion = $false   # detection value is following the version field
+$script:SyncingDetValue = $false         # that sync is writing, so it is not a hand edit
 $script:PsadtSkip     = '^(Invoke-AppDeployToolkit|Deploy-Application|PSADT|AppDeployToolkit|ServiceUI|IntuneWinAppUtil)'
 
 function Write-GuiLog {
@@ -964,6 +987,82 @@ function Find-PayloadFile {
         Where-Object { $_.Extension -in $Extension -and $_.BaseName -notmatch $script:PsadtSkip } |
         Sort-Object @{ Expression = { if ($_.FullName -match '\\Files\\') { 0 } else { 1 } } },
                     @{ Expression = { $_.Length }; Descending = $true })
+}
+
+# Every file name in the open package, cached per folder. Recursive, because PSADT keeps
+# the vendor payload under Files\ while the install command names it bare. Refreshed on
+# open and on a setup-file change, never per keystroke — Update-Readiness runs on those.
+function Get-PackageFileName {
+    param([switch]$Refresh)
+    if (-not $script:LoadedFolder) { return @() }
+    $cacheKey = $script:LoadedFolder.ToLowerInvariant()
+    if ($Refresh) { $script:PkgFileCache.Remove($cacheKey) }
+    if (-not $script:PkgFileCache.ContainsKey($cacheKey)) {
+        $script:PkgFileCache[$cacheKey] = @(Get-ChildItem -LiteralPath $script:LoadedFolder -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name)
+    }
+    $script:PkgFileCache[$cacheKey]
+}
+
+# Split a command line into its arguments, honouring double quotes
+function Split-CommandToken {
+    param([string]$Command)
+    @([regex]::Matches("$Command", '"([^"]*)"|(\S+)') | ForEach-Object {
+        if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } })
+}
+
+# On the machine, not in the package: these are commands, not payload
+$script:SystemExe = @(
+    'msiexec.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe', 'cscript.exe', 'wscript.exe',
+    'rundll32.exe', 'regsvr32.exe', 'reg.exe', 'sc.exe', 'net.exe', 'dism.exe', 'wusa.exe',
+    'taskkill.exe', 'schtasks.exe', 'xcopy.exe', 'robocopy.exe', 'msdt.exe')
+
+# The name of a file the command runs that is not in the package, or $null when there is
+# none. This is the failure a copied package folder produces: the commands still name the
+# binary that was replaced ('msiexec /i "7z2408-x64.msi"' in a folder now holding
+# 7z2501-x64.msi). Nothing used to notice — the package builds, publishes, and fails on
+# every device instead. Only bare relative names are judged: those are what this tool
+# generates and what a copy gets wrong. An absolute or UNC path is somebody's own
+# decision about a file that need not exist here, and is left alone.
+function Get-CommandFileIssue {
+    param([string]$Command)
+    if (-not $script:LoadedFolder -or -not "$Command".Trim()) { return $null }
+    $packaged = Get-PackageFileName
+    foreach ($token in @(Split-CommandToken $Command | ForEach-Object { $_.Trim() })) {
+        if ([IO.Path]::GetExtension($token) -notin '.exe', '.msi', '.msp', '.msu', '.ps1', '.cmd', '.bat', '.vbs') { continue }
+        if ($token -match '[%$]') { continue }                    # expands to something we cannot know
+        if ($token.StartsWith('\\') -or [IO.Path]::IsPathRooted($token)) { continue }
+        if ($token -match '[\\/]') {
+            if (-not (Test-Path -LiteralPath (Join-Path $script:LoadedFolder $token) -PathType Leaf)) { return $token }
+            continue
+        }
+        if ($token -in $script:SystemExe) { continue }
+        if ($packaged -notcontains $token) { return $token }
+    }
+    $null
+}
+
+# The product code of the MSI this package actually holds, or $null when there is not
+# exactly one to be certain about. Both lookups behind it are cached.
+function Get-PackageProductCode {
+    $found = @(Find-PackageMsi)
+    if ($found.Count -ne 1) { return $null }
+    $code = "$((Get-MsiProperty -MsiPath $found[0].FullName).ProductCode)".Trim()
+    if ($code) { $code } else { $null }
+}
+
+# '24.08' and '24.8.0.0' are one release written two ways — the MSI pads its ProductVersion
+# and the vendor does not. Compare component by component as numbers and let the shorter
+# one match as a prefix, so only a real difference is ever reported.
+function Test-VersionMatch {
+    param([string]$Left, [string]$Right)
+    $leftParts  = @("$Left".Trim()  -split '[.,]' | ForEach-Object { $_ -replace '\D' })
+    $rightParts = @("$Right".Trim() -split '[.,]' | ForEach-Object { $_ -replace '\D' })
+    if (-not $leftParts[0] -or -not $rightParts[0]) { return "$Left".Trim() -ieq "$Right".Trim() }
+    for ($i = 0; $i -lt [Math]::Min($leftParts.Count, $rightParts.Count); $i++) {
+        if ([int]"0$($leftParts[$i])" -ne [int]"0$($rightParts[$i])") { return $false }
+    }
+    $true
 }
 
 # Identify the installer engine of a vendor .exe/.msi and suggest silent commands.
@@ -1310,8 +1409,18 @@ function Get-DetectionSummary {
     switch ($type) {
         'msi' {
             $code = $ui.TxtProductCode.Text.Trim()
-            if ($code) { @{ Ok = $true; Text = "Intune checks that the MSI product $code is installed." } }
-            else { @{ Ok = $false; Text = 'No MSI product code yet. Open "Change detection method" and click "From MSI...".' } }
+            # A code belonging to another MSI is the copied-package mistake: the rule looks
+            # complete, and then never matches anything this package installs. The package's
+            # own MSI is the only right answer for an 'msi' rule, so say so rather than
+            # letting it through as a finished rule.
+            $packageCode = Get-PackageProductCode
+            if (-not $code) {
+                @{ Ok = $false; Text = 'No MSI product code yet. Open "Change detection method" and click "From MSI...".' }
+            }
+            elseif ($packageCode -and $code -ine $packageCode) {
+                @{ Ok = $false; Text = "The rule looks for $code, but the MSI in this package is $packageCode. Click ""From MSI..."" to read the code from the package." }
+            }
+            else { @{ Ok = $true; Text = "Intune checks that the MSI product $code is installed." } }
         }
         'registry' {
             $key = $ui.TxtKeyPath.Text.Trim()
@@ -1358,6 +1467,28 @@ function Update-DetectionSummary {
         $ui.TxtDetSummary.Foreground  = Get-ThemeBrush 'Warn'
     }
     $summary.Ok
+}
+
+# A version rule whose comparison value is the app version is following it, and should keep
+# following it. Established wherever the rule is written, from the values as they stand.
+function Set-DetValueTracking {
+    $version = $ui.TxtVersion.Text.Trim()
+    $script:DetValueTracksVersion = [bool]$version -and $ui.TxtDetValue.Text.Trim() -eq $version
+}
+
+# Keep the comparison value on the version when it was following it. This is the copied
+# package folder with the worst outcome: bump the version to 25.01, leave the rule saying
+# 'DisplayVersion at least 24.08', and Intune calls the app installed on every machine
+# still running the old one — so the upgrade never reaches the devices that need it, and
+# reports success. Anything the user typed themselves stops the tracking and is left alone.
+function Sync-DetectionValue {
+    if ($script:Loading -or -not $script:DetValueTracksVersion) { return }
+    if ((Get-ComboValue $ui.CmbDetCheck) -ne 'version' -or (Get-DetTypeValue) -notin 'file', 'registry') { return }
+    $version = $ui.TxtVersion.Text.Trim()
+    if (-not $version -or $ui.TxtDetValue.Text.Trim() -eq $version) { return }
+    $script:SyncingDetValue = $true
+    try { $ui.TxtDetValue.Text = $version } finally { $script:SyncingDetValue = $false }
+    Write-GuiLog "Detection rule followed the version to $version."
 }
 #endregion
 
@@ -1471,6 +1602,7 @@ function Open-PackageFolder {
     $script:InitialValues = $null
     $script:PickedApp     = $null
     $script:MsiListCache.Remove($Folder.ToLowerInvariant())
+    $script:PkgFileCache.Remove($Folder.ToLowerInvariant())
     $script:Loading = $true
 
     try {
@@ -1518,6 +1650,7 @@ function Open-PackageFolder {
         $ui.TxtCmdHint.Text   = "$($defaults.Hint)"
         $script:DerivedInstall   = $defaults.Install
         $script:DerivedUninstall = $defaults.Uninstall
+        $script:DerivedVersion   = $defaults.Version
 
         Set-ComboValue $ui.CmbRunAs   $(if ($manifest.runAsAccount)    { $manifest.runAsAccount }    else { 'system' })
         Set-ComboValue $ui.CmbRestart $(if ($manifest.restartBehavior) { $manifest.restartBehavior } else { 'suppress' })
@@ -1577,6 +1710,7 @@ function Open-PackageFolder {
         Publisher = $ui.TxtPublisher.Text; PublisherTag = $ui.TagPublisher.Text
         Version = $ui.TxtVersion.Text; VersionTag = $ui.TagVersion.Text
     }
+    Set-DetValueTracking
 
     # MSI rule saved without a code (or picked before the MSI was known): fill it in
     if ((Get-DetTypeValue) -eq 'msi' -and -not $ui.TxtProductCode.Text.Trim()) {
@@ -1604,21 +1738,43 @@ function Update-SetupSelection {
     if ($script:Loading -or -not $script:LoadedFolder) { return }
     $setup = "$($ui.CmbSetup.SelectedItem)"
     if (-not $setup) { return }
+    # What changed is most likely the folder's contents — a new vendor binary dropped in
+    # beside the old one — so re-read the file list before judging what the commands name.
+    [void](Get-PackageFileName -Refresh)
+    [void](Find-PackageMsi -Refresh)
     $defaults = Get-SetupDefault -Folder $script:LoadedFolder -Setup $setup
     foreach ($pair in @(
         @{ Box = $ui.TxtInstall;   New = $defaults.Install;   Old = $script:DerivedInstall }
         @{ Box = $ui.TxtUninstall; New = $defaults.Uninstall; Old = $script:DerivedUninstall })) {
         $current = $pair.Box.Text.Trim()
+        $suggested = "$($pair.New)".Trim()
+        $missingFile = Get-CommandFileIssue $current
         if (-not $current -or $current -eq "$($pair.Old)".Trim()) { $pair.Box.Text = "$($pair.New)" }
-        elseif ("$($pair.New)".Trim() -and $current -ne "$($pair.New)".Trim()) {
+        elseif ($missingFile -and $suggested) {
+            # A hand edit that names the binary just replaced cannot run whatever else was
+            # done to it, so there is nothing left in it worth preserving. Overwriting is
+            # only ever done on a command that is provably broken.
+            $pair.Box.Text = "$($pair.New)"
+            Write-GuiLog "Setup file changed — '$($pair.Box.Name)' named $missingFile, which is not in this package, so it was rewritten for $setup."
+        }
+        elseif ($suggested -and $current -ne $suggested) {
             Write-GuiLog "Setup file changed — '$($pair.Box.Name)' was edited by hand and was left as it is. Suggested: $($pair.New)"
         }
     }
     $script:DerivedInstall   = $defaults.Install
     $script:DerivedUninstall = $defaults.Uninstall
+    $script:DerivedVersion   = $defaults.Version
     $ui.TxtCmdHint.Text = "$($defaults.Hint)"
-    if ($defaults.ProductCode -and (Get-DetTypeValue) -eq 'msi' -and -not $ui.TxtProductCode.Text.Trim()) {
+    # An 'msi' rule means "the MSI in this package", so the code follows the setup file
+    # rather than only filling an empty box. Keeping the previous one is how a copied
+    # package ends up published with a rule that matches an MSI it does not contain.
+    if ((Get-DetTypeValue) -eq 'msi' -and $defaults.ProductCode -and
+        $ui.TxtProductCode.Text.Trim() -ine $defaults.ProductCode) {
+        $previousCode = $ui.TxtProductCode.Text.Trim()
         $ui.TxtProductCode.Text = $defaults.ProductCode
+        Write-GuiLog $(if ($previousCode) {
+            "Product code updated to $($defaults.ProductCode) — the rule still held $previousCode, which belongs to another MSI."
+        } else { "Product code read from ${setup}: $($defaults.ProductCode)" })
     }
     Write-GuiLog "Setup file set to $setup"
     Update-DetectionSummary | Out-Null
@@ -1736,26 +1892,72 @@ function Set-CheckLine {
     $Block.Foreground = Get-ThemeBrush $(if ($Ok) { 'Ok' } else { 'Warn' })
 }
 
+# Anything that is provably wrong about the commands: an empty install command, or one
+# naming a file the package does not contain. Both used to publish without a word.
+function Get-CommandIssue {
+    if (-not $ui.TxtInstall.Text.Trim()) { return 'Install command is missing' }
+    foreach ($pair in @(
+        @{ Label = 'install';   Text = $ui.TxtInstall.Text }
+        @{ Label = 'uninstall'; Text = $ui.TxtUninstall.Text })) {
+        $missingFile = Get-CommandFileIssue $pair.Text
+        if ($missingFile) { return "The $($pair.Label) command runs $missingFile, which is not in this package" }
+    }
+    $null
+}
+
+# Things that are probably wrong but cannot be proven wrong, so they are stated and never
+# block: the values that a package copied from the previous release carries over silently.
+function Get-PackageWarning {
+    $warnings = @()
+    $version = $ui.TxtVersion.Text.Trim()
+    if ((Get-DetTypeValue) -in 'file', 'registry' -and (Get-ComboValue $ui.CmbDetCheck) -eq 'version') {
+        $detValue = $ui.TxtDetValue.Text.Trim()
+        if ($version -and $detValue -and -not (Test-VersionMatch $detValue $version)) {
+            $warnings += "The detection rule compares against $detValue, but this package is version $version. A rule left on the previous version makes Intune treat the old release as installed."
+        }
+    }
+    $setupVersion = "$script:DerivedVersion".Trim()
+    if ($version -and $setupVersion -and -not (Test-VersionMatch $setupVersion $version)) {
+        $warnings += "$($ui.CmbSetup.SelectedItem) says it is version $setupVersion, but this package is labelled $version."
+    }
+    # 'msiexec /x {code}' left over from the MSI that was replaced uninstalls nothing
+    $packageCode = Get-PackageProductCode
+    if ($packageCode) {
+        $uninstallCode = ([regex]::Match($ui.TxtUninstall.Text, '\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}')).Value
+        if ($uninstallCode -and $uninstallCode -ine $packageCode) {
+            $warnings += "The uninstall command removes $uninstallCode, which is not the MSI in this package ($packageCode)."
+        }
+    }
+    $warnings
+}
+
 # Everything Intune insists on, as a live checklist instead of one dialog at a time
 function Update-Readiness {
     $hasSetup     = [bool]"$($ui.CmbSetup.SelectedItem)"
     $hasName      = [bool]$ui.TxtName.Text.Trim()
     $hasPublisher = [bool]$ui.TxtPublisher.Text.Trim()
+    $commandIssue = Get-CommandIssue
     $detectionOk  = Update-DetectionSummary
     if ((Get-DetTypeValue) -eq 'script') { $detectionOk = [bool](Resolve-DetectionScript) }
 
     Set-CheckLine $ui.ChkSetup     $hasSetup     $(if ($hasSetup) { "Setup file: $($ui.CmbSetup.SelectedItem)" } else { 'No setup file in this folder' })
     Set-CheckLine $ui.ChkName      $hasName      $(if ($hasName) { 'Name' } else { 'Name is missing' })
     Set-CheckLine $ui.ChkPublisher $hasPublisher $(if ($hasPublisher) { 'Publisher' } else { 'Publisher is missing' })
+    Set-CheckLine $ui.ChkCommand   (-not $commandIssue) $(if ($commandIssue) { $commandIssue } else { 'Install command' })
     Set-CheckLine $ui.ChkDetection $detectionOk  $(if ($detectionOk) { 'Detection rule' } else { 'Detection rule is not set' })
 
-    $ready = $hasSetup -and $hasName -and $hasPublisher -and $detectionOk
+    $warnings = @(Get-PackageWarning)
+    $ui.TxtReadyWarn.Text = ($warnings | ForEach-Object { [string][char]0x26A0 + '   ' + $_ }) -join [Environment]::NewLine
+    $ui.TxtReadyWarn.Foreground = Get-ThemeBrush 'Warn'
+    $ui.TxtReadyWarn.Visibility = if ($warnings.Count) { 'Visible' } else { 'Collapsed' }
+
+    $ready = $hasSetup -and $hasName -and $hasPublisher -and $detectionOk -and -not $commandIssue
     $ui.TxtReadyTitle.Text = if ($ready) { 'Ready to publish' } else { 'Not ready yet' }
     $ui.TxtReadyTitle.Foreground = Get-ThemeBrush $(if ($ready) { 'Ok' } else { 'Ink' })
     $ui.PnlReady.BorderBrush = Get-ThemeBrush $(if ($ready) { 'Ok' } else { 'Stroke' })
-    $ui.TxtReadyNote.Text = if ($ready) {
-        'Publishing builds the .intunewin and creates the app in Intune. No groups are assigned — do that in the portal.'
-    } else { 'Fill in the items marked above. "Build only" works without them.' }
+    $ui.TxtReadyNote.Text = if (-not $ready) { 'Fill in the items marked above. "Build only" works without them.' }
+        elseif ($warnings.Count) { 'Nothing here stops you publishing — read the points above and publish if they are deliberate.' }
+        else { 'Publishing builds the .intunewin and creates the app in Intune. No groups are assigned — do that in the portal.' }
     $ui.TxtActionHint.Text = if ($ready) { '' } else { 'Some required information is still missing.' }
     $ready
 }
@@ -1763,8 +1965,8 @@ function Update-Readiness {
 # Mark the offending fields and take the user there, instead of a modal dialog
 function Test-ReadyToRun {
     param([switch]$ForPublish)
-    foreach ($box in $ui.TxtName, $ui.TxtPublisher, $ui.TxtProductCode, $ui.TxtDetPath,
-                     $ui.TxtDetFile, $ui.TxtKeyPath, $ui.TxtScript) { $box.Tag = $null }
+    foreach ($box in $ui.TxtName, $ui.TxtPublisher, $ui.TxtInstall, $ui.TxtUninstall, $ui.TxtProductCode,
+                     $ui.TxtDetPath, $ui.TxtDetFile, $ui.TxtKeyPath, $ui.TxtScript) { $box.Tag = $null }
 
     if (-not $script:LoadedFolder) { Set-StatusText 'Open a package folder first.'; return $false }
     if (-not "$($ui.CmbSetup.SelectedItem)") {
@@ -1778,15 +1980,29 @@ function Test-ReadyToRun {
     if (-not $ui.TxtName.Text.Trim())      { $issues += @{ Box = $ui.TxtName;      Message = 'The app needs a name.' } }
     if (-not $ui.TxtPublisher.Text.Trim()) { $issues += @{ Box = $ui.TxtPublisher; Message = 'The app needs a publisher.' } }
 
+    # A command naming a file this package does not hold builds and publishes perfectly and
+    # then fails on every device, so it stops the publish here rather than there.
+    $commandIssue = Get-CommandIssue
+    if ($commandIssue) {
+        $installBad = -not $ui.TxtInstall.Text.Trim() -or (Get-CommandFileIssue $ui.TxtInstall.Text)
+        $issues += @{ Box = $(if ($installBad) { $ui.TxtInstall } else { $ui.TxtUninstall }); Message = "$commandIssue." }
+        $ui.ExpAdvanced.IsExpanded = $true
+    }
+
     $type = Get-DetTypeValue
     $detectionBox = switch ($type) {
-        'msi'      { if (-not $ui.TxtProductCode.Text.Trim()) { $ui.TxtProductCode } }
+        # Not just "is it empty": a code belonging to another MSI is the one that gets published
+        'msi'      { if (-not (Get-DetectionSummary).Ok) { $ui.TxtProductCode } }
         'file'     { if (-not $ui.TxtDetPath.Text.Trim()) { $ui.TxtDetPath } elseif (-not $ui.TxtDetFile.Text.Trim()) { $ui.TxtDetFile } }
         'registry' { if (-not (Get-DetectionSummary).Ok) { $ui.TxtKeyPath } }
         'script'   { if (-not (Resolve-DetectionScript)) { $ui.TxtScript } }
     }
     if ($detectionBox) {
-        $issues += @{ Box = $detectionBox; Message = 'Intune needs a detection rule. Use "Find the app on this computer..." or fill in the fields.' }
+        # The summary already says what is wrong with this particular rule, and says it in
+        # the same words the user is looking at — better than one sentence for every case.
+        $summary = Get-DetectionSummary
+        $issues += @{ Box = $detectionBox; Message = $(if (-not $summary.Ok) { $summary.Text }
+            else { 'Intune needs a detection rule. Use "Find the app on this computer..." or fill in the fields.' }) }
         $ui.ExpDetection.IsExpanded = $true
     }
 
@@ -1922,7 +2138,9 @@ You can also drag a package folder or an installer straight onto the window.
 '@ }
     @{ Title = 'What Intune insists on'
        Body  = @'
-A name, a publisher and a detection rule. The checklist on the right turns green when all three are set, and the Publish button tells you which field is missing if you try too early.
+A name, a publisher, a command to install with and a detection rule. The checklist on the right turns green when all four are set, and the Publish button tells you which field is missing if you try too early.
+
+Under the checklist you may also see lines marked with a warning sign. Those are things that look wrong but cannot be proven wrong, so they never stop you publishing — read them, and publish if they are what you meant.
 
 Everything else already has a sensible default.
 '@ }
@@ -1935,6 +2153,14 @@ The easy way: install the app on this computer as a normal double-click install,
 MSI packages need nothing: the product code is read straight from the MSI.
 
 If you would rather write the rule yourself, open "Change detection method": a registry key, a file or folder, or a PowerShell script.
+'@ }
+    @{ Title = 'A new version of an app you have already packaged'
+       Body  = @'
+Copy the package folder, put the new installer in it, delete the old one, and open the copy. Everything you decided last time is in app.json and comes with it.
+
+Three things have to change, and they are the three a copy keeps quietly: the install command names the old file, an MSI rule holds the old product code, and the detection rule still compares against the old version. Picking the new file under Advanced does the first two for you, and changing the version carries the detection rule with it when that rule was the version.
+
+Whatever is left is on the checklist or in a warning line, so none of it reaches a device unnoticed.
 '@ }
     @{ Title = 'Where your settings are kept'
        Body  = @'
@@ -2960,6 +3186,7 @@ foreach ($fieldName in 'Name', 'Publisher', 'Version') {
             }
         }
         Update-PreviewCard
+        Sync-DetectionValue
         Update-Readiness
     })
 }
@@ -2980,8 +3207,19 @@ $ui.CmbDetType.Add_SelectionChanged({
 $ui.CmbDetCheck.Add_SelectionChanged({ Update-DetectionUi; if (-not $script:Loading) { Update-Readiness } })
 $ui.CmbDetOperator.Add_SelectionChanged({ if (-not $script:Loading) { Update-Readiness } })
 $ui.ChkDet32.Add_Click({ if (-not $script:Loading) { Update-Readiness } })
-foreach ($detectionBox in 'TxtProductCode', 'TxtDetPath', 'TxtDetFile', 'TxtKeyPath', 'TxtValueName', 'TxtDetValue', 'TxtScript') {
+foreach ($detectionBox in 'TxtProductCode', 'TxtDetPath', 'TxtDetFile', 'TxtKeyPath', 'TxtValueName', 'TxtScript') {
     $ui[$detectionBox].Add_TextChanged({ if (-not $script:Loading) { Update-Readiness } })
+}
+# The comparison value is wired on its own: typing in it decides whether it goes on
+# following the version field, and Sync-DetectionValue's own writes must not count as that.
+$ui.TxtDetValue.Add_TextChanged({
+    if ($script:Loading) { return }
+    if (-not $script:SyncingDetValue) { Set-DetValueTracking }
+    Update-Readiness
+})
+# The commands can name a file the package does not hold; that is a checklist item now
+foreach ($commandBox in 'TxtInstall', 'TxtUninstall') {
+    $ui[$commandBox].Add_TextChanged({ if (-not $script:Loading) { Update-Readiness } })
 }
 $ui.BtnRegPick.Add_Click({
     $app = Show-InstalledAppPicker -Owner $window
@@ -3004,6 +3242,9 @@ $ui.BtnRegPick.Add_Click({
         }
     }
     if (-not $ui.TxtVersion.Text.Trim() -and $app.DisplayVersion) { $ui.TxtVersion.Text = $app.DisplayVersion }
+    # Last, so it sees both values as they ended up: the rule was just written from the
+    # version this app reports, and should keep following the version field from here.
+    Set-DetValueTracking
     Update-DetectionUi
     Update-Readiness
 })
@@ -3385,9 +3626,76 @@ if ($TestLoad) {
     $installBefore = $ui.TxtInstall.Text
     $ui.CmbSetup.SelectedItem = 'other.exe'
     Assert-Test 'Setup change rewrites the install command' ($ui.TxtInstall.Text -ne $installBefore -and $ui.TxtInstall.Text -match 'other\.exe') "'$installBefore' -> '$($ui.TxtInstall.Text)'"
-    $ui.TxtInstall.Text = 'custom.exe /verysilent'
+    # A hand edit is respected as long as what it runs is actually here...
+    $ui.TxtInstall.Text = '"other.exe" /VERYSILENT /LOG'
     $ui.CmbSetup.SelectedItem = 'nsis.exe'
-    Assert-Test 'Hand-edited command is not overwritten' ($ui.TxtInstall.Text -eq 'custom.exe /verysilent')
+    Assert-Test 'Hand-edited command is not overwritten' ($ui.TxtInstall.Text -eq '"other.exe" /VERYSILENT /LOG') $ui.TxtInstall.Text
+    # ...but one naming a binary that is not in the package cannot run whatever else was
+    # done to it. It used to be kept, with one line in a log nobody reads.
+    $ui.TxtInstall.Text = '"7z2408-x64.exe" /S'
+    $ui.CmbSetup.SelectedItem = 'other.exe'
+    Assert-Test 'Command naming a replaced binary is rewritten' ($ui.TxtInstall.Text -match 'other\.exe') $ui.TxtInstall.Text
+    $ui.CmbSetup.SelectedItem = 'nsis.exe'
+
+    # --- Commands that name a file the package does not hold ----------------------
+    Assert-Test 'Bare name present in the package passes' ($null -eq (Get-CommandFileIssue '"nsis.exe" /S'))
+    Assert-Test 'Bare name missing from the package is caught' ((Get-CommandFileIssue '"7z2408-x64.msi" /qn') -eq '7z2408-x64.msi')
+    Assert-Test 'msiexec is a command, not payload' ($null -eq (Get-CommandFileIssue 'msiexec /x "{11111111-2222-3333-4444-555555555555}" /qn'))
+    Assert-Test 'System executables are not looked for in the package' ($null -eq (Get-CommandFileIssue 'powershell.exe -File nope-not-checked'))
+    Assert-Test 'An absolute path is somebody else''s business' ($null -eq (Get-CommandFileIssue '"C:\Program Files\App\unins000.exe" /SILENT'))
+    Assert-Test 'A missing subfolder path is caught' ((Get-CommandFileIssue 'msiexec /i "Files\app.msi" /qn') -eq 'Files\app.msi')
+    Assert-Test 'A path that expands at run time is left alone' ($null -eq (Get-CommandFileIssue 'cmd /c "%~dp0install.cmd"'))
+    $ui.TxtInstall.Text = '"gone.exe" /S'
+    Assert-Test 'Readiness drops when the install command names a missing file' (-not (Update-Readiness)) $ui.ChkCommand.Text
+    Assert-Test 'Publish blocked and the command marked' ((-not (Test-ReadyToRun -ForPublish)) -and $ui.TxtInstall.Tag -eq 'invalid')
+    $ui.TxtInstall.Text = ''
+    Assert-Test 'Readiness drops when the install command is empty' (-not (Update-Readiness)) $ui.ChkCommand.Text
+    $ui.TxtInstall.Text = '"nsis.exe" /S'
+    Assert-Test 'Readiness returns with a command that runs' (Update-Readiness) $ui.ChkCommand.Text
+
+    # --- The detection value follows the version ----------------------------------
+    Assert-Test 'Versions padded by the MSI still match' (Test-VersionMatch '24.08' '24.8.0.0')
+    Assert-Test 'Different versions do not match' (-not (Test-VersionMatch '24.08' '25.01'))
+    Set-DetTypeValue 'registry'
+    Set-ComboValue $ui.CmbDetCheck 'version'
+    $ui.TxtKeyPath.Text = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SelfTest'
+    $ui.TxtValueName.Text = 'DisplayVersion'
+    $ui.TxtVersion.Text = '1.0'; $ui.TxtDetValue.Text = '1.0'
+    $ui.TxtVersion.Text = '2.0'
+    Assert-Test 'Detection value follows the version it was set from' ($ui.TxtDetValue.Text -eq '2.0') "rule value: $($ui.TxtDetValue.Text)"
+    $ui.TxtDetValue.Text = '1.5'          # a deliberate choice, and it stops following
+    $ui.TxtVersion.Text = '3.0'
+    Assert-Test 'A value chosen by hand stops following' ($ui.TxtDetValue.Text -eq '1.5') "rule value: $($ui.TxtDetValue.Text)"
+    Assert-Test 'A rule left on another version is called out' (
+        $ui.TxtReadyWarn.Visibility -eq 'Visible' -and $ui.TxtReadyWarn.Text -match 'compares against 1\.5') $ui.TxtReadyWarn.Text
+    Assert-Test 'Being called out does not block publishing' (Update-Readiness) $ui.TxtReadyTitle.Text
+    $ui.TxtDetValue.Text = '3.0'
+    Assert-Test 'The warning clears when the rule matches' ($ui.TxtReadyWarn.Visibility -eq 'Collapsed') $ui.TxtReadyWarn.Text
+    $ui.TxtVersion.Text = '1.0'; $ui.TxtDetValue.Text = '1.0'
+
+    # --- An MSI rule holding the product code of an MSI that was replaced ---------
+    # No self-test can author a valid MSI, so the COM read is stubbed by seeding its
+    # cache. Everything above that — the file lookup, the summary, the publish gate —
+    # is the real path, and the stub is the one call this suite could never make.
+    $fakeMsi = Join-Path $scaffolded 'payload.msi'
+    [IO.File]::WriteAllText($fakeMsi, 'not really an MSI')
+    $script:MsiPropCache[$fakeMsi.ToLowerInvariant()] = @{ ProductCode = '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}' }
+    [void](Find-PackageMsi -Refresh)
+    Assert-Test 'Product code read from the MSI in the package' ((Get-PackageProductCode) -eq '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}') (Get-PackageProductCode)
+    Set-DetTypeValue 'msi'
+    $ui.TxtProductCode.Text = '{11111111-2222-3333-4444-555555555555}'
+    $staleRule = Get-DetectionSummary
+    Assert-Test 'A code belonging to another MSI is not a finished rule' ((-not $staleRule.Ok) -and $staleRule.Text -match 'the MSI in this package') $staleRule.Text
+    Assert-Test 'Publish blocked and the product code marked' ((-not (Test-ReadyToRun -ForPublish)) -and $ui.TxtProductCode.Tag -eq 'invalid')
+    $ui.TxtProductCode.Text = '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}'
+    Assert-Test 'The package''s own code completes the rule' ((Get-DetectionSummary).Ok -and (Update-Readiness)) $ui.TxtDetSummary.Text
+    # An uninstall command still removing the previous MSI is said out loud, not blocked
+    $ui.TxtUninstall.Text = 'msiexec /x "{11111111-2222-3333-4444-555555555555}" /qn'
+    Assert-Test 'An uninstall command for another MSI is called out' (
+        (Update-Readiness) -and $ui.TxtReadyWarn.Text -match 'uninstall command removes') $ui.TxtReadyWarn.Text
+    $ui.TxtUninstall.Text = ''; $ui.TxtProductCode.Text = ''
+    Remove-Item -LiteralPath $fakeMsi -Force
+    [void](Find-PackageMsi -Refresh); [void](Get-PackageFileName -Refresh)
 
     # --- Detection script path handling (regression) ------------------------------
     $externalScript = Join-Path $testRoot 'Detect-App.ps1'
@@ -3415,6 +3723,21 @@ if ($TestLoad) {
     '{ "displayName": "Icon Test", "publisher": "IT", "detection": { "type": "registry", "keyPath": "HKEY_LOCAL_MACHINE\\SOFTWARE\\X" } }' |
         Set-Content -LiteralPath (Join-Path $iconPackage 'app.json') -Encoding UTF8
     [void](Open-PackageFolder -Folder $iconPackage)
+
+    # The setup file's own version against the version on the package. This payload is a
+    # copy of pwsh.exe, so it carries real version info to compare against — the value
+    # most easily forgotten when a package folder is reused for the next release.
+    if (-not "$script:DerivedVersion".Trim()) {
+        Write-Host '  SKIP  Setup file version comparison (the payload carries no version info)'
+    }
+    else {
+        $payloadVersion = $ui.TxtVersion.Text
+        $ui.TxtVersion.Text = '0.1'
+        Assert-Test "The setup file's own version is compared" ($ui.TxtReadyWarn.Text -match 'says it is version') $ui.TxtReadyWarn.Text
+        $ui.TxtVersion.Text = $payloadVersion
+        Assert-Test 'No warning when the two agree' ($ui.TxtReadyWarn.Visibility -eq 'Collapsed') $ui.TxtReadyWarn.Text
+    }
+
     Import-PackageIcon
     Assert-Test 'Icon extracted from the package payload' (Test-Path (Join-Path $iconPackage 'icon.png')) $ui.TxtIconPath.Text
     Assert-Test 'Icon extracted at high resolution' ($ui.TxtIconPath.Text -match '(\d+)x\1' -and [int]$Matches[1] -ge 64) $ui.TxtIconPath.Text

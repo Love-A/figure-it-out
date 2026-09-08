@@ -29,7 +29,7 @@ Once a package is open, the editor shows everything the Intune app will contain:
 - **Advanced** — install/uninstall commands, run-as, restart behaviour, architecture, minimum Windows and the setup file, collapsed by default because most packages never need them.
 - **Preview** — how the app will look in the Company Portal, live as you type.
 - **Logo** — *Use the app's own icon* extracts the real icon (up to 256×256) from the installed app or the package payload; or choose a png/jpg.
-- **Ready to publish** — a live checklist of what Intune requires. Nothing is a surprise at publish time: if something is missing, the field is highlighted and focused instead of a dialog appearing.
+- **Ready to publish** — a live checklist of what Intune requires, plus what this package can be shown to have wrong. Nothing is a surprise at publish time: if something is missing, the field is highlighted and focused instead of a dialog appearing. Below the checklist, anything that is *probably* wrong is stated in ⚠ lines that never block — see [Reusing a package folder for the next release](#reusing-a-package-folder-for-the-next-release).
 
 **Help** in the header (or **F1**) opens a short usage guide written for whoever is packaging the app — what Intune insists on, how detection works and what to do when a publish fails — with a button to open this README for the full picture. The guide lives in `$script:HelpTopics` at the top of the help region in the script; keep it short, and leave setup, sign-in and command-line detail here in the README.
 
@@ -52,6 +52,28 @@ The same installed-programs picker is available in the editor as **"Find the app
 Run `.\Packwright.ps1 -TestLoad` to build every window and run the headless self-test suite without showing the UI — useful after any change. Run it that way, not as `pwsh -File Packwright.ps1 -TestLoad`: the two differ in scope handling, and a handler written as a `.GetNewClosure()` fails only under the first (a closure gets a module scope of its own, where the functions in the file are out of reach). A self-test reads the source for that pattern, since no run can be relied on to hit it. It prints a PASS/FAIL line per check and exits non-zero on failure. Set `PACKWRIGHT_TESTPACKAGES` to a semicolon-separated list of your own package folders to have them opened as part of the run.
 
 The suite finishes with an **end-to-end build**: the same run body the Publish button uses, in a real runspace, dot-sourcing both engines and calling `IntuneWinAppUtil.exe` for real (no publishing). That is the only path the rest of the suite cannot reach, and the bugs that cost the most have lived in it. It runs whenever `IntuneWinAppUtil.exe` is already next to the script or in `C:\IntuneWinAppUtil`; otherwise it is skipped, and `PACKWRIGHT_TESTBUILD=1` lets the engine download the tool so it can run anyway.
+
+## Reusing a package folder for the next release
+
+7-Zip 24.08 → 25.01 is the same package with three things changed, so the way to do it is to copy the folder, drop the new binary in beside the old one, delete the old one, and open the copy. `app.json` comes with it and everything you already decided is still there.
+
+The three things that must change are exactly the three that a copy carries over silently, and each of them fails *after* publishing rather than during it. So Packwright checks them:
+
+| What the copy keeps | What it does if left | Where it shows |
+|---|---|---|
+| `installCommandLine` naming the old file (`"7z2408-x64.exe" /S`) | Intune runs a file that is not in the package — every device fails | **Checklist**, blocking: *The install command runs 7z2408-x64.exe, which is not in this package* |
+| An MSI rule holding the previous MSI's product code | Detection never matches what was installed | **Checklist**, blocking: the rule is not counted as finished |
+| `detectionValue` left on the old version (`DisplayVersion ≥ 24.08`) | Intune finds the old release, calls the app installed, and the upgrade never runs — reported as success | **⚠ line**, not blocking |
+
+Picking the new file under *Advanced → Setup file* does most of it for you: the commands are re-derived, a command naming the file you just replaced is rewritten (a hand-edited one that still runs something present in the folder is left alone, as before), and an MSI product code follows the new MSI. Editing the version carries the detection comparison with it whenever that comparison was the version — so bumping 24.08 to 25.01 in one field moves the rule too, and the log says it did.
+
+Only what can be proven wrong blocks the publish. The rest is stated in ⚠ lines under the checklist and left to you:
+
+- the detection rule compares against a different version than the package is labelled with
+- the setup file reports a different version than the package is labelled with (`24.08` and `24.8.0.0` count as the same release — the MSI pads, the vendor does not)
+- the uninstall command still removes the product code of the MSI that was replaced
+
+An `app.json` is also just a file, so the other way round works too: keep it in git, and `Publish-IntuneWinApp -Update` applies the same spec as often as you like. See [Idempotent publishing](#idempotent-publishing--update).
 
 ## Settings — where Packwright keeps things
 
@@ -258,6 +280,7 @@ MIT — see [LICENSE](LICENSE). `IntuneWinAppUtil.exe` is Microsoft's [Win32 Con
 
 Three components, versioned separately: **Studio** (`Packwright.ps1`, the GUI), **Build** (`Build-IntuneWinApp.ps1`) and **Publish** (`Publish-IntuneWinApp.ps1`). Each script's own `.VERSION` block is the authoritative changelog; this is the merged view, newest first.
 
+- **2026-09-08 — Studio 2.5** — What a package folder carries over from the previous release is caught instead of published. A command naming a file the package does not hold is a checklist item rather than a line in the log: `msiexec /i "7z2408-x64.msi"` in a folder that now holds `7z2501-x64.msi` used to build, publish, and then fail on every device. So did an empty install command, which nothing checked at all. Changing the setup file rewrites a command that is provably broken (a hand edit that still runs something present is kept, as before), and the MSI product code follows the setup file instead of only filling an empty box; an `msi` rule holding another MSI's code no longer counts as a finished rule. A version comparison set from the version field follows it, and one that does not match is stated under the checklist — a rule left on 24.08 in a 25.01 package makes Intune treat the old release as installed, so the upgrade never runs and reports success. Two more are stated without blocking: the setup file's own version against the package's, and an uninstall command still removing the MSI that was replaced. See [Reusing a package folder for the next release](#reusing-a-package-folder-for-the-next-release).
 - **2026-09-04 — Studio 2.4 / Publish 1.5 / Build 2.2** — Settings dialog for the package folder and the output folder, reachable from the header and asked once on first run. Both default to a local disk instead of following a redirected Documents folder onto a network home directory, which used to surface as `Could not read MSI properties` and `The setup file you specified cannot be accessed`. Resolved paths use `.ProviderPath`, so a UNC path no longer reaches IntuneWinAppUtil.exe provider-qualified and unopenable. Dialog handlers are plain scriptblocks over `$script:` state rather than `.GetNewClosure()`, which runs in a module scope where the functions in the file are out of reach, and a `settings.json` that parses to nothing is written over instead of throwing `Cannot index into a null array` somewhere unrelated. A background run that produces no result object is reported in the log rather than throwing that same error out of a dispatcher tick, where it unwound through `ShowDialog` and closed the window. The run's parameters are `run`-prefixed because dot-sourcing an engine script executes its `param()` block in the same scope: `$OutputRoot` shared a name with `Build-IntuneWinApp.ps1`'s own parameter and was reset to `''` before the build saw it, which is what `Cannot validate argument on parameter 'OutputRoot'` was. A self-test keeps the two sets of names disjoint, and the suite now ends with a real end-to-end build through that same run body.
 - **2026-09-04 — Studio 2.3 / Publish 1.5 / Build 2.2** — Windows PowerShell 5.1 is turned away with one sentence naming the version and the `pwsh` command to use, the studio in a dialog as well. It used to produce 41 parse errors, because the scripts were saved without a BOM and 5.1 read the em dashes as ANSI; they are UTF-8 with BOM now and the self-test checks it.
 - **2026-09-04 — Studio 2.3** — Asks for the delegated sign-in with `-SignIn Browser`, so the prompt actually appears when publishing from the GUI.
