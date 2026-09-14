@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy this file to skunames.json and list the SKUs your tenant actually owns, keyed by skuPartNumber exactly as Microsoft Graph reports it. The file is optional: a SKU with no entry falls back to its raw part number and is logged as unmapped, so you can run the script once and let the log tell you what to add. Keys starting with _ are ignored. Canonical product names come from Microsoft's 'Product names and service plan identifiers for licensing' reference.",
+  "AAD_PREMIUM_P2": "Microsoft Entra ID P2",
+  "EMS": "Enterprise Mobility + Security E3",
+  "EMSPREMIUM": "Enterprise Mobility + Security E5",
+  "EXCHANGESTANDARD": "Exchange Online (Plan 1)",
+  "FLOW_FREE": "Microsoft Power Automate Free",
+  "Microsoft_365_Copilot": "Microsoft 365 Copilot",
+  "POWER_BI_PRO": "Power BI Pro",
+  "POWER_BI_STANDARD": "Microsoft Fabric (Free)",
+  "PROJECTPROFESSIONAL": "Project Plan 3",
+  "SPE_E3": "Microsoft 365 E3",
+  "SPE_E5": "Microsoft 365 E5",
+  "SPE_F1": "Microsoft 365 F3",
+  "STREAM": "Microsoft Stream",
+  "VISIOCLIENT": "Visio Plan 2",
+  "WINDOWS_STORE": "Windows Store for Business"
+}
