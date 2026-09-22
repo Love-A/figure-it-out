@@ -20,13 +20,13 @@ Start it with `pwsh`, not `powershell`. *Run with PowerShell* in Explorer hands 
 
 ### The GUI in one screen
 
-It opens on a **start screen** with two choices — *I have an installer file* (guided wizard) and *I have a package folder* — plus your recent packages. You can also drop a package folder or an installer straight onto the window.
+It opens on a **start screen** with two choices — *I have an installer file* (guided wizard) and *I have a package folder* — plus your recent packages. You can also drop a package folder, an installer or an install script straight onto the window; a script opens the folder around it with that script already chosen as the setup file.
 
 Once a package is open, the editor shows everything the Intune app will contain:
 
 - **App information** — name, publisher, version, description, each with a tag saying where the value came from (`app.json` / `PSADT` / `MSI` / `installer` / `edited by hand`).
 - **Detection** — written in plain language ("Intune reads DisplayVersion under the registry key 7-Zip and treats the app as installed when it is at least 24.08"), with one button — **Find the app on this computer...** — that generates the rule for you. The raw Intune fields live behind *Change detection method* for when you need them.
-- **Advanced** — install/uninstall commands, run-as, restart behaviour, architecture, minimum Windows and the setup file, collapsed by default because most packages never need them.
+- **Advanced** — install/uninstall commands, run-as, restart behaviour, architecture, minimum Windows and the setup file, collapsed by default because most packages never need them. The setup file can be an `.exe`, an `.msi` or a `.ps1`/`.cmd`/`.bat` — see [Packaging a folder that installs with a script](#packaging-a-folder-that-installs-with-a-script).
 - **Preview** — how the app will look in the Company Portal, live as you type.
 - **Logo** — *Use the app's own icon* extracts the real icon (up to 256×256) from the installed app or the package payload; or choose a png/jpg.
 - **Ready to publish** — a live checklist of what Intune requires, plus what this package can be shown to have wrong. Nothing is a surprise at publish time: if something is missing, the field is highlighted and focused instead of a dialog appearing. Below the checklist, anything that is *probably* wrong is stated in ⚠ lines that never block — see [Reusing a package folder for the next release](#reusing-a-package-folder-for-the-next-release).
@@ -91,7 +91,7 @@ Paths are resolved with `.ProviderPath`, never `PathInfo.Path`: for a UNC path t
 ## Quick start
 
 ```powershell
-# One-off build (setup file is auto-detected for PSADT/MSI packages)
+# One-off build (setup file is auto-detected for PSADT, MSI and single-install-script packages)
 .\Build-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip"
 
 # Build AND publish to Intune in one pipeline
@@ -112,7 +112,7 @@ Build-IntuneWinApp -SourceFolder "C:\psadt\7-zip" -PassThru | Publish-IntuneWinA
 
 ### Features
 - Run directly with parameters (`.\Build-IntuneWinApp.ps1 -SourceFolder ...`) or dot-source to load the function — no more editing the bottom of the script.
-- Auto-detects the setup file: `Invoke-AppDeployToolkit.exe` (PSADT) or a single `.msi` in the folder. Override with `-SetupFile`.
+- Auto-detects the setup file: `Invoke-AppDeployToolkit.exe` (PSADT), a single `.msi`, or — in a folder with no `.msi` — a single `Install*.ps1` / `.cmd` / `.bat`. Override with `-SetupFile`, which has always taken any file: `IntuneWinAppUtil.exe` records whatever it is handed and only reads properties out of an `.msi`.
 - Runs `IntuneWinAppUtil.exe` from the script folder (fallback: `C:\IntuneWinAppUtil\`).
 - Output goes to `.\Output\<PackageName>` with a per-build log file.
 - Existing `.intunewin` files are renamed to `*-<timestamp>.bak.intunewin`; old backups beyond `-KeepBackups` (default 3) are pruned automatically. `-OverwriteExisting` deletes instead.
@@ -124,7 +124,7 @@ Build-IntuneWinApp -SourceFolder "C:\psadt\7-zip" -PassThru | Publish-IntuneWinA
 | Parameter | Description |
 |---|---|
 | `-SourceFolder` | Folder with installation files (mandatory, pipeline input). |
-| `-SetupFile` | Setup file inside the source folder. Optional — auto-detected. |
+| `-SetupFile` | Setup file inside the source folder — any file the package installs from, an install script included. Optional — auto-detected. |
 | `-OutputRoot` | Output base folder. Default: `.\Output` next to the script. |
 | `-OverwriteExisting` | Delete existing `.intunewin` instead of backing it up. |
 | `-Clean` | Purge the package output folder before build. |
@@ -251,6 +251,38 @@ See [app.example.json](app.example.json) for the full schema. Detection block va
 
 `minimumWindowsRelease` must use the exact ids the Intune service knows: build-number style for older releases (`1607`, `1809`, ...) and `Windows10_21H2` / `Windows10_22H2` / `Windows11_21H2` / `Windows11_22H2` for newer ones. Bare `22H2` is rejected with `400 Unknown MinimumSupportedWindowsRelease`.
 
+### Packaging a folder that installs with a script
+The usual shape for an application built in house: a publish step drops the program and its dependencies in a payload folder, and an `Install-App.ps1` beside them does the installing. The **setup file** is then that script.
+
+The setup file is only what `IntuneWinAppUtil.exe` records in the package metadata and what the `.intunewin` is named after — what actually runs on the device is the install command. It still matters which one is chosen, because the application's own `App.exe` sitting in the payload is the one file in there nobody meant Intune to start.
+
+Put an `app.json` in the payload folder and let it say so:
+
+```json
+{
+  "displayName": "Acme Kiosk",
+  "publisher": "IT Department",
+  "version": "1.0.0.0",
+  "installCommandLine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Install-App.ps1",
+  "uninstallCommandLine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Uninstall-App.ps1",
+  "detection": { "type": "script", "scriptFile": "Detect-App.ps1" }
+}
+```
+
+Opening that folder picks `Install-App.ps1` as the setup file, because the manifest's install command names it — the file list is only consulted when no manifest answers the question. Without an `app.json` the choice is the old one (PSADT, then a single `.msi`, then the first `.exe`), and you can always change it under *Advanced → Setup file*, which now lists `.ps1`, `.cmd` and `.bat` alongside `.exe` and `.msi`. Picking a script fills in `powershell.exe -NoProfile -ExecutionPolicy Bypass -File` and finds the matching `Uninstall-` script if there is one.
+
+Two things to keep in mind:
+
+- **The detection script has to be findable from `app.json`.** A bare `Detect-App.ps1` is looked for next to the manifest; a build that writes the manifest and the detection script into a folder *beside* the payload needs `"scriptFile": "..\\intune\\Detect-App.ps1"`, or the script copied in. It is uploaded to Intune as script content, so it does not have to be inside the `.intunewin`. A path that resolves to nothing is now a red checklist item instead of a rule that reads as finished.
+- **Packwright writes `app.json` into the folder it has open.** If a build script generates the manifest somewhere else, the next build will not see the corrections you make here — generate it into the payload folder to begin with.
+
+On the command line the same package needs nothing special; a single `Install*.ps1` is auto-detected, and anything else is named explicitly:
+
+```powershell
+.\Build-IntuneWinApp.ps1 -SourceFolder "C:\pkg\payload" -SetupFile "Install-App.ps1" -PassThru |
+    .\Publish-IntuneWinApp.ps1
+```
+
 ### Parameters
 | Parameter | Description |
 |---|---|
@@ -280,6 +312,7 @@ MIT — see [LICENSE](LICENSE). `IntuneWinAppUtil.exe` is Microsoft's [Win32 Con
 
 Three components, versioned separately: **Studio** (`Packwright.ps1`, the GUI), **Build** (`Build-IntuneWinApp.ps1`) and **Publish** (`Publish-IntuneWinApp.ps1`). Each script's own `.VERSION` block is the authoritative changelog; this is the merged view, newest first.
 
+- **2026-09-22 — Studio 2.6 / Build 2.4** — A package that installs with a script is a package. The setup file list held `.exe` and `.msi` only, so a payload folder whose entry point is `Install-App.ps1` opened on the application's own `.exe` — the one file in there nobody meant Intune to run — and a folder holding neither came back with no setup file and nothing that could be published at all. `.ps1`, `.cmd` and `.bat` are offered too, with commands derived for them (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File`, plus the `Uninstall-` script beside it when there is one), and a single `Install*.ps1` is auto-detected on the command line. **An `app.json` that carries an install command now decides which file the setup file is** — the manifest has already answered what installs this package, and reading the file list instead overrode the answer. The wizard still starts from a vendor `.exe` or `.msi` and says why when handed a script; a script dropped on the window opens the folder around it with that script selected. **A detection script the package does not hold is no longer summarised as a finished rule** while the checklist beside it said the rule was not set and named nothing: a script name without a path is looked for in the package folder, and an `app.json` written for a folder next to this one is the ordinary way it is not there. See [Packaging a folder that installs with a script](#packaging-a-folder-that-installs-with-a-script).
 - **2026-09-08 — Studio 2.5 / Publish 1.6 / Build 2.3** — Four found by reading the three scripts end to end, each now covered by a self-test. **A `[` in the installed-app picker's search box exited the process** — the filter went into `-like`, an unterminated character class threw `WildcardPatternException`, and it came out of a `TextChanged` handler with nothing above it to catch; entries in Apps and features really are named `Java 8 Update 391 [64-bit]`. Matching is `IndexOf` now. **A manifest value none of the dropdowns offers is added to the list instead of dropped** — dropping it did not clear the combo, it left it on the *previously opened package's* selection, the editor showed that, and saving wrote it back, so an `app.json` with `architecture: neutral` or `detectionType: doesNotExist` (both legal to Intune, neither in the list) came back rewritten. **A build that wrote no `.intunewin` could report one that was already there** — `IntuneWinAppUtil.exe` exits 0 even when it writes nothing, and the newest-file fallback had no time bound, so a package left by an earlier build of a differently named setup file was hashed, reported as `Produced`, and uploaded as a new version. **A duplicate-name check that could not run now stops the publish** — it used to warn and carry on, which reads as "Intune has no app of this name": without `-Update` that creates the duplicate the check exists to prevent, and with `-Update` it creates a *second* app instead of updating the first, so the real app keeps its assignments and its old content and no device sees the new version. Graph throttling on a filtered `mobileApps` query is the ordinary way in.
 
   Four smaller ones from the same read. **Closing the window during a run is asked about first**, and stops the run before the window goes — the runspace died with the window, so an interrupted publish could leave an app in Intune with no content, which is what Cancel warns about and the X did not. **The 8 MB scan that identifies the installer engine reads in a loop** — `Read` may return less than it was asked for, and a single call left the rest of the buffer as zeros, so an ordinary Inno Setup installer on a share could come back as `unknown` with no silent switches. **`-AllowDuplicateName` is refused alongside `-AppId`** as well as `-Update`; naming the app to update contradicts creating a second one either way, and `-AppId` used to slip past the check and then be ignored. **A block upload is retried** on no response, 408, 429 and 5xx — four attempts with a short backoff, because one transient 500 used to throw away the whole upload. A 403 is not retried: that is an expired SAS uri, which the renewal handles. The self-test now drives the publish engine's whole create-upload-commit chain against a stubbed Graph and a stubbed Azure Storage, so it needs no tenant, module or network.

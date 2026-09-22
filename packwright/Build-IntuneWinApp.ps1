@@ -6,8 +6,8 @@
     Advanced function wrapper for IntuneWinAppUtil.exe that:
       - Can be run directly with parameters:  .\Build-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip"
         or dot-sourced to load the Build-IntuneWinApp function into the session
-      - Auto-detects the setup file when -SetupFile is omitted
-        (Invoke-AppDeployToolkit.exe for PSADT packages, otherwise a single .msi in the folder)
+      - Auto-detects the setup file when -SetupFile is omitted (Invoke-AppDeployToolkit.exe
+        for PSADT packages, otherwise a single .msi, otherwise a single Install*.ps1/.cmd/.bat)
       - Creates ".\Output\<PackageName>" (relative to the script) unless -OutputRoot is specified
       - Writes a per-build log into the output folder
       - Backs up an existing .intunewin as <name>-<timestamp>.bak.intunewin and prunes old
@@ -23,8 +23,9 @@
     Folder containing installation files (e.g., C:\psadt\MSOLEDB 18.7.5). Accepts pipeline input.
 
 .PARAMETER SetupFile
-    Setup file located inside SourceFolder. Optional: auto-detected if the folder contains
-    Invoke-AppDeployToolkit.exe or exactly one .msi file.
+    Setup file located inside SourceFolder — any file the package is installed from, an
+    install script included. Optional: auto-detected if the folder contains
+    Invoke-AppDeployToolkit.exe, exactly one .msi, or exactly one Install*.ps1/.cmd/.bat.
 
 .PARAMETER OutputRoot
     Optional base output folder. Defaults to ".\Output" relative to the script file.
@@ -67,6 +68,12 @@
     Author    : Love A
     File Name : Build-IntuneWinApp.ps1 (can be used as a module .psm1 as well)
 .VERSION
+    2026-09-22 - 2.4 - Auto-detection accepts a single Install*.ps1/.cmd/.bat in a folder
+                       that holds no .msi, so a package built around an install script no
+                       longer has to be given -SetupFile by hand. -SetupFile always took
+                       any file — IntuneWinAppUtil.exe records whatever it is handed and
+                       only reads properties out of an .msi — it was the guess that stopped
+                       at PSADT and MSI, and the error now counts the scripts it saw too.
     2026-09-08 - 2.3 - A build that wrote no .intunewin can no longer report one that was
                        already in the output folder. IntuneWinAppUtil.exe exits 0 even when
                        it writes nothing, and the fallback that looks for the newest
@@ -211,6 +218,12 @@ function Build-IntuneWinApp {
         # Auto-detect setup file if not specified (kept in a local so pipeline items don't inherit it)
         $setup = $SetupFile
         if (-not $setup) {
+            # A package built around an install script is as ordinary as one built around an
+            # MSI — IntuneWinAppUtil records whatever file it is given and only reads MSI
+            # properties out of an .msi. Only an unambiguous Install*.ps1/.cmd/.bat counts:
+            # guessing between several is how the wrong entry point gets recorded silently.
+            $installScripts = @(Get-ChildItem -LiteralPath $resolvedSource -File |
+                                Where-Object { $_.Extension -in '.ps1', '.cmd', '.bat' -and $_.BaseName -match '^install' })
             if (Test-Path -LiteralPath (Join-Path -Path $resolvedSource -ChildPath 'Invoke-AppDeployToolkit.exe')) {
                 $setup = 'Invoke-AppDeployToolkit.exe'
             }
@@ -219,8 +232,11 @@ function Build-IntuneWinApp {
                 if ($msiFiles.Count -eq 1) {
                     $setup = $msiFiles[0].Name
                 }
+                elseif ($msiFiles.Count -eq 0 -and $installScripts.Count -eq 1) {
+                    $setup = $installScripts[0].Name
+                }
                 else {
-                    throw "Could not auto-detect setup file in '$resolvedSource' (no Invoke-AppDeployToolkit.exe, found $($msiFiles.Count) .msi files). Specify -SetupFile."
+                    throw "Could not auto-detect setup file in '$resolvedSource' (no Invoke-AppDeployToolkit.exe, found $($msiFiles.Count) .msi files and $($installScripts.Count) install scripts). Specify -SetupFile."
                 }
             }
         }

@@ -50,6 +50,25 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
+    2026-09-22 - 2.6 - A package that installs with a script is a package. The setup file
+                       list held .exe and .msi only, so a payload folder whose entry point
+                       is Install-App.ps1 opened on the application's own .exe — the one
+                       file in there nobody meant Intune to run — and a folder holding
+                       neither came back with no setup file and nothing that could be
+                       published at all. .ps1, .cmd and .bat are offered as well, with
+                       commands derived for them (powershell.exe -NoProfile
+                       -ExecutionPolicy Bypass -File, and the Uninstall- script beside it
+                       when there is one). An app.json that carries an install command now
+                       decides which file that is: the manifest has already answered what
+                       installs this package, and reading the file list instead overrode
+                       the answer. The wizard still starts from a vendor .exe or .msi and
+                       says why when handed a script; an install script dropped on the
+                       window opens the folder around it with that script selected.
+                       A detection script the package does not hold is no longer summarised
+                       as a finished rule while the checklist beside it says the rule is
+                       not set and names nothing. A script name without a path is looked
+                       for in the package folder, and an app.json written for a folder next
+                       to this one is the ordinary way it is not there.
     2026-09-08 - 2.5 - What a package folder carries over from the previous release is
                        caught instead of published. A command naming a file the package
                        does not hold is a checklist item rather than a line in the log:
@@ -477,7 +496,7 @@ $script:MainXaml = @'
                   <TextBlock Text="I have a package folder" FontSize="15" FontWeight="SemiBold"
                              Foreground="#1A1C20" TextWrapping="Wrap"/>
                   <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#5B6169" TextWrapping="Wrap"
-                             Text="Open a folder that already holds the installation files — a PSADT package, an MSI or a plain installer. Existing app.json settings are loaded."/>
+                             Text="Open a folder that already holds the installation files — a PSADT package, an MSI, a plain installer, or a payload that installs with a script. Existing app.json settings are loaded."/>
                   <TextBlock Margin="0,10,0,0" FontSize="12" FontWeight="SemiBold" Foreground="#0F6CBD"
                              Text="Open a folder..."/>
                 </StackPanel>
@@ -1083,6 +1102,50 @@ function Get-CommandFileIssue {
     $null
 }
 
+# The file in the package root that a command line actually runs, or $null. A hand-written
+# app.json has already answered "what installs this package" — 'powershell.exe -File
+# .\Install-App.ps1' names the script, not the vendor .exe that happens to sit beside it in
+# the payload — so the setup file follows the command rather than the file list.
+function Get-SetupCommandFile {
+    param([string]$Command, [string[]]$Candidate)
+    if (-not "$Command".Trim() -or -not $Candidate) { return $null }
+    foreach ($token in @(Split-CommandToken $Command | ForEach-Object { $_.Trim() })) {
+        if ($token -match '[%$]') { continue }                    # expands to something we cannot know
+        $leaf = try { [IO.Path]::GetFileName($token) } catch { $null }
+        if (-not $leaf -or $leaf -in $script:SystemExe) { continue }
+        $match = @($Candidate | Where-Object { $_ -ieq $leaf })
+        if ($match.Count) { return $match[0] }
+    }
+    $null
+}
+
+# How Windows runs a script from the package root. Intune extracts the package and runs the
+# command with that folder as the working directory, so the leading .\ is what makes the
+# relative name resolve there — and what lets Get-CommandFileIssue check it is really here.
+function Get-ScriptRunCommand {
+    param([Parameter(Mandatory)][string]$Script)
+    if ([IO.Path]::GetExtension($Script) -ieq '.ps1') {
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `".\$Script`""
+    }
+    else { "cmd.exe /c `".\$Script`"" }
+}
+
+# The uninstall script belonging to an install script: the same name with Install swapped
+# for Uninstall, else a plain uninstall file of the same type next to it.
+function Find-UninstallScript {
+    param([Parameter(Mandatory)][string]$Folder, [Parameter(Mandatory)][string]$Script)
+    $extension = [IO.Path]::GetExtension($Script)
+    $guesses = @()
+    if ($Script -match 'install') { $guesses += ($Script -ireplace '(?<!un)install', 'Uninstall') }
+    $guesses += "Uninstall$extension"
+    foreach ($guess in $guesses) {
+        if ($guess -ieq $Script) { continue }
+        $path = Join-Path $Folder $guess
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return (Get-Item -LiteralPath $path).Name }
+    }
+    $null
+}
+
 # The product code of the MSI this package actually holds, or $null when there is not
 # exactly one to be certain about. Both lookups behind it are cached.
 function Get-PackageProductCode {
@@ -1095,13 +1158,20 @@ function Get-PackageProductCode {
 # '24.08' and '24.8.0.0' are one release written two ways — the MSI pads its ProductVersion
 # and the vendor does not. Compare component by component as numbers and let the shorter
 # one match as a prefix, so only a real difference is ever reported.
+#
+# Compared as digit strings with the padding removed, never cast to [int]. A component here
+# is whatever survives stripping the non-digits, and that is not bounded by anything: the
+# '+<commit sha>' the .NET SDK appends to ProductVersion collapses into a 29-digit run, and
+# casting it took the whole window down through ShowDialog the moment a folder was opened.
+# Two runs of digits are equal exactly when they are equal once the leading zeros are gone,
+# so the comparison that cannot overflow is also the comparison that was wanted.
 function Test-VersionMatch {
     param([string]$Left, [string]$Right)
     $leftParts  = @("$Left".Trim()  -split '[.,]' | ForEach-Object { $_ -replace '\D' })
     $rightParts = @("$Right".Trim() -split '[.,]' | ForEach-Object { $_ -replace '\D' })
     if (-not $leftParts[0] -or -not $rightParts[0]) { return "$Left".Trim() -ieq "$Right".Trim() }
     for ($i = 0; $i -lt [Math]::Min($leftParts.Count, $rightParts.Count); $i++) {
-        if ([int]"0$($leftParts[$i])" -ne [int]"0$($rightParts[$i])") { return $false }
+        if ("$($leftParts[$i])".TrimStart('0') -ne "$($rightParts[$i])".TrimStart('0')) { return $false }
     }
     $true
 }
@@ -1134,9 +1204,14 @@ function Get-InstallerInfo {
         $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($file.FullName)
         if ("$($versionInfo.ProductName)".Trim()) { $info.Name = "$($versionInfo.ProductName)".Trim() }
         if ("$($versionInfo.CompanyName)".Trim()) { $info.Publisher = "$($versionInfo.CompanyName)".Trim() }
+        # ProductVersion is the assembly's InformationalVersion, which since .NET 8 carries
+        # the build's commit sha by default: '1.0.0+8851d91c4e27...'. SemVer says everything
+        # after '+' is build metadata that no comparison may consider, and Intune has no use
+        # for it either — a package labelled with the sha reads as a different release on
+        # every rebuild. Drop it and keep any '-beta.3', which is a real part of the version.
         $rawVersion = "$($versionInfo.ProductVersion)".Trim()
         if (-not $rawVersion) { $rawVersion = "$($versionInfo.FileVersion)".Trim() }
-        if ($rawVersion) { $info.Version = ($rawVersion -split '\s')[0] }
+        if ($rawVersion) { $info.Version = (($rawVersion -split '\s')[0] -split '\+')[0] }
     } catch {}
 
     # Read returns what it has to hand, not what it was asked for, and is allowed to come
@@ -1417,6 +1492,7 @@ function Get-SetupKind {
     if (-not $Setup) { 'none' }
     elseif ($Setup -ieq 'Invoke-AppDeployToolkit.exe') { 'psadt' }
     elseif ($Setup -like '*.msi') { 'msi' }
+    elseif ([IO.Path]::GetExtension($Setup) -in '.ps1', '.cmd', '.bat') { 'script' }
     else { 'exe' }
 }
 
@@ -1442,6 +1518,20 @@ function Get-SetupDefault {
             $result.ProductCode = $msi.ProductCode
             if ($msi.ProductCode) { $result.Uninstall = "msiexec /x `"$($msi.ProductCode)`" /qn /norestart" }
             $result.Hint = 'MSI package — installs silently with msiexec /qn.'
+        }
+        'script' {
+            # Nothing to read out of a script: no version resource, and the engine
+            # signatures Get-InstallerInfo scans 8 MB for would only ever match the script's
+            # own text. What it is worth saying is how Windows has to be asked to run it.
+            $result.Install = Get-ScriptRunCommand -Script $Setup
+            $uninstallScript = Find-UninstallScript -Folder $Folder -Script $Setup
+            if ($uninstallScript) { $result.Uninstall = Get-ScriptRunCommand -Script $uninstallScript }
+            $result.Hint = if ([IO.Path]::GetExtension($Setup) -ieq '.ps1') {
+                'Script package — Intune extracts the folder and runs this script from it, so paths inside it are relative to the package.' +
+                $(if ($uninstallScript) { " $uninstallScript is used to uninstall." } else { ' Nothing here uninstalls it — add an uninstall command if the app needs one.' })
+            } else {
+                'Script package — Intune extracts the folder and runs this file from it with cmd.exe.'
+            }
         }
         'exe' {
             try {
@@ -1529,9 +1619,17 @@ function Get-DetectionSummary {
             else { @{ Ok = $true; Text = "Intune checks that $path\$name $operatorWord $($ui.TxtDetValue.Text.Trim())." } }
         }
         'script' {
+            # A name that resolves to nothing is the one this used to call a finished rule,
+            # while the checklist beside it said "Detection rule is not set" and named
+            # nothing. app.json arrives with a bare 'Detect-App.ps1' more often than not,
+            # and a bare name is looked for in the package folder — which is not where the
+            # script is when the manifest was written for a folder next to this one.
             $file = $ui.TxtScript.Text.Trim()
-            if ($file) { @{ Ok = $true; Text = "A PowerShell script ($([IO.Path]::GetFileName($file))) decides whether the app is installed." } }
-            else { @{ Ok = $false; Text = 'Pick the PowerShell script that checks whether the app is installed.' } }
+            if (-not $file) { @{ Ok = $false; Text = 'Pick the PowerShell script that checks whether the app is installed.' } }
+            elseif (-not (Resolve-DetectionScript)) {
+                @{ Ok = $false; Text = "The detection script $file was not found. A name without a path is looked for in the package folder — copy the script in beside app.json, or pick it with the button." }
+            }
+            else { @{ Ok = $true; Text = "A PowerShell script ($([IO.Path]::GetFileName($file))) decides whether the app is installed." } }
         }
         default { @{ Ok = $false; Text = 'Pick a detection method.' } }
     }
@@ -1689,27 +1787,38 @@ function Open-PackageFolder {
     $script:Loading = $true
 
     try {
-        # Setup file candidates
-        $ui.CmbSetup.Items.Clear()
-        $candidates = @(Get-ChildItem -LiteralPath $Folder -File |
-                        Where-Object { $_.Extension -in '.exe', '.msi' } | Select-Object -ExpandProperty Name)
-        foreach ($candidate in $candidates) { [void]$ui.CmbSetup.Items.Add($candidate) }
-        $msiCandidates = @($candidates | Where-Object { $_ -like '*.msi' })
-        if ($PreferSetup -and $candidates -contains $PreferSetup)          { $ui.CmbSetup.SelectedItem = $PreferSetup }
-        elseif ($candidates -contains 'Invoke-AppDeployToolkit.exe')       { $ui.CmbSetup.SelectedItem = 'Invoke-AppDeployToolkit.exe' }
-        elseif ($msiCandidates.Count -eq 1)                                { $ui.CmbSetup.SelectedItem = $msiCandidates[0] }
-        elseif ($candidates.Count -gt 0)                                   { $ui.CmbSetup.SelectedIndex = 0 }
-
-        $setup = "$($ui.CmbSetup.SelectedItem)"
-        $defaults = if ($setup) { Get-SetupDefault -Folder $Folder -Setup $setup } else { @{ Kind = 'none' } }
-        $psadt = if ($defaults.Kind -eq 'psadt') { Get-PsadtMetadata -Folder $Folder } else { @{} }
-
         $manifestPath = Join-Path $Folder 'app.json'
         $manifest = $null
         if (Test-Path -LiteralPath $manifestPath) {
             try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
             catch { Write-GuiLog "WARNING: app.json could not be read: $($_.Exception.Message)" }
         }
+
+        # Setup file candidates. A script counts as one: a package whose entry point is
+        # 'Install-App.ps1' is as ordinary as one built around a vendor .exe, and the
+        # extension only ever decided what IntuneWinAppUtil records and what commands this
+        # tool suggests. What the package installs with is the install command, so an
+        # app.json that carries one already names the setup file — a payload folder holding
+        # both the script and the application's own .exe used to be read as the .exe, which
+        # is the one file in there nobody meant Intune to run.
+        $ui.CmbSetup.Items.Clear()
+        $candidates = @(Get-ChildItem -LiteralPath $Folder -File |
+                        Where-Object { $_.Extension -in '.exe', '.msi', '.ps1', '.cmd', '.bat' } |
+                        Select-Object -ExpandProperty Name)
+        foreach ($candidate in $candidates) { [void]$ui.CmbSetup.Items.Add($candidate) }
+        $msiCandidates  = @($candidates | Where-Object { $_ -like '*.msi' })
+        $exeCandidates  = @($candidates | Where-Object { $_ -like '*.exe' })
+        $manifestSetup  = Get-SetupCommandFile -Command $manifest.installCommandLine -Candidate $candidates
+        if ($PreferSetup -and $candidates -contains $PreferSetup)          { $ui.CmbSetup.SelectedItem = $PreferSetup }
+        elseif ($manifestSetup)                                            { $ui.CmbSetup.SelectedItem = $manifestSetup }
+        elseif ($candidates -contains 'Invoke-AppDeployToolkit.exe')       { $ui.CmbSetup.SelectedItem = 'Invoke-AppDeployToolkit.exe' }
+        elseif ($msiCandidates.Count -eq 1)                                { $ui.CmbSetup.SelectedItem = $msiCandidates[0] }
+        elseif ($exeCandidates.Count -gt 0)                                { $ui.CmbSetup.SelectedItem = $exeCandidates[0] }
+        elseif ($candidates.Count -gt 0)                                   { $ui.CmbSetup.SelectedIndex = 0 }
+
+        $setup = "$($ui.CmbSetup.SelectedItem)"
+        $defaults = if ($setup) { Get-SetupDefault -Folder $Folder -Setup $setup } else { @{ Kind = 'none' } }
+        $psadt = if ($defaults.Kind -eq 'psadt') { Get-PsadtMetadata -Folder $Folder } else { @{} }
 
         # Where each value may come from, best source first
         $fileTag = switch ($defaults.Kind) { 'msi' { 'MSI' } 'exe' { 'installer' } default { 'setup file' } }
@@ -1808,8 +1917,9 @@ function Open-PackageFolder {
     Update-Readiness
     Add-RecentPackage -Folder $Folder
     $kindText = switch ($defaults.Kind) {
-        'psadt' { 'PSADT package' } 'msi' { 'MSI package' }
-        'exe'   { "installer ($($defaults.Hint -replace ' —.*',''))" } default { 'no setup file found' }
+        'psadt'  { 'PSADT package' } 'msi' { 'MSI package' }
+        'script' { "script package — $setup" }
+        'exe'    { "installer ($($defaults.Hint -replace ' —.*',''))" } default { 'no setup file found' }
     }
     Write-GuiLog "Opened $Folder ($kindText)"
     Set-StatusText "Opened '$(Split-Path -Leaf $Folder)'. Review the fields, then publish."
@@ -2020,9 +2130,8 @@ function Update-Readiness {
     $hasPublisher = [bool]$ui.TxtPublisher.Text.Trim()
     $commandIssue = Get-CommandIssue
     $detectionOk  = Update-DetectionSummary
-    if ((Get-DetTypeValue) -eq 'script') { $detectionOk = [bool](Resolve-DetectionScript) }
 
-    Set-CheckLine $ui.ChkSetup     $hasSetup     $(if ($hasSetup) { "Setup file: $($ui.CmbSetup.SelectedItem)" } else { 'No setup file in this folder' })
+    Set-CheckLine $ui.ChkSetup     $hasSetup     $(if ($hasSetup) { "Setup file: $($ui.CmbSetup.SelectedItem)" } else { 'No installer, script or MSI in this folder' })
     Set-CheckLine $ui.ChkName      $hasName      $(if ($hasName) { 'Name' } else { 'Name is missing' })
     Set-CheckLine $ui.ChkPublisher $hasPublisher $(if ($hasPublisher) { 'Publisher' } else { 'Publisher is missing' })
     Set-CheckLine $ui.ChkCommand   (-not $commandIssue) $(if ($commandIssue) { $commandIssue } else { 'Install command' })
@@ -2053,7 +2162,7 @@ function Test-ReadyToRun {
     if (-not $script:LoadedFolder) { Set-StatusText 'Open a package folder first.'; return $false }
     if (-not "$($ui.CmbSetup.SelectedItem)") {
         $ui.ExpAdvanced.IsExpanded = $true
-        Set-StatusText 'This folder has no .exe or .msi to package. Pick another folder.'
+        Set-StatusText 'This folder has nothing to package — no .exe, .msi, .ps1, .cmd or .bat. Pick another folder.'
         return $false
     }
     if (-not $ForPublish) { return $true }
@@ -2211,9 +2320,9 @@ Publishing does two things: the folder is packed into an .intunewin file, and an
        Body  = @'
 I have an installer file — pick the .exe or .msi you got from the vendor. A five-step wizard creates the package folder and fills in the silent install switches for the installer type it recognises (MSI, Inno Setup, NSIS, InstallShield, WiX Burn).
 
-I have a package folder — open a folder that already holds the installation files: a PSADT package, an MSI, or a plain installer. Anything previously saved in the folder is loaded.
+I have a package folder — open a folder that already holds the installation files: a PSADT package, an MSI, a plain installer, or a payload folder that installs with a .ps1 or .cmd script. Anything previously saved in the folder is loaded.
 
-You can also drag a package folder or an installer straight onto the window.
+You can also drag a package folder, an installer or an install script straight onto the window.
 '@ }
     @{ Title = 'What Intune insists on'
        Body  = @'
@@ -2748,6 +2857,13 @@ function Test-WizStep {
         1 {
             $path = $c.WTxtInstaller.Text.Trim()
             if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { Show-WizMessage 'Pick an installation file first.'; return $false }
+            # A script is a perfectly good setup file, but not here: this wizard builds a
+            # package around one file it copies in, and a script installs the payload that
+            # has to be next to it. That package already exists as a folder.
+            if ([IO.Path]::GetExtension($path) -in '.ps1', '.cmd', '.bat') {
+                Show-WizMessage 'This wizard starts from a vendor .exe or .msi. A package that installs with a script is a folder — close this and use "I have a package folder" on the start screen, pointing at the folder the script and its files are in.'
+                return $false
+            }
             if ([IO.Path]::GetExtension($path) -notin '.exe', '.msi') { Show-WizMessage 'The installation file must be an .exe or .msi.'; return $false }
             if (-not $c.WTxtRoot.Text.Trim()) { Show-WizMessage 'Pick a folder where the package should be created.'; return $false }
             # Read-WizInstaller fills in step 2 from the file; it runs for every new path
@@ -3428,7 +3544,12 @@ $window.Add_Drop({
     $first = $dropped[0]
     if (Test-Path -LiteralPath $first -PathType Container) { [void](Open-PackageFolder -Folder $first) }
     elseif ([IO.Path]::GetExtension($first) -in '.exe', '.msi') { Show-PackageWizard -InstallerPath $first }
-    else { Set-StatusText 'Drop a package folder, or an .exe/.msi installer.' }
+    # An install script is dropped from inside the package it installs, so the folder around
+    # it is the package — open that, with the script already chosen as the setup file.
+    elseif ([IO.Path]::GetExtension($first) -in '.ps1', '.cmd', '.bat') {
+        [void](Open-PackageFolder -Folder (Split-Path -Parent $first) -PreferSetup (Split-Path -Leaf $first))
+    }
+    else { Set-StatusText 'Drop a package folder, an .exe/.msi installer, or the script a package installs with.' }
 })
 #endregion
 
@@ -3786,6 +3907,69 @@ if ($TestLoad) {
     Assert-Test 'Command naming a replaced binary is rewritten' ($ui.TxtInstall.Text -match 'other\.exe') $ui.TxtInstall.Text
     $ui.CmbSetup.SelectedItem = 'nsis.exe'
 
+    # --- A package that installs with a script ------------------------------------
+    # The payload folder of an application built in house: its own .exe is in there, and
+    # what Intune has to run is the install script beside it. The .exe used to win because
+    # an .exe and an .msi were the only things the setup list could hold, and a folder with
+    # neither came back with no setup file and nothing that could be published at all.
+    Assert-Test 'A .ps1 is a script setup file' ((Get-SetupKind 'Install-App.ps1') -eq 'script')
+    Assert-Test 'A .cmd is a script setup file' ((Get-SetupKind 'install.cmd') -eq 'script')
+    Assert-Test 'An .exe is still an installer' ((Get-SetupKind 'setup.exe') -eq 'exe')
+    Assert-Test 'PSADT still outranks the extension' ((Get-SetupKind 'Invoke-AppDeployToolkit.exe') -eq 'psadt')
+    Assert-Test 'A script is run through powershell.exe, from the package folder' (
+        (Get-ScriptRunCommand -Script 'Install-App.ps1') -eq
+        'powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Install-App.ps1"') (Get-ScriptRunCommand -Script 'Install-App.ps1')
+
+    $scriptPkg = Join-Path $testRoot 'pkg\Script Package'
+    [void](New-Item -ItemType Directory -Path $scriptPkg -Force)
+    [IO.File]::WriteAllText((Join-Path $scriptPkg 'Install-App.ps1'),   'exit 0')
+    [IO.File]::WriteAllText((Join-Path $scriptPkg 'Uninstall-App.ps1'), 'exit 0')
+    [IO.File]::WriteAllText((Join-Path $scriptPkg 'Detect-App.ps1'),    'exit 0')
+    [IO.File]::WriteAllText((Join-Path $scriptPkg 'App.exe'), 'xx')   # the payload, not the entry point
+
+    $scriptDefaults = Get-SetupDefault -Folder $scriptPkg -Setup 'Install-App.ps1'
+    Assert-Test 'A script package suggests a command that can run' ($scriptDefaults.Install -match 'powershell\.exe .*Install-App\.ps1') $scriptDefaults.Install
+    Assert-Test 'The uninstall script beside it is found' ($scriptDefaults.Uninstall -match 'Uninstall-App\.ps1') $scriptDefaults.Uninstall
+    Assert-Test 'A script has no version to disagree with the package' (-not $scriptDefaults.Version)
+    # No app.json to say otherwise, and the .exe is still the guess it always was
+    Assert-Test 'Without a manifest the payload .exe is still picked' (
+        (Open-PackageFolder -Folder $scriptPkg) -and "$($ui.CmbSetup.SelectedItem)" -eq 'App.exe') "$($ui.CmbSetup.SelectedItem)"
+    # The .\ the suggestion carries is what makes it resolve where Intune runs it, and it is
+    # also what lets the checklist confirm the file is really in the package
+    Assert-Test 'The suggested command runs a file the package holds' ($null -eq (Get-CommandFileIssue $scriptDefaults.Install)) $scriptDefaults.Install
+
+    # ...and with one, the file its install command runs is the setup file
+    ([ordered]@{
+        displayName = 'Script Package'; publisher = 'IT'; version = '1.0'
+        installCommandLine   = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-App.ps1'
+        uninstallCommandLine = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-App.ps1'
+        runAsAccount = 'system'; restartBehavior = 'suppress'
+        architecture = 'x64'; minimumWindowsRelease = '1607'
+        detection = [ordered]@{ type = 'script'; scriptFile = 'Detect-App.ps1' }
+    } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $scriptPkg 'app.json') -Encoding UTF8
+    Assert-Test 'app.json opens on the file its install command runs' (
+        (Open-PackageFolder -Folder $scriptPkg) -and "$($ui.CmbSetup.SelectedItem)" -eq 'Install-App.ps1') "$($ui.CmbSetup.SelectedItem)"
+    Assert-Test 'The install command from app.json is kept as it was written' ($ui.TxtInstall.Text -match 'Install-App\.ps1') $ui.TxtInstall.Text
+    Assert-Test 'A script package is publish-ready' (Update-Readiness) "$($ui.TxtReadyTitle.Text) — $($ui.ChkSetup.Text) / $($ui.ChkDetection.Text)"
+
+    # A detection script the package does not hold was summarised as a finished rule while
+    # the checklist beside it said the rule was not set and named nothing
+    $ui.TxtScript.Text = 'Detect-Elsewhere.ps1'
+    $missingScript = Get-DetectionSummary
+    Assert-Test 'A detection script that is not here is not a finished rule' (
+        (-not $missingScript.Ok) -and $missingScript.Text -match 'was not found') $missingScript.Text
+    Assert-Test 'And it blocks publishing' (-not (Update-Readiness))
+
+    # A folder holding nothing but scripts is a package too
+    $onlyScripts = Join-Path $testRoot 'pkg\Only Scripts'
+    [void](New-Item -ItemType Directory -Path $onlyScripts -Force)
+    [IO.File]::WriteAllText((Join-Path $onlyScripts 'Install-Thing.ps1'), 'exit 0')
+    Assert-Test 'A folder with only scripts has a setup file' (
+        (Open-PackageFolder -Folder $onlyScripts) -and "$($ui.CmbSetup.SelectedItem)" -eq 'Install-Thing.ps1') "$($ui.CmbSetup.SelectedItem)"
+    Assert-Test 'Building it is not turned away for want of an .exe' (Test-ReadyToRun)
+
+    [void](Open-PackageFolder -Folder $scaffolded -PreferSetup 'nsis.exe')
+
     # --- Commands that name a file the package does not hold ----------------------
     Assert-Test 'Bare name present in the package passes' ($null -eq (Get-CommandFileIssue '"nsis.exe" /S'))
     Assert-Test 'Bare name missing from the package is caught' ((Get-CommandFileIssue '"7z2408-x64.msi" /qn') -eq '7z2408-x64.msi')
@@ -3805,6 +3989,11 @@ if ($TestLoad) {
     # --- The detection value follows the version ----------------------------------
     Assert-Test 'Versions padded by the MSI still match' (Test-VersionMatch '24.08' '24.8.0.0')
     Assert-Test 'Different versions do not match' (-not (Test-VersionMatch '24.08' '25.01'))
+    # A .NET build's ProductVersion carries the commit sha, and the digits left in it after
+    # '+8851d91c4e27487a6596b1a11f59c81cf8dd5522' overflow anything narrower than a string.
+    Assert-Test 'A commit sha in the version does not take the window down' `
+        (-not (Test-VersionMatch '1.0.0+8851d91c4e27487a6596b1a11f59c81cf8dd5522' '1.0.0.0'))
+    Assert-Test 'A prerelease tag still matches the release it belongs to' (Test-VersionMatch '2.0.0-beta.3' '2.0.0')
     Set-DetTypeValue 'registry'
     Set-ComboValue $ui.CmbDetCheck 'version'
     $ui.TxtKeyPath.Text = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SelfTest'
