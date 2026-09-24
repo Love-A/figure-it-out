@@ -1444,8 +1444,8 @@ function Get-ComboValue {
 # Select Value in the combo. A value the list does not offer is added to it rather than
 # dropped, because dropping it did not leave the combo empty — it left it on whatever the
 # previously opened package had selected, the UI then showed that instead, and saving wrote
-# it back over the manifest. Intune accepts more than these lists offer: applicableArchitectures
-# is a flags enum ('neutral', comma combinations), and the registry and file detection types
+# it back over the manifest. Intune accepts more than these lists offer: the architecture
+# takes 'neutral' and comma combinations, and the registry and file detection types
 # have doesNotExist, modifiedDate, createdDate and sizeInMB besides the four here. Adding the
 # value keeps app.json round-tripping through the editor untouched, and shows what it says.
 function Set-ComboValue {
@@ -4246,10 +4246,11 @@ if ($TestLoad) {
 
     $publishProbe = {
         param([string]$stubPublishScript, [string]$stubPackagePath, [hashtable]$stubArgs,
-              [bool]$stubThrottleLookup, [int]$stubBlobFailures)
+              [bool]$stubThrottleLookup, [int]$stubBlobFailures, [hashtable]$stubExistingApp)
         # Get-Command finds these instead of the real module, so no tenant is ever touched,
         # and the whole create-upload-commit chain runs against them.
         $script:StubCalls     = @()
+        $script:StubAppBodies = @()
         $script:StubCommitted = $false
         $script:StubBlobLeft  = $stubBlobFailures
         function Connect-MgGraph { }
@@ -4261,9 +4262,14 @@ if ($TestLoad) {
         function Invoke-MgGraphRequest {
             param($Method, $Uri, $Body, $ContentType)
             $script:StubCalls += "$Method $Uri"
+            # What the app itself is sent, on create and on update, one compressed line each
+            if (($Method -in 'POST', 'PATCH') -and ($Uri -match '/mobileApps(/[^/]+)?$')) {
+                $script:StubAppBodies += "$Method $($Body | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 20)"
+            }
             if ($Uri -like '*$filter=*') {
                 if ($stubThrottleLookup) { throw 'Request_ThrottledTemporarily: too many requests' }
-                return @{ value = @() }
+                # The app an -Update finds by name, when this run is given one
+                return @{ value = @($stubExistingApp | Where-Object { $_ }) }
             }
             if ($Uri -like '*/commit')                                  { $script:StubCommitted = $true; return @{} }
             if ($Method -eq 'GET' -and $Uri -like '*/files/*') {
@@ -4273,7 +4279,13 @@ if ($TestLoad) {
             if ($Method -eq 'POST' -and $Uri -like '*/contentVersions') { return @{ id = '1' } }
             if ($Method -eq 'POST' -and $Uri -like '*/files')           { return @{ id = 'stub-file-1' } }
             if ($Method -eq 'POST' -and $Uri -like '*/mobileApps')      { return @{ id = 'stub-app-0001' } }
-            if ($Method -eq 'PATCH')                                    { return @{} }
+            if ($Method -eq 'PATCH') {
+                # Intune's answer since allowedArchitectures replaced applicableArchitectures
+                if ($Body -match '"applicableArchitectures"') {
+                    throw 'The ApplicableArchitectures property can only be set via ODataAction: enableApplicableArchitectures.'
+                }
+                return @{}
+            }
             throw "the stub was asked for something this test does not model: $Method $Uri"
         }
         # Azure Storage, refusing the first $stubBlobFailures block PUTs with a status the
@@ -4294,20 +4306,23 @@ if ($TestLoad) {
             $published = Publish-IntuneWinApp -Path $stubPackagePath -Confirm:$false @stubArgs
             "RETURNED:$($published.Action):$($published.AppId)"
         } catch { "THREW:$($_.Exception.Message)" }
-        "$outcome@@$($script:StubCalls -join ' | ')"
+        "$outcome@@$($script:StubCalls -join ' | ')@@$($script:StubAppBodies -join "`n")"
     }
     function Invoke-PublishProbe {
-        param([hashtable]$Arguments = @{}, [bool]$ThrottleLookup = $false, [int]$BlobFailures = 0)
+        param([hashtable]$Arguments = @{}, [bool]$ThrottleLookup = $false, [int]$BlobFailures = 0,
+              [hashtable]$ExistingApp)
         $probeRunspace = [runspacefactory]::CreateRunspace()
         $probeRunspace.Open()
         $probeShell = [powershell]::Create()
         $probeShell.Runspace = $probeRunspace
         [void]$probeShell.AddScript($publishProbe.ToString()).AddParameters(@{
             stubPublishScript = $script:EnginePublish; stubPackagePath = $probePackage
-            stubArgs = $Arguments; stubThrottleLookup = $ThrottleLookup; stubBlobFailures = $BlobFailures })
+            stubArgs = $Arguments; stubThrottleLookup = $ThrottleLookup; stubBlobFailures = $BlobFailures
+            stubExistingApp = $ExistingApp })
         $answer = "$(@($probeShell.Invoke()) | Select-Object -Last 1)"
         $probeShell.Dispose(); $probeRunspace.Dispose()
-        @{ Outcome = ($answer -split '@@')[0]; Calls = "$(($answer -split '@@')[1])" }
+        $parts = $answer -split '@@'
+        @{ Outcome = $parts[0]; Calls = "$($parts[1])"; Bodies = @("$($parts[2])" -split "`n" | Where-Object { $_ }) }
     }
 
     $throttled = Invoke-PublishProbe -Arguments @{ Update = $true } -ThrottleLookup $true
@@ -4339,6 +4354,45 @@ if ($TestLoad) {
         "$($retried.Outcome) — $(@($retried.Calls -split ' \| ' | Where-Object { $_ -eq 'PUT-BLOB' }).Count) block PUTs"
     Assert-Test 'The content is committed and the app pointed at it' (
         $retried.Calls -match '/commit' -and $retried.Calls -match 'PATCH') "calls: $($retried.Calls)"
+
+    # Intune replaced applicableArchitectures with allowedArchitectures and no longer lets a
+    # PATCH set the old one; the stub answers such a PATCH the way Intune does. An update
+    # PATCHes the whole of app.json, so -Update used to fail right there, after the upload.
+    $probeApp = @{
+        id = 'stub-app-0001'; '@odata.type' = '#microsoft.graph.win32LobApp'; displayName = 'Publish Probe'
+        displayVersion = '0.9'; applicableArchitectures = 'none'; allowedArchitectures = 'x64,arm64'
+    }
+    # Just the architecture out of a recorded body, which is all these tests need to report
+    function Get-ProbeArchitecture { param([string]$Line) @([regex]::Matches($Line, '"\w+Architectures":"[^"]*"').Value) -join ', ' }
+    $updated = Invoke-PublishProbe -Arguments @{ Update = $true } -ExistingApp $probeApp
+    Assert-Test 'An app Intune already has is updated' ($updated.Outcome -eq 'RETURNED:Updated:stub-app-0001') $updated.Outcome
+    $updatePatch = @($updated.Bodies | Where-Object { $_ -like 'PATCH *' })
+    Assert-Test 'The update sends the architecture as allowedArchitectures, x64 with ARM64' (
+        $updatePatch.Count -eq 1 -and $updatePatch[0] -match '"allowedArchitectures":"x64,arm64"' -and
+        $updatePatch[0] -notmatch 'applicableArchitectures') "$($updatePatch.Count) PATCH: $(Get-ProbeArchitecture "$updatePatch")"
+    $createPost = @($retried.Bodies | Where-Object { $_ -like 'POST *' })
+    Assert-Test 'A new app is created with allowedArchitectures as well' (
+        $createPost.Count -eq 1 -and $createPost[0] -match '"allowedArchitectures":"x64,arm64"' -and
+        $createPost[0] -notmatch 'applicableArchitectures') "$($createPost.Count) POST: $(Get-ProbeArchitecture "$createPost")"
+
+    # app.json keeps its words: x64 still takes in ARM64, and the rest go as written
+    $probeManifest = Get-Content -LiteralPath (Join-Path $testRoot 'app.json') -Raw | ConvertFrom-Json
+    $probeManifest | Add-Member -NotePropertyName architecture -NotePropertyValue 'x86,x64' -Force
+    $bothManifest = Join-Path $testRoot 'app-x86x64.json'
+    $probeManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $bothManifest -Encoding UTF8
+    $both = Invoke-PublishProbe -Arguments @{ ManifestPath = $bothManifest }
+    $bothPost = @($both.Bodies | Where-Object { $_ -like 'POST *' })
+    Assert-Test "Architecture 'x86,x64' is sent as x86,x64,arm64" (
+        $bothPost.Count -eq 1 -and $bothPost[0] -match '"allowedArchitectures":"x86,x64,arm64"') `
+        "$($both.Outcome) — $(Get-ProbeArchitecture "$bothPost")"
+    # 'arm' was legal in the old property; allowedArchitectures has no word for it
+    $probeManifest.architecture = 'arm'
+    $armManifest = Join-Path $testRoot 'app-arm.json'
+    $probeManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $armManifest -Encoding UTF8
+    $arm = Invoke-PublishProbe -Arguments @{ ManifestPath = $armManifest }
+    Assert-Test 'An architecture Intune cannot target stops the run before anything is created' (
+        $arm.Outcome -like "THREW:*'arm' is not one Intune can target*" -and $arm.Calls -notmatch 'POST|PATCH') `
+        "$($arm.Outcome) — calls: $($arm.Calls)"
 
     # --- End to end: the real run body, in a real runspace -------------------------
     # Everything above tests the studio with the engines stubbed out by never reaching them.

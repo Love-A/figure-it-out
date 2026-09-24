@@ -115,6 +115,18 @@
     on every later run. Safe to run from a scheduled task or a pipeline.
 
 .VERSION
+    2026-09-24 - 1.7 - -Update works on an app Intune already has. It failed at the very
+                       last step, after the whole upload, with "The ApplicableArchitectures
+                       property can only be set via ODataAction: enableApplicableArchitectures".
+                       Intune has replaced applicableArchitectures, the property the
+                       architecture was written to, with allowedArchitectures, and no longer
+                       lets a PATCH set the old one — and an update PATCHes the whole of
+                       app.json. The architecture now goes out as allowedArchitectures, on
+                       create as well as on update. app.json keeps its meaning: x64 still
+                       takes in ARM64 devices, which is how Intune read a 64-bit app before it
+                       split the two and how it moved its own x64 apps across, so the same
+                       app.json reaches the same devices. An architecture Intune cannot
+                       target is refused before anything is created or uploaded.
     2026-09-08 - 1.6 - A duplicate-name check that could not run stops the publish instead
                        of being warned about and ignored. A failed lookup left the run
                        reading as "Intune has no app of this name": without -Update that
@@ -334,6 +346,32 @@ function Publish-IntuneWinApp {
 
         function Get-FirstValue {
             foreach ($v in $args) { if ($null -ne $v -and "$v" -ne '') { return $v } }
+        }
+
+        # app.json's 'architecture' is in the words of applicableArchitectures, the property
+        # this script used to write, where x64 took in ARM64 devices as well. Intune has since
+        # replaced it with allowedArchitectures, where x64 means x64 alone, and no longer lets a
+        # PATCH set the old one: "The ApplicableArchitectures property can only be set via
+        # ODataAction: enableApplicableArchitectures". An update PATCHes the whole desired
+        # state, so -Update failed on exactly that, at the last step and after the upload.
+        # The value goes out as allowedArchitectures instead, translated the way Intune moved
+        # its own apps across — arm64 wherever there was x64 — so an app.json keeps reaching
+        # the devices it always did, and a created app and an updated one end up the same.
+        function ConvertTo-AllowedArchitecture {
+            param([string]$Architecture)
+            $expected = '(expected x64, x86, arm64, a comma list of them, or neutral for all three)'
+            $wanted = @(foreach ($token in ($Architecture -split '[,\s]+' | Where-Object { $_ })) {
+                switch ($token) {
+                    'x86'     { 'x86' }
+                    'x64'     { 'x64', 'arm64' }
+                    'arm64'   { 'arm64' }
+                    'neutral' { 'x86', 'x64', 'arm64' }
+                    default   { throw "Architecture '$Architecture' in manifest: '$token' is not one Intune can target $expected." }
+                }
+            })
+            if (-not $wanted) { throw "Architecture '$Architecture' in manifest names no architecture $expected." }
+            # One fixed order, so the same app.json always sends the same value
+            @('x86', 'x64', 'arm64' | Where-Object { $_ -in $wanted }) -join ','
         }
 
         # Reads ApplicationInfo (name, setup file, encryption info, MSI info) from the package
@@ -600,7 +638,7 @@ function Publish-IntuneWinApp {
                 runAsAccount          = (Get-FirstValue $manifest.runAsAccount 'system')
                 deviceRestartBehavior = (Get-FirstValue $manifest.restartBehavior 'suppress')
             }
-            applicableArchitectures        = (Get-FirstValue $manifest.architecture 'x64')
+            allowedArchitectures           = (ConvertTo-AllowedArchitecture (Get-FirstValue $manifest.architecture 'x64'))
             minimumSupportedWindowsRelease = $minOsRelease
             detectionRules                 = @($detectionRule)
             returnCodes                    = @(
