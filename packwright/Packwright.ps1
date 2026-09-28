@@ -50,6 +50,12 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
+    2026-09-24 - 2.7 - The description box can be made taller: it has a grip in its bottom-right
+                       corner, dragged the way a textarea is. It also starts at four lines in the
+                       studio rather than a line and a half. 52 px left 26 for text, because the
+                       template insets the text by the box's Padding and so does the ScrollViewer
+                       the box hands its Padding on to. The wizard's box has the same grip and
+                       starts at two whole lines, since step 2 already fills that window.
     2026-09-22 - 2.6 - A package that installs with a script is a package. The setup file
                        list held .exe and .msi only, so a payload folder whose entry point
                        is Install-App.ps1 opened on the application's own .exe — the one
@@ -310,6 +316,33 @@ $script:Theme = @'
       </Setter.Value>
     </Setter>
   </Style>
+  <!-- Grip for the bottom-right corner of a multi-line box, dragged to make it taller or
+       shorter the way a textarea is (Resize-TextBoxHeight). Laid over the box in a shared Grid.
+       Only the box's right and bottom padding take the mouse, clear of its scrollbar. -->
+  <Style x:Key="HeightGrip" TargetType="Thumb">
+    <Setter Property="Width" Value="13"/>
+    <Setter Property="Height" Value="13"/>
+    <Setter Property="HorizontalAlignment" Value="Right"/>
+    <Setter Property="VerticalAlignment" Value="Bottom"/>
+    <Setter Property="Cursor" Value="SizeNS"/>
+    <Setter Property="Foreground" Value="{StaticResource InkFaint}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Thumb">
+          <Grid>
+            <Rectangle Fill="Transparent" Width="9" HorizontalAlignment="Right"/>
+            <Rectangle Fill="Transparent" Height="7" VerticalAlignment="Bottom"/>
+            <Path Data="M 10,3 L 3,10 M 10,7 L 7,10" Stroke="{TemplateBinding Foreground}" StrokeThickness="1"/>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Foreground" Value="{StaticResource InkMuted}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
   <Style TargetType="ComboBox">
     <Setter Property="FontSize" Value="13"/>
     <Setter Property="Height" Value="30"/>
@@ -555,8 +588,11 @@ $script:MainXaml = @'
                 </Grid>
                 <TextBox x:Name="TxtVersion"/>
                 <TextBlock Style="{StaticResource FieldLabel}" Text="DESCRIPTION (OPTIONAL)"/>
-                <TextBox x:Name="TxtDescription" AcceptsReturn="True" Height="52" TextWrapping="Wrap"
-                         VerticalScrollBarVisibility="Auto"/>
+                <Grid>
+                  <TextBox x:Name="TxtDescription" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                           Height="96" MinHeight="61" MaxHeight="360"/>
+                  <Thumb x:Name="GripDescription" Style="{StaticResource HeightGrip}"/>
+                </Grid>
               </StackPanel>
             </Border>
 
@@ -1472,6 +1508,15 @@ function Set-DetTypeValue {
 function Get-ThemeBrush {
     param([string]$Key)
     $window.FindResource($Key)
+}
+
+# DragDelta handler for a HeightGrip. A Thumb reports how far the mouse is from where it was
+# grabbed, in the Thumb's own coordinates, and this one rides on the box's bottom edge — so
+# each change is the distance since the last one and simply adds on. The box's own MinHeight
+# and MaxHeight are the limits; a drag past them waits for the mouse to come back.
+function Resize-TextBoxHeight {
+    param([Parameter(Mandatory)][Windows.Controls.TextBox]$TextBox, [double]$Change)
+    $TextBox.Height = [Math]::Min($TextBox.MaxHeight, [Math]::Max($TextBox.MinHeight, $TextBox.Height + $Change))
 }
 
 # Intune's service only accepts specific release ids: '1607'-style build numbers or
@@ -2694,8 +2739,12 @@ $script:WizardXaml = @'
           <TextBlock Style="{StaticResource FieldLabel}" Text="VERSION"/>
           <TextBox x:Name="WTxtVersion"/>
           <TextBlock Style="{StaticResource FieldLabel}" Text="DESCRIPTION (OPTIONAL)"/>
-          <TextBox x:Name="WTxtDescription" AcceptsReturn="True" Height="52" TextWrapping="Wrap"
-                   VerticalScrollBarVisibility="Auto"/>
+          <Grid>
+            <!-- Two lines to start with, not the studio's four: this step already fills the window -->
+            <TextBox x:Name="WTxtDescription" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                     Height="61" MinHeight="61" MaxHeight="360"/>
+            <Thumb x:Name="WGripDescription" Style="{StaticResource HeightGrip}"/>
+          </Grid>
           <TextBlock Style="{StaticResource FieldLabel}" Text="INSTALL COMMAND"/>
           <TextBox x:Name="WTxtInstall"/>
           <TextBlock Style="{StaticResource FieldLabel}" Text="UNINSTALL COMMAND"/>
@@ -3018,6 +3067,10 @@ function Show-PackageWizard {
         $dlg.Description = 'Pick the folder where package folders are created'
         if ($script:Wz.C.WTxtRoot.Text.Trim()) { $dlg.SelectedPath = $script:Wz.C.WTxtRoot.Text.Trim() }
         if ($dlg.ShowDialog() -eq 'OK') { $script:Wz.C.WTxtRoot.Text = $dlg.SelectedPath }
+    })
+    $c.WGripDescription.Add_DragDelta({
+        param($sender, $eventArgs)
+        Resize-TextBoxHeight -TextBox $script:Wz.C.WTxtDescription -Change $eventArgs.VerticalChange
     })
     $c.WBtnPickApp.Add_Click({
         $app = Show-InstalledAppPicker -Owner $script:Wz.Window
@@ -3409,6 +3462,10 @@ foreach ($fieldName in 'Name', 'Publisher', 'Version') {
     })
 }
 $ui.TxtDescription.Add_TextChanged({ if (-not $script:Loading) { Update-PreviewCard } })
+$ui.GripDescription.Add_DragDelta({
+    param($sender, $eventArgs)
+    Resize-TextBoxHeight -TextBox $ui.TxtDescription -Change $eventArgs.VerticalChange
+})
 
 # Detection
 $ui.CmbDetType.Add_SelectionChanged({
@@ -3800,6 +3857,38 @@ if ($TestLoad) {
     Assert-Test 'Help content renders' ($helpBlocks -ge (2 * $script:HelpTopics.Count)) "$helpBlocks text blocks"
     Assert-Test 'Help button and F1 are wired' ($null -ne $ui.BtnHelp)
     Assert-Test 'README is available to open from help' (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'README.md'))
+
+    # 52 px held a line and a half of description. The template insets the text by Padding,
+    # and so does the ScrollViewer the box hands its Padding on to, which leaves 26 px of the 52.
+    # Lay out fresh copies of both windows and count the lines each box shows before it scrolls.
+    $layoutMain = New-StudioWindow -Xaml $script:MainXaml
+    $layoutMain.C.ViewStart.Visibility = 'Collapsed'; $layoutMain.C.ViewEditor.Visibility = 'Visible'
+    $layoutWizard = New-StudioWindow -Xaml $script:WizardXaml
+    $layoutWizard.C.WStep1.Visibility = 'Collapsed'; $layoutWizard.C.WStep2.Visibility = 'Visible'
+    foreach ($case in @{ Dialog = $layoutMain; Box = 'TxtDescription'; Lines = 4; Where = 'studio' },
+                      @{ Dialog = $layoutWizard; Box = 'WTxtDescription'; Lines = 2; Where = 'wizard' }) {
+        $layoutWindow = $case.Dialog.Window
+        $layoutWindow.Content.Measure([Windows.Size]::new($layoutWindow.Width, $layoutWindow.Height))
+        $layoutWindow.Content.Arrange([Windows.Rect]::new(0, 0, $layoutWindow.Width, $layoutWindow.Height))
+        $layoutWindow.Content.UpdateLayout()
+        $layoutBox = $case.Dialog.C[$case.Box]
+        $shownLines = $layoutBox.ViewportHeight / ($layoutBox.FontFamily.LineSpacing * $layoutBox.FontSize)
+        Assert-Test "The $($case.Where)'s description box shows $($case.Lines) lines before it scrolls" (
+            $shownLines -ge $case.Lines) ('{0:0.0} lines in {1} px' -f $shownLines, $layoutBox.Height)
+    }
+
+    # The grip in its corner sizes the box, within the box's own MinHeight and MaxHeight
+    $descriptionHeight = $ui.TxtDescription.Height
+    $gripHeights = @(foreach ($change in 40, -1000, 1000) {
+        $ui.GripDescription.RaiseEvent([Windows.Controls.Primitives.DragDeltaEventArgs]::new(0, $change))
+        $ui.TxtDescription.Height
+    })
+    $ui.TxtDescription.Height = $descriptionHeight
+    Assert-Test 'Dragging the description grip resizes the box' (
+        $gripHeights[0] -eq $descriptionHeight + 40) "$descriptionHeight -> $($gripHeights[0]) px"
+    Assert-Test 'The description box stops at its minimum and maximum height' (
+        $gripHeights[1] -eq $ui.TxtDescription.MinHeight -and $gripHeights[2] -eq $ui.TxtDescription.MaxHeight) `
+        "$($gripHeights[1]) to $($gripHeights[2]) px"
 
     $installed = @(Get-InstalledApp)
     Assert-Test 'Installed apps enumerated' ($installed.Count -gt 0) "$($installed.Count) programs"
