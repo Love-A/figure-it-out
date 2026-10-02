@@ -50,7 +50,22 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
-    2026-09-24 - 2.7 - The description box can be made taller: it has a grip in its bottom-right
+    2026-10-02 - 2.8 - Packwright has a taskbar button and an icon of its own. Every window wore
+                       pwsh.exe's icon, and the taskbar filed the studio under PowerShell's
+                       button, stacked with the console that started it. Setting the window
+                       icon alone changes only the title bar: the taskbar groups buttons by
+                       AppUserModelID, and a window without one takes its process's. The main
+                       window now carries an ID of its own (Packwright.Studio) and a parcel
+                       icon drawn in code, so there is still no file to ship beside the
+                       scripts. A pin of the button starts Packwright: the window names the
+                       command that does (pwsh -STA -File on this script) and an icon written
+                       to %LOCALAPPDATA%\Packwright\Packwright.ico for the pin to show.
+                       Drawing the icon and compiling the C# this needs would add more than
+                       half a second to startup — the first Add-Type in a process loads the
+                       compiler. Both run on runspaces of their own while the windows are
+                       parsed and are done before they are needed, so what startup pays is
+                       about a tenth of a second.
+    2026-09-24 - 2.7 -The description box can be made taller: it has a grip in its bottom-right
                        corner, dragged the way a textarea is. It also starts at four lines in the
                        studio rather than a line and a half. 52 px left 26 for text, because the
                        template insets the text by the box's Padding and so does the ScrollViewer
@@ -215,6 +230,285 @@ $script:EnginePublish = Join-Path $PSScriptRoot 'Publish-IntuneWinApp.ps1'
 foreach ($engine in $EngineBuild, $EnginePublish) {
     if (-not (Test-Path -LiteralPath $engine)) { throw "Engine script missing: $engine" }
 }
+
+#region ---- Packwright's own icon and taskbar button -----------------------------
+# Left alone, every window wears pwsh.exe's icon and the taskbar files Packwright under
+# PowerShell's button. Setting Window.Icon only fixes the title bar: the taskbar groups
+# buttons by AppUserModelID, a window without one takes its process's, and a group shows
+# its application's icon rather than the window's. So the main window gets an ID of its
+# own — and with it the command a pin of that button starts, since a pinned Packwright has
+# to be able to start Packwright.
+$script:AppUserModelId  = 'Packwright.Studio'
+$script:StudioIconFile  = Join-Path $env:LOCALAPPDATA 'Packwright\Packwright.ico'   # what a pinned button shows
+$script:StudioIcon      = $null
+$script:StudioIconBytes = $null
+$script:StudioIconBuilt = $false
+$script:StudioIconFromStartup = $false
+$script:TaskbarApiReady = $null
+$script:TaskbarHandles  = @{}    # window -> HWND; WindowInteropHelper already says 0 when Closed runs
+
+$script:TaskbarApiSource = @'
+using System;
+using System.Runtime.InteropServices;
+public static class StudioTaskbarApi {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct PropertyKey { public Guid FormatId; public int PropertyId; }
+
+    // PROPVARIANT: a type tag, three reserved words, then a union two pointers wide
+    [StructLayout(LayoutKind.Explicit)]
+    public struct PropVariant {
+        [FieldOffset(0)] public ushort VarType;
+        [FieldOffset(8)] public IntPtr Value;
+        [FieldOffset(16)] public IntPtr Unused;
+    }
+
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore {
+        void GetCount(out uint count);
+        void GetAt(uint index, out PropertyKey key);
+        void GetValue(ref PropertyKey key, out PropVariant value);
+        void SetValue(ref PropertyKey key, ref PropVariant value);
+        void Commit();
+    }
+
+    [DllImport("shell32.dll")]
+    static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid,
+        [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+    [DllImport("ole32.dll")]
+    static extern int PropVariantClear(ref PropVariant value);
+
+    // PKEY_AppUserModel_*: RelaunchCommand 2, RelaunchIconResource 3, RelaunchDisplayNameResource 4, ID 5
+    static readonly Guid AppUserModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+    const ushort VT_LPWSTR = 31;
+
+    static IPropertyStore Open(IntPtr hwnd) {
+        Guid iid = typeof(IPropertyStore).GUID;
+        IPropertyStore store;
+        Marshal.ThrowExceptionForHR(SHGetPropertyStoreForWindow(hwnd, ref iid, out store));
+        return store;
+    }
+
+    // A null value clears the property
+    public static void SetValue(IntPtr hwnd, int propertyId, string value) {
+        IPropertyStore store = Open(hwnd);
+        try {
+            PropertyKey key = new PropertyKey { FormatId = AppUserModel, PropertyId = propertyId };
+            PropVariant variant = new PropVariant();
+            if (value != null) { variant.VarType = VT_LPWSTR; variant.Value = Marshal.StringToCoTaskMemUni(value); }
+            try { store.SetValue(ref key, ref variant); store.Commit(); }
+            finally { PropVariantClear(ref variant); }
+        }
+        finally { Marshal.ReleaseComObject(store); }
+    }
+
+    public static string GetValue(IntPtr hwnd, int propertyId) {
+        IPropertyStore store = Open(hwnd);
+        try {
+            PropertyKey key = new PropertyKey { FormatId = AppUserModel, PropertyId = propertyId };
+            PropVariant variant;
+            store.GetValue(ref key, out variant);
+            try { return variant.VarType == VT_LPWSTR ? Marshal.PtrToStringUni(variant.Value) : null; }
+            finally { PropVariantClear(ref variant); }
+        }
+        finally { Marshal.ReleaseComObject(store); }
+    }
+
+    // What a window set has to be taken off it again before it is destroyed. Committing an
+    // emptied value reports ERROR_INVALID_NAME even though the value is gone, and this runs
+    // from Closed, where an exception would take the dispatcher down — so nothing is thrown.
+    public static void Clear(IntPtr hwnd) {
+        foreach (int propertyId in new[] { 5, 4, 3, 2 }) {
+            try { SetValue(hwnd, propertyId, null); } catch (Exception) { }
+        }
+    }
+}
+'@
+
+# The mark: a taped parcel on the accent blue, as an .ico holding each size Windows asks for.
+# Drawn rather than shipped as a file, so the three scripts stay the whole tool. Each size is
+# drawn on its own from a 256-unit grid, so WPF picks the closest frame for the title bar and
+# the taskbar instead of shrinking 256 px to 16; under 32 px the tape is left off, where it
+# would only blur the box. Self-contained, because it runs on the startup runspace below.
+function New-StudioIconBytes {
+    $paint = {
+        param([string]$Color)
+        $brush = [Windows.Media.SolidColorBrush]::new([Windows.Media.ColorConverter]::ConvertFromString($Color))
+        $brush.Freeze()
+        $brush
+    }
+    $shape = {
+        param([string]$Path)
+        $geometry = [Windows.Media.Geometry]::Parse($Path)
+        $geometry.Freeze()
+        $geometry
+    }
+    $accent = & $paint '#0F6CBD'
+    $edge = [Windows.Media.Pen]::new($accent, 7)
+    $edge.LineJoin = 'Round'
+    $edge.Freeze()
+    $faces = @(
+        @((& $paint '#FFFFFF'), (& $shape 'M 128,45 L 200,86.6 128,128.2 56,86.6 Z')),        # top
+        @((& $paint '#CFE3F7'), (& $shape 'M 56,86.6 L 128,128.2 128,211.4 56,169.8 Z')),     # left
+        @((& $paint '#9DC3EC'), (& $shape 'M 128,128.2 L 200,86.6 200,169.8 128,211.4 Z'))    # right
+    )
+    $tape = @(    # across the top and down the right-hand side
+        @((& $paint '#B7D3F1'), (& $shape 'M 84.8,70 L 99.2,61.6 171.2,103.2 156.8,111.6 Z')),
+        @((& $paint '#78A9DF'), (& $shape 'M 156.8,111.6 L 171.2,103.2 171.2,186.4 156.8,194.8 Z'))
+    )
+
+    $sizes = 16, 20, 24, 32, 40, 48, 64, 256
+    $frames = @(foreach ($size in $sizes) {
+        $visual = [Windows.Media.DrawingVisual]::new()
+        $context = $visual.RenderOpen()
+        $context.PushTransform([Windows.Media.ScaleTransform]::new($size / 256, $size / 256))
+        $context.DrawRoundedRectangle($accent, $null, [Windows.Rect]::new(8, 8, 240, 240), 52, 52)
+        foreach ($face in $faces) { $context.DrawGeometry($face[0], $edge, $face[1]) }
+        if ($size -ge 32) { foreach ($strip in $tape) { $context.DrawGeometry($strip[0], $null, $strip[1]) } }
+        $context.Pop()
+        $context.Close()
+        $bitmap = [Windows.Media.Imaging.RenderTargetBitmap]::new($size, $size, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+        $bitmap.Render($visual)
+        $encoder = [Windows.Media.Imaging.PngBitmapEncoder]::new()
+        $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+        $png = [IO.MemoryStream]::new()
+        $encoder.Save($png)
+        , $png.ToArray()
+    })
+
+    # An icon directory: a 6-byte header, a 16-byte entry per frame, then the frames as PNG
+    $ico = [IO.MemoryStream]::new()
+    $writer = [IO.BinaryWriter]::new($ico)
+    $writer.Write([uint16]0); $writer.Write([uint16]1); $writer.Write([uint16]$sizes.Count)
+    $offset = 6 + 16 * $sizes.Count
+    for ($i = 0; $i -lt $sizes.Count; $i++) {
+        $side = if ($sizes[$i] -ge 256) { 0 } else { $sizes[$i] }   # 0 means 256 in an icon directory
+        $writer.Write([byte]$side); $writer.Write([byte]$side); $writer.Write([byte]0); $writer.Write([byte]0)
+        $writer.Write([uint16]1); $writer.Write([uint16]32)
+        $writer.Write([uint32]$frames[$i].Length); $writer.Write([uint32]$offset)
+        $offset += $frames[$i].Length
+    }
+    foreach ($frame in $frames) { $writer.Write([byte[]]$frame) }
+    $writer.Flush()
+    , $ico.ToArray()
+}
+
+# Drawing the icon and compiling the C# above take as long again as the rest of startup —
+# the first Add-Type in a process spends half a second loading the compiler. Each runs on a
+# runspace of its own while the windows below are parsed, and is collected where it is
+# needed: the icon when the first window is built, the compiled type when the main window
+# opens. Both are normally done by then.
+$script:StartupJobs = @{}
+
+function Start-StartupJob {
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][scriptblock]$Script, [object[]]$Arguments)
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.ApartmentState = 'STA'   # WPF draws on STA threads
+    $runspace.Open()                   # ~15 ms; BeginInvoke refuses a runspace that is still opening
+    $shell = [powershell]::Create()
+    $shell.Runspace = $runspace
+    [void]$shell.AddScript($Script)
+    foreach ($argument in $Arguments) { [void]$shell.AddArgument($argument) }
+    $script:StartupJobs[$Name] = @{ Shell = $shell; Runspace = $runspace; Pending = $shell.BeginInvoke() }
+}
+
+# Waits for the job and returns what it wrote; nothing if it never started
+function Complete-StartupJob {
+    param([Parameter(Mandatory)][string]$Name)
+    $job = $script:StartupJobs[$Name]
+    if (-not $job) { return }
+    $script:StartupJobs.Remove($Name)
+    try { $job.Shell.EndInvoke($job.Pending) }
+    finally { $job.Shell.Dispose(); $job.Runspace.Dispose() }
+}
+
+try {
+    if (-not ('StudioTaskbarApi' -as [type])) {
+        Start-StartupJob -Name TaskbarApi -Arguments $script:TaskbarApiSource -Script {
+            param($Source)
+            Add-Type -TypeDefinition $Source -ErrorAction Stop
+        }
+    }
+    Start-StartupJob -Name Icon -Arguments ${function:New-StudioIconBytes}.ToString() -Script {
+        param($DrawIcon)
+        Add-Type -AssemblyName PresentationCore, WindowsBase
+        & ([scriptblock]::Create($DrawIcon))
+    }
+}
+catch { }   # whatever did not start: the icon is drawn when it is needed, the taskbar ID goes without
+
+function Initialize-TaskbarApi {
+    if ($null -ne $script:TaskbarApiReady) { return $script:TaskbarApiReady }
+    try {
+        $null = Complete-StartupJob -Name TaskbarApi
+        $script:TaskbarApiReady = [bool]('StudioTaskbarApi' -as [type])
+    }
+    catch { $script:TaskbarApiReady = $false }
+    $script:TaskbarApiReady
+}
+
+# The icon every window carries. $null if it cannot be drawn — the windows then keep
+# PowerShell's, which is all that costs.
+function Get-StudioIcon {
+    if ($script:StudioIconBuilt) { return $script:StudioIcon }
+    $script:StudioIconBuilt = $true
+    try {
+        $bytes = $null
+        try { $bytes = [byte[]](Complete-StartupJob -Name Icon) } catch { }
+        $script:StudioIconFromStartup = [bool]$bytes
+        if (-not $bytes) { $bytes = New-StudioIconBytes }   # the startup runspace did not draw it
+        $script:StudioIconBytes = $bytes
+        $icon = [Windows.Media.Imaging.BitmapFrame]::Create([IO.MemoryStream]::new($bytes), 'None', 'OnLoad')
+        if ($icon.CanFreeze) { $icon.Freeze() }
+        $script:StudioIcon = $icon
+    }
+    catch { $script:StudioIcon = $null }
+    $script:StudioIcon
+}
+
+# A pinned button outlives the process, so its icon has to be a file. Rewritten only when
+# this version draws a different one.
+function Save-StudioIconFile {
+    try {
+        if (-not (Get-StudioIcon)) { return $null }
+        $current = if (Test-Path -LiteralPath $script:StudioIconFile) { [IO.File]::ReadAllBytes($script:StudioIconFile) }
+        if (-not $current -or [Convert]::ToBase64String($current) -ne [Convert]::ToBase64String($script:StudioIconBytes)) {
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $script:StudioIconFile))
+            [IO.File]::WriteAllBytes($script:StudioIconFile, $script:StudioIconBytes)
+        }
+        $script:StudioIconFile
+    }
+    catch { $null }
+}
+
+# On SourceInitialized: the window has its HWND and is not on screen yet, so the button turns
+# up as Packwright's instead of appearing in PowerShell's group and moving.
+function Set-StudioTaskbarIdentity {
+    param([Parameter(Mandatory)][Windows.Window]$Window)
+    if (-not (Initialize-TaskbarApi)) { return }   # the C# did not compile: PowerShell's button it is
+    try {
+        $handle = [Windows.Interop.WindowInteropHelper]::new($Window).Handle
+        # A pin starts the script the way the README does; without a relaunch command, the
+        # pin would have nothing to start Packwright with.
+        $pwsh = Join-Path $PSHOME 'pwsh.exe'
+        if (Test-Path -LiteralPath $pwsh) {
+            [StudioTaskbarApi]::SetValue($handle, 2, "`"$pwsh`" -STA -File `"$PSCommandPath`"")
+            [StudioTaskbarApi]::SetValue($handle, 4, 'Packwright')
+            $iconFile = Save-StudioIconFile
+            if ($iconFile) { [StudioTaskbarApi]::SetValue($handle, 3, "$iconFile,0") }
+        }
+        [StudioTaskbarApi]::SetValue($handle, 5, $script:AppUserModelId)
+        $script:TaskbarHandles[$Window] = $handle
+    }
+    catch { }   # the window works as well in PowerShell's group; this is how it looks, not what it does
+}
+
+function Clear-StudioTaskbarIdentity {
+    param([Parameter(Mandatory)][Windows.Window]$Window)
+    if (-not $script:TaskbarHandles.ContainsKey($Window)) { return }
+    try { [StudioTaskbarApi]::Clear($script:TaskbarHandles[$Window]) } catch { }
+    $script:TaskbarHandles.Remove($Window)
+}
+#endregion
 
 #region ---- Theme ---------------------------------------------------------------
 # One resource block shared by every window. Each window XAML carries a <!--THEME-->
@@ -441,6 +735,13 @@ function New-StudioWindow {
     param([Parameter(Mandatory)][string]$Xaml)
     $full = $Xaml.Replace('<!--THEME-->', $script:Theme)
     $studioWindow = [Windows.Markup.XamlReader]::Parse($full)
+    $studioIcon = Get-StudioIcon
+    if ($studioIcon) { $studioWindow.Icon = $studioIcon }
+    # The dialogs are owned and stay off the taskbar; only a window with a button needs an ID
+    if ($studioWindow.ShowInTaskbar) {
+        $studioWindow.Add_SourceInitialized({ Set-StudioTaskbarIdentity -Window $this })
+        $studioWindow.Add_Closed({ Clear-StudioTaskbarIdentity -Window $this })
+    }
     $controls = @{}
     $unresolved = @()
     foreach ($name in ([regex]::Matches($full, 'x:Name="(\w+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)) {
@@ -3665,6 +3966,9 @@ if ($TestLoad) {
     # settings at a throwaway file for the whole run so a test never edits the real one.
     $script:SettingsFile = Join-Path ([IO.Path]::GetTempPath()) 'Packwright-selftest-settings.json'
     Remove-Item -LiteralPath $script:SettingsFile -Force -ErrorAction SilentlyContinue
+    # Likewise the icon a pinned button shows
+    $script:StudioIconFile = Join-Path ([IO.Path]::GetTempPath()) 'Packwright-selftest.ico'
+    Remove-Item -LiteralPath $script:StudioIconFile -Force -ErrorAction SilentlyContinue
 
     Write-Host "Packwright self-test"
 
@@ -3831,6 +4135,37 @@ if ($TestLoad) {
     $settingsDialog = New-StudioWindow -Xaml $script:SettingsXaml
     Assert-Test 'Settings window builds' ($settingsDialog.Unresolved.Count -eq 0) "$($settingsDialog.C.Count) controls"
     Assert-Test 'Settings is reachable from the header' ($null -ne $ui.BtnSettings)
+
+    # The taskbar showed PowerShell's icon for Packwright, and the title bars did too
+    $iconSizes = @($window.Icon.Decoder.Frames | ForEach-Object { $_.PixelWidth })
+    Assert-Test 'Windows carry the Packwright icon' (
+        ($iconSizes -contains 16) -and ($iconSizes -contains 256) -and
+        [object]::ReferenceEquals($settingsDialog.Window.Icon, $window.Icon)) "$($iconSizes -join '/') px"
+    # The main thread draws it too when the startup runspace did not, so only this tells them apart
+    Assert-Test 'The icon is drawn off the main thread' ($script:StudioIconFromStartup) $(
+        if ($script:StudioIconFromStartup) { "$($script:StudioIconBytes.Length) bytes from the startup runspace" }
+        else { 'drawn on the main thread — startup pays for it' })
+    # EnsureHandle raises SourceInitialized as showing the window would, without showing it
+    $taskbarProbe = New-StudioWindow -Xaml '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"/>'
+    $probeHandle = [Windows.Interop.WindowInteropHelper]::new($taskbarProbe.Window).EnsureHandle()
+    $taskbarReady = Initialize-TaskbarApi
+    $probeId = $probeRelaunch = $probeIcon = $null
+    if ($taskbarReady) {
+        $probeId       = [StudioTaskbarApi]::GetValue($probeHandle, 5)
+        $probeRelaunch = [StudioTaskbarApi]::GetValue($probeHandle, 2)
+        $probeIcon     = [StudioTaskbarApi]::GetValue($probeHandle, 3)
+    }
+    Assert-Test 'The main window has a taskbar button of its own' ($probeId -eq $script:AppUserModelId) $(
+        if ($taskbarReady) { "AppUserModelID $probeId" } else { 'StudioTaskbarApi did not compile' })
+    Assert-Test 'A pin of that button starts Packwright' ($probeRelaunch -like "*pwsh.exe`" -STA -File `"$PSCommandPath`"") $probeRelaunch
+    $savedIconFrames = 0
+    try { $savedIconFrames = [Windows.Media.Imaging.BitmapDecoder]::Create([Uri]$script:StudioIconFile, 'None', 'OnLoad').Frames.Count } catch { }
+    Assert-Test 'A pin keeps the Packwright icon' (
+        ($probeIcon -eq "$($script:StudioIconFile),0") -and $savedIconFrames -eq $iconSizes.Count) "$probeIcon, $savedIconFrames sizes"
+    $dialogHandle = [Windows.Interop.WindowInteropHelper]::new($helpDialog.Window).EnsureHandle()
+    Assert-Test 'Dialogs stay off the taskbar' ($taskbarReady -and $null -eq [StudioTaskbarApi]::GetValue($dialogHandle, 5))
+    $taskbarProbe.Window.Close()
+    Assert-Test 'Closing the window takes its taskbar ID off again' ($script:TaskbarHandles.Count -eq 0)
 
     # Drive the dialog's own handlers, which is where a closure used to lose sight of the
     # functions in this file and fail at click time rather than at load time. Only valid
