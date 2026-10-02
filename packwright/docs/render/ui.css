@@ -1,0 +1,131 @@
+/* Packwright's WPF theme ($script:Theme in Packwright.ps1), restated in CSS.
+   Segoe UI is not available here: Open Sans is its closest relative, and
+   font-size-adjust brings its x-height down to Segoe's so lines wrap alike. */
+:root {
+  --BgApp: #F2F3F5; --BgCard: #FFFFFF; --BgSubtle: #F6F8FA; --Stroke: #E1E4E8;
+  --Ink: #1A1C20; --InkMuted: #5B6169; --InkFaint: #868C95;
+  --Accent: #0F6CBD; --AccentDark: #0C5391; --AccentSoft: #EBF3FC;
+  --Ok: #0E7A33; --OkSoft: #E9F6EC; --Warn: #8A5300; --WarnSoft: #FDF3E2;
+  --Err: #B3261E; --ErrSoft: #FCEFEE; --BoxStroke: #CDD3D9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 48px; background: #C9CCD1;
+  font-family: 'Segoe UI', 'Open Sans', sans-serif; font-size-adjust: 0.5;
+  font-size: 12px; line-height: 1.33; color: var(--Ink);
+  -webkit-font-smoothing: antialiased;
+}
+.stage { display: flex; flex-direction: column; gap: 64px; align-items: flex-start; }
+
+/* ---- Windows 11 frame ------------------------------------------------------ */
+.win {
+  display: flex; flex-direction: column; background: var(--BgApp);
+  border: 1px solid rgba(0,0,0,.28); border-radius: 8px; overflow: hidden; position: relative;
+}
+.titlebar {
+  height: 32px; flex: none; display: flex; align-items: center; background: #FFFFFF;
+  font-size: 12px; color: #1A1A1A;
+}
+.titlebar .ico { width: 16px; height: 16px; margin: 0 10px 0 12px; }
+.titlebar .ttl { flex: 1; }
+.caps { display: flex; height: 32px; }
+.caps span { width: 46px; height: 32px; display: flex; align-items: center; justify-content: center; }
+.caps svg { width: 10px; height: 10px; stroke: #1A1A1A; stroke-width: 1; fill: none; }
+.client { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.inactive .titlebar { color: #8A8A8A; }
+.inactive .caps svg { stroke: #9A9A9A; }
+
+/* ---- Text styles ----------------------------------------------------------- */
+.H1 { font-size: 21px; font-weight: 600; color: var(--Ink); }
+.H2 { font-size: 14px; font-weight: 600; color: var(--Ink); }
+.Body { font-size: 12px; color: var(--Ink); }
+.Muted { font-size: 12px; color: var(--InkMuted); }
+.Tiny { font-size: 11px; color: var(--InkFaint); }
+.FieldLabel { font-size: 11px; font-weight: 600; color: var(--InkMuted); margin: 10px 0 3px; letter-spacing: .1px; }
+.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Containers ------------------------------------------------------------ */
+.Card { background: var(--BgCard); border: 1px solid var(--Stroke); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.Note { background: var(--BgSubtle); border: 1px solid var(--Stroke); border-radius: 6px; padding: 8px 10px; }
+.Note.ok { background: var(--OkSoft); border-color: var(--Ok); color: var(--Ok); }
+.Note.warn { background: var(--WarnSoft); border-color: var(--Warn); color: var(--Warn); }
+.bar { background: var(--BgCard); border-color: var(--Stroke); border-style: solid; border-width: 0; flex: none; }
+.bar.top { border-bottom-width: 1px; }
+.bar.bottom { border-top-width: 1px; }
+.row { display: flex; align-items: center; }
+.grow { flex: 1; min-width: 0; }
+
+/* ---- Controls -------------------------------------------------------------- */
+.tb {
+  background: #FFFFFF; border: 1px solid var(--BoxStroke); border-radius: 5px;
+  padding: 6px 8px; font-size: 13px; line-height: 17px; color: var(--Ink);
+  white-space: nowrap; overflow: hidden; min-height: 31px; position: relative;
+}
+.tb.focus { border-color: var(--Accent); }
+.tb.invalid { border-color: var(--Err); background: var(--ErrSoft); }
+.tb.multi { white-space: normal; }
+.tb .caret { display: inline-block; width: 1px; height: 15px; background: var(--Ink); vertical-align: -3px; }
+.grip { position: absolute; right: 1px; bottom: 1px; width: 13px; height: 13px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
+  white-space: nowrap; flex: none; font-size: 12px; line-height: 16px;
+}
+.BtnPrimary { background: var(--Accent); color: #FFFFFF; font-size: 13px; font-weight: 600; padding: 9px 18px; line-height: 17px; }
+.BtnDefault { background: #FFFFFF; color: var(--Ink); border: 1px solid var(--BoxStroke); padding: 7px 12px; }
+.BtnQuiet { background: transparent; color: var(--Accent); padding: 6px 8px; }
+.btn.disabled { opacity: .45; }
+
+/* Aero2 ComboBox, as WPF draws it when the theme leaves the template alone */
+.cb {
+  height: 30px; border: 1px solid #ACACAC; background: linear-gradient(#F0F0F0, #E5E5E5);
+  font-size: 13px; line-height: 17px; padding: 0 26px 0 6px; display: flex; align-items: center;
+  position: relative; color: #1A1C20; white-space: nowrap; overflow: hidden;
+}
+.cb::after {
+  content: ''; position: absolute; right: 7px; top: 12px; width: 0; height: 0;
+  border-left: 3.5px solid transparent; border-right: 3.5px solid transparent; border-top: 4px solid #606060;
+}
+.cb.edit { background: #FFFFFF; border-color: #ABADB3; }
+.cb.edit::before { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 18px; border-left: 1px solid #ABADB3; background: linear-gradient(#F0F0F0, #E5E5E5); }
+.cb.edit::after { z-index: 1; right: 5px; }
+
+.chk, .rad { display: flex; align-items: center; font-size: 12px; color: var(--Ink); margin: 6px 0 2px; }
+.rad { margin-top: 8px; }
+.chk i, .rad i { width: 13px; height: 13px; border: 1px solid #707070; background: #FFFFFF; margin-right: 6px; flex: none; position: relative; }
+.rad i { border-radius: 50%; }
+.rad.on i::after { content: ''; position: absolute; left: 2px; top: 2px; width: 7px; height: 7px; border-radius: 50%; background: #212121; }
+.chk.on i::after { content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 3px; height: 7px; border: solid #212121; border-width: 0 1.6px 1.6px 0; transform: rotate(40deg); }
+
+.exp { display: flex; align-items: center; font-size: 12px; font-weight: 600; color: var(--InkMuted); }
+.exp svg { width: 19px; height: 19px; margin-right: 4px; flex: none; }
+
+/* scrollbars (Aero2) */
+.vscroll { position: absolute; top: 0; right: 0; bottom: 0; width: 17px; background: #F0F0F0; }
+.vscroll::before { content: ''; position: absolute; left: 4px; right: 4px; top: var(--t, 20px); height: var(--h, 120px); background: #CDCDCD; }
+
+/* ---- List and grid views ---------------------------------------------------- */
+.list { background: #FFFFFF; border: 1px solid var(--Stroke); }
+.li { padding: 5px 7px; }
+.li.sel { background: #CCE8FF; border: 1px solid #99D1FF; }
+.grid { background: #FFFFFF; border: 1px solid var(--Stroke); overflow: hidden; position: relative; }
+.grid .hd { display: flex; height: 25px; border-bottom: 1px solid #E5E5E5; background: #FFFFFF; }
+.grid .hd div { padding: 4px 6px; font-size: 12px; color: #1A1C20; border-right: 1px solid #E5E5E5; white-space: nowrap; overflow: hidden; }
+.grid .r { display: flex; height: 20px; align-items: center; border: 1px solid transparent; }
+.grid .r div { padding: 0 6px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grid .r.sel { background: #CCE8FF; border-color: #99D1FF; }
+
+/* ---- Log ------------------------------------------------------------------- */
+.log {
+  background: #1E2126; color: #DDE1E6; border-radius: 6px; padding: 4px 6px;
+  font-family: 'Cascadia Mono', Consolas, monospace; font-size-adjust: none; font-size: 11px; line-height: 15px;
+  white-space: pre; overflow: hidden;
+}
+.mono { font-family: 'Cascadia Mono', Consolas, monospace; font-size-adjust: none; }
+
+/* ---- Classic message box (user32 MessageBox, Windows 11) ------------------- */
+.mb-body { background: #FFFFFF; padding: 26px 24px 24px 24px; display: flex; gap: 16px; font-size: 12px; line-height: 16px; }
+.mb-foot { background: #F0F0F0; padding: 11px 12px; display: flex; justify-content: flex-end; gap: 8px; }
+.mb-btn { width: 88px; height: 26px; border: 1px solid #D0D0D0; border-radius: 4px; background: #FDFDFD; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+.mb-btn.def { border: 2px solid var(--Accent); }
+.win.auto .client > div { flex: none !important; }
