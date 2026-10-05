@@ -1,0 +1,2701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assigned Access Generator</title>
+<meta name="description" content="Build, import and validate Assigned Access XML for Intune (OMA-URI ./Vendor/MSFT/AssignedAccess/Configuration).">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232459d6' stroke-width='2.2' stroke-linecap='round'%3E%3Crect x='3' y='4' width='18' height='12' rx='2'/%3E%3Cpath d='M8 20h8M12 16v4'/%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --surface-3: #edf0f4;
+  --border: #dde2e9;
+  --border-strong: #c3cad4;
+  --text: #17202b;
+  --text-2: #475365;
+  --text-3: #6a7585;
+  --accent: #2459d6;
+  --accent-hover: #1c4ab5;
+  --accent-soft: #e8effd;
+  --accent-text: #ffffff;
+  --focus: #2459d6;
+  --ok: #157347;
+  --ok-soft: #e4f4ea;
+  --warn: #8f5400;
+  --warn-soft: #fcf1dc;
+  --err: #b42318;
+  --err-soft: #fdeceb;
+  --info: #35588c;
+  --info-soft: #e9eff8;
+  --code-bg: #f8fafc;
+  --tok-punct: #6a7585;
+  --tok-tag: #1d4fc0;
+  --tok-prefix: #7c3aed;
+  --tok-attr: #9a3412;
+  --tok-value: #0f766e;
+  --tok-cdata: #556070;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .07);
+  --shadow-lg: 0 24px 64px rgba(16, 24, 40, .22);
+  --radius: 10px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1217;
+    --surface: #161b22;
+    --surface-2: #1a2028;
+    --surface-3: #222a34;
+    --border: #2b343f;
+    --border-strong: #3b4654;
+    --text: #e5eaf0;
+    --text-2: #b4bfcc;
+    --text-3: #8a96a6;
+    --accent: #6f9dff;
+    --accent-hover: #8db2ff;
+    --accent-soft: #1c2a45;
+    --accent-text: #0a1222;
+    --focus: #8db2ff;
+    --ok: #4cc38a;
+    --ok-soft: #11281d;
+    --warn: #f0b44c;
+    --warn-soft: #2d2311;
+    --err: #ff7b72;
+    --err-soft: #331a19;
+    --info: #8fb3e8;
+    --info-soft: #18222f;
+    --code-bg: #0d1117;
+    --tok-punct: #8a96a6;
+    --tok-tag: #7aa7ff;
+    --tok-prefix: #c4a2ff;
+    --tok-attr: #f0a26a;
+    --tok-value: #5fd0bf;
+    --tok-cdata: #9aa5b4;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .45);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, .6);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1217;
+  --surface: #161b22;
+  --surface-2: #1a2028;
+  --surface-3: #222a34;
+  --border: #2b343f;
+  --border-strong: #3b4654;
+  --text: #e5eaf0;
+  --text-2: #b4bfcc;
+  --text-3: #8a96a6;
+  --accent: #6f9dff;
+  --accent-hover: #8db2ff;
+  --accent-soft: #1c2a45;
+  --accent-text: #0a1222;
+  --focus: #8db2ff;
+  --ok: #4cc38a;
+  --ok-soft: #11281d;
+  --warn: #f0b44c;
+  --warn-soft: #2d2311;
+  --err: #ff7b72;
+  --err-soft: #331a19;
+  --info: #8fb3e8;
+  --info-soft: #18222f;
+  --code-bg: #0d1117;
+  --tok-punct: #8a96a6;
+  --tok-tag: #7aa7ff;
+  --tok-prefix: #c4a2ff;
+  --tok-attr: #f0a26a;
+  --tok-value: #5fd0bf;
+  --tok-cdata: #9aa5b4;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .45);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, .6);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+code, .mono { font-family: var(--mono); }
+code { font-size: .92em; background: var(--surface-3); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+.ic { flex: none; display: block; }
+
+/* ---------- header ---------- */
+.app-header {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 20px;
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-mark { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--accent); color: var(--accent-text); flex: none; }
+.brand-text { min-width: 0; }
+.brand h1 { font-size: 15.5px; margin: 0; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+.brand .sub { font-size: 12px; color: var(--text-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ---------- layout ---------- */
+.layout {
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 20px; padding: 20px; max-width: 1640px; margin: 0 auto; align-items: start;
+}
+.output { position: sticky; top: 74px; height: calc(100vh - 94px); min-height: 420px; display: flex; flex-direction: column; min-width: 0; }
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .output { position: static; height: auto; min-height: 0; }
+  .output .panel { max-height: 70vh; }
+}
+@media (max-width: 640px) {
+  .layout { padding: 16px; gap: 16px; }
+  .app-header { padding: 10px 16px; }
+  .brand .sub, .btn .lbl-wide { display: none; }
+}
+
+/* ---------- editor ---------- */
+.section { margin-bottom: 24px; }
+.section-head { display: flex; align-items: center; gap: 10px; margin: 0 2px 10px; flex-wrap: wrap; }
+.step { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-size: 12px; font-weight: 700; flex: none; }
+.section-head h2 { font-size: 15px; margin: 0; }
+.section-head .hint { margin: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); margin-bottom: 12px; min-width: 0; }
+.card.subtle { background: var(--surface-2); box-shadow: none; }
+.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.card h3 { font-size: 13px; margin: 20px 0 10px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card h3 .hint { font-weight: 400; }
+.badge { font-size: 11.5px; font-weight: 650; padding: 3px 9px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
+.badge.kiosk { background: var(--accent-soft); color: var(--accent); }
+.badge.multi { background: var(--ok-soft); color: var(--ok); }
+.grow { flex: 1; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 14px; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.wide { grid-column: 1 / -1; }
+@media (max-width: 640px) { .grid2, .grid3 { grid-template-columns: minmax(0, 1fr); } }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field > label, .label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.hint { font-size: 12px; color: var(--text-3); }
+.hint code { font-size: 11.5px; }
+input[type=text], select, textarea {
+  font: inherit; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: 7px; padding: 7px 10px; min-width: 0; width: 100%;
+}
+select { padding-right: 6px; }
+input.mono, textarea.mono { font-family: var(--mono); font-size: 12.5px; }
+textarea { resize: vertical; min-height: 120px; line-height: 1.5; }
+input::placeholder, textarea::placeholder { color: var(--text-3); opacity: .8; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.has-error { border-color: var(--err) !important; box-shadow: 0 0 0 1px var(--err) inset; }
+.has-warn { border-color: var(--warn) !important; }
+.input-group { display: flex; gap: 6px; }
+.input-group > input { flex: 1; }
+.preview-line { font-family: var(--mono); font-size: 12px; color: var(--text-2); background: var(--surface-3); border-radius: 7px; padding: 8px 10px; overflow-wrap: anywhere; }
+.preview-line b { color: var(--text); font-weight: 600; }
+
+.btn {
+  font: inherit; font-weight: 600; font-size: 13px; line-height: 1.2;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 7px; border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--surface-3); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.small { padding: 5px 9px; font-size: 12.5px; }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--surface-3); }
+.btn:disabled { opacity: .5; cursor: default; }
+.icon-btn {
+  width: 32px; height: 32px; display: inline-grid; place-items: center; flex: none;
+  border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-3); cursor: pointer;
+}
+.icon-btn:hover { background: var(--surface-3); color: var(--text); }
+.icon-btn.danger:hover { color: var(--err); background: var(--err-soft); }
+.icon-btn:disabled { opacity: .35; cursor: default; background: transparent; }
+.add-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--surface-3); border-radius: 9px; padding: 3px; gap: 3px; max-width: 100%; }
+.seg label { position: relative; display: block; }
+.seg input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.seg input:checked + span { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.seg input:focus-visible + span { outline: 2px solid var(--focus); }
+
+.check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 13.5px; }
+.check input { margin: 2px 0 0; width: 16px; height: 16px; accent-color: var(--accent); flex: none; cursor: pointer; }
+.check.disabled { opacity: .5; cursor: default; }
+.check .hint { display: block; }
+.checks { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.mods { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.mods select { width: auto; min-width: 74px; }
+.mods .plus { color: var(--text-3); font-weight: 700; }
+
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row { display: grid; grid-template-columns: 158px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
+.row.pin { grid-template-columns: 196px minmax(0, 1fr) auto auto auto; }
+.row .sub { grid-column: 2 / -1; }
+.row .auto { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; cursor: pointer; padding: 0 4px; }
+.row .auto input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.row .num { font-size: 12px; color: var(--text-3); text-align: right; }
+@media (max-width: 640px) {
+  .row, .row.pin { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .row.pin { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .row > select { grid-column: 1 / -1; }
+  .row .sub { grid-column: 1 / -1; }
+}
+.empty { border: 1px dashed var(--border-strong); border-radius: 9px; padding: 14px; color: var(--text-3); font-size: 13px; text-align: center; }
+details.adv { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+details.adv > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-2); }
+details.adv[open] > summary { margin-bottom: 12px; }
+.config-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr) auto; gap: 12px 14px; align-items: start; }
+.config-grid .cfg-fields { min-width: 0; }
+.config-grid .cfg-profile { grid-column: 1 / -1; }
+.config-grid .del { padding-top: 22px; }
+@media (max-width: 800px) {
+  .config-grid { grid-template-columns: minmax(0, 1fr) auto; }
+  .config-grid .cfg-kind { grid-row: 1; grid-column: 1; }
+  .config-grid .del { grid-row: 1; grid-column: 2; }
+  .config-grid .cfg-fields { grid-row: 2; grid-column: 1 / -1; }
+  .config-grid .cfg-profile { grid-row: 3; }
+}
+.empty-state { text-align: center; padding: 30px 20px; }
+.empty-state h2 { margin: 6px 0; font-size: 16px; }
+.empty-state p { color: var(--text-2); margin: 0 0 16px; }
+.empty-state .add-row { justify-content: center; }
+
+/* ---------- output ---------- */
+.out-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
+.status { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; font-size: 13px; padding: 4px 10px 4px 8px; border-radius: 999px; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.err { background: var(--err-soft); color: var(--err); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.chip { font-size: 12px; color: var(--text-2); background: var(--surface-3); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.issues { max-height: 32%; min-height: 0; overflow: auto; border-bottom: 1px solid var(--border); flex: none; }
+.issues:empty { display: none; }
+.issue {
+  display: flex; gap: 9px; align-items: flex-start; width: 100%; text-align: left;
+  padding: 8px 14px 8px 11px; border: 0; border-left: 3px solid transparent; border-bottom: 1px solid var(--border);
+  background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+}
+.issue:last-child { border-bottom: 0; }
+.issue:hover { background: var(--surface-2); }
+.issue.error { border-left-color: var(--err); } .issue.error .ic { color: var(--err); }
+.issue.warn { border-left-color: var(--warn); } .issue.warn .ic { color: var(--warn); }
+.issue.info { border-left-color: var(--info); } .issue.info .ic { color: var(--info); }
+.issue .ic { margin-top: 1px; }
+.issue.static { cursor: default; }
+.issue .src { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .03em; margin-right: 4px; }
+.tabs { display: flex; gap: 4px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); flex: none; overflow-x: auto; }
+.tab { font: inherit; font-weight: 600; font-size: 13px; color: var(--text-3); background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 10px; cursor: pointer; white-space: nowrap; }
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.panel { overflow: auto; min-height: 0; flex: 1; }
+.panel[hidden] { display: none; }
+.toolbar { display: flex; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; align-items: center; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.banner { margin: 10px 14px 0; padding: 8px 11px; border-radius: 8px; font-size: 12.5px; background: var(--err-soft); color: var(--err); }
+pre.code { margin: 0; padding: 14px 16px 18px; font: 12.5px/1.6 var(--mono); color: var(--text); background: var(--code-bg); white-space: pre; overflow: auto; tab-size: 2; min-height: 100%; }
+.t-p { color: var(--tok-punct); } .t-tag { color: var(--tok-tag); } .t-pre { color: var(--tok-prefix); }
+.t-attr { color: var(--tok-attr); } .t-val { color: var(--tok-value); } .t-cd { color: var(--tok-cdata); } .t-decl { color: var(--tok-punct); }
+.doc { padding: 16px 18px 22px; font-size: 13.5px; }
+.doc h4 { margin: 18px 0 8px; font-size: 13.5px; }
+.doc h4:first-child { margin-top: 0; }
+.doc ol, .doc ul { margin: 0; padding-left: 20px; }
+.doc li { margin: 4px 0; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; margin: 10px 0 4px; padding: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; }
+.kv .k { font-size: 12.5px; color: var(--text-3); font-weight: 600; }
+.kv .v { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.summary-text { white-space: pre-wrap; font-size: 13.5px; line-height: 1.6; margin: 0; padding: 16px 18px 22px; font-family: var(--font); }
+.foot { font-size: 11.5px; color: var(--text-3); padding: 8px 14px; border-top: 1px solid var(--border); flex: none; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- dialogs ---------- */
+dialog {
+  border: 1px solid var(--border); border-radius: 14px; padding: 0;
+  background: var(--surface); color: var(--text);
+  width: min(780px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  box-shadow: var(--shadow-lg);
+}
+dialog[open] { display: flex; flex-direction: column; }
+dialog::backdrop { background: rgba(8, 12, 18, .5); }
+.dlg-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 14px 20px; border-bottom: 1px solid var(--border); }
+.dlg-head h2 { margin: 0; font-size: 16px; }
+.dlg-body { padding: 18px 20px; overflow: auto; min-height: 0; }
+.dlg-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.dlg-foot .hint { margin-right: auto; }
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 12px; }
+.tpl {
+  text-align: left; font: inherit; color: var(--text); cursor: pointer;
+  border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--surface-2);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.tpl:hover { border-color: var(--accent); background: var(--accent-soft); }
+.tpl .tico { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--border); color: var(--accent); margin-bottom: 4px; }
+.tpl strong { font-size: 14px; }
+.tpl span { color: var(--text-2); font-size: 12.5px; }
+.tpl small { color: var(--text-3); font-size: 11.5px; font-family: var(--mono); }
+.snippet { position: relative; }
+.snippet pre { margin: 0; padding: 12px 14px; font: 12px/1.55 var(--mono); background: var(--code-bg); border: 1px solid var(--border); border-radius: 9px; overflow: auto; white-space: pre; }
+.snippet .btn { position: absolute; top: 8px; right: 8px; }
+.pick-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 9px; max-height: 330px; overflow: auto; }
+.pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.pick:last-child { border-bottom: 0; }
+.pick-main { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; cursor: pointer; min-width: 0; }
+.pick.disabled .pick-main { cursor: default; }
+.pick:not(.disabled):hover { background: var(--surface-2); }
+.pick .nm { font-weight: 600; font-size: 13px; }
+.pick .vl { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); overflow-wrap: anywhere; }
+.pick .tag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); }
+.pick .tag.store { background: var(--accent-soft); color: var(--accent); }
+.pick .tag.desk { background: var(--ok-soft); color: var(--ok); }
+.pick.disabled { opacity: .55; }
+.pick .pinbox { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.pick input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.err-text { color: var(--err); font-size: 13px; margin-top: 8px; }
+.drop { outline: 2px dashed var(--accent); outline-offset: 2px; }
+
+#toast {
+  position: fixed; left: 50%; bottom: 24px; z-index: 100;
+  transform: translate(-50%, 16px); opacity: 0; transition: opacity .18s, transform .18s;
+  background: var(--text); color: var(--surface); padding: 9px 16px; border-radius: 8px; font-weight: 600; font-size: 13px;
+  pointer-events: none; max-width: calc(100vw - 32px);
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- self-test ---------- */
+.st-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.st-table th, .st-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.st-table td.res { font-weight: 700; white-space: nowrap; }
+.st-table td.res.ok { color: var(--ok); } .st-table td.res.bad { color: var(--err); }
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true"><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
+    <div class="brand-text">
+      <h1>Assigned Access Generator</h1>
+      <div class="sub">./Vendor/MSFT/AssignedAccess/Configuration</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="btn" data-act="open-start" title="Start over from a template"><span data-icon="plus"></span><span>New</span></button>
+    <button class="btn" data-act="open-import" title="Import existing XML or Intune JSON"><span data-icon="upload"></span><span>Import<span class="lbl-wide">…</span></span></button>
+    <button class="icon-btn" data-act="theme" id="theme-btn" title="Theme: auto" aria-label="Change theme"><span data-icon="theme"></span></button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="editor" id="editor" aria-label="Editor"></section>
+
+  <aside class="output" aria-label="Result">
+    <div class="out-card">
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+      <div class="issues" id="issues"></div>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" id="tab-xml" aria-controls="panel-xml" aria-selected="true" data-act="tab" data-tab="xml">XML</button>
+        <button class="tab" role="tab" id="tab-intune" aria-controls="panel-intune" aria-selected="false" data-act="tab" data-tab="intune">Add to Intune</button>
+        <button class="tab" role="tab" id="tab-summary" aria-controls="panel-summary" aria-selected="false" data-act="tab" data-tab="summary">Summary</button>
+      </div>
+
+      <div class="panel" id="panel-xml" role="tabpanel" aria-labelledby="tab-xml">
+        <div class="toolbar">
+          <button class="btn primary" data-act="copy-xml"><span data-icon="copy"></span>Copy XML</button>
+          <button class="btn" data-act="download-xml"><span data-icon="download"></span>Download .xml</button>
+        </div>
+        <div id="xml-banner"></div>
+        <pre class="code" id="xml-code" tabindex="0" aria-label="Generated XML"></pre>
+      </div>
+
+      <div class="panel" id="panel-intune" role="tabpanel" aria-labelledby="tab-intune" hidden>
+        <div class="doc">
+          <h4>Create a custom profile</h4>
+          <ol>
+            <li>Intune admin center → <b>Devices → Configuration → Create → New policy</b>.</li>
+            <li>Platform <b>Windows 10 and later</b>, profile type <b>Templates → Custom</b>.</li>
+            <li>Add an OMA-URI setting:</li>
+          </ol>
+          <div class="kv">
+            <span class="k">Name</span><span class="v">AssignedAccess Configuration</span><span></span>
+            <span class="k">OMA-URI</span><span class="v" id="oma-uri">./Vendor/MSFT/AssignedAccess/Configuration</span><button class="btn small" data-act="copy-oma"><span data-icon="copy"></span>Copy</button>
+            <span class="k">Data type</span><span class="v">String</span><span></span>
+            <span class="k">Value</span><span class="v">the whole XML, pasted as is</span><button class="btn small" data-act="copy-xml"><span data-icon="copy"></span>Copy</button>
+          </div>
+          <ol start="4">
+            <li>Assign the profile to a <b>device group</b> containing the kiosk devices.</li>
+            <li>Restart the device once the profile has applied. With automatic sign-in, the kiosk account signs in by itself after the restart.</li>
+          </ol>
+
+          <h4>Good to know</h4>
+          <ul>
+            <li>Install the kiosk app <b>before</b> the profile reaches the device – Assigned Access starts it at sign-in, so it has to be there.</li>
+            <li>A device holds <b>one</b> Assigned Access configuration. Assign only one such profile per device – two profiles setting the same OMA-URI overwrite or conflict with each other.</li>
+            <li>A kiosk (single-app) profile can only be assigned to <b>user accounts</b>, not to user groups. Don't assign administrator accounts.</li>
+            <li>Automatic sign-in doesn't work if the <code>PreferredAadTenantDomainName</code> policy is set or Exchange ActiveSync password restrictions are active.</li>
+            <li>Avoid accounts targeted by Conditional Access that requires MFA or terms of use – the sign-in would need interaction.</li>
+            <li>Local accounts aren't shown on the sign-in screen of Entra-joined devices. If needed, enable <code>WindowsLogon/EnumerateLocalUsersOnDomainJoinedComputers</code>.</li>
+            <li>Alt+F4, Alt+Tab and Ctrl+Alt+Del aren't blocked in a restricted user experience. Use Keyboard Filter if you need to.</li>
+            <li>A Store app update can change the app's AUMID – the configuration then has to be updated.</li>
+            <li>Intune's <b>kiosk template</b> sets up multi-app kiosks on Windows 10 only. On Windows 11, use a custom profile with this XML.</li>
+          </ul>
+
+          <h4>Sources</h4>
+          <ul>
+            <li><a href="https://learn.microsoft.com/en-us/windows/client-management/mdm/assignedaccess-csp" target="_blank" rel="noopener">AssignedAccess CSP</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/windows/configuration/assigned-access/configuration-file" target="_blank" rel="noopener">Create an Assigned Access configuration XML file</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/windows/configuration/assigned-access/xsd" target="_blank" rel="noopener">Assigned Access XML Schema Definition (XSD)</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/windows/configuration/assigned-access/recommendations" target="_blank" rel="noopener">Assigned Access recommendations</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/deployedge/microsoft-edge-configure-kiosk-mode" target="_blank" rel="noopener">Configure Microsoft Edge kiosk mode</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/intune/intune-service/configuration/kiosk-settings-windows" target="_blank" rel="noopener">Intune kiosk settings for Windows</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/hololens/hololens-kiosk" target="_blank" rel="noopener">Set up HoloLens as a kiosk</a> (Visitor, DeviceOwner)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
+        <div class="toolbar">
+          <button class="btn" data-act="copy-summary"><span data-icon="copy"></span>Copy summary</button>
+          <span class="hint">Plain-language description for the ticket or the documentation.</span>
+        </div>
+        <pre class="summary-text" id="summary-text"></pre>
+      </div>
+
+      <div class="foot"><span id="foot-version"></span><span>Schema per Microsoft Learn</span></div>
+    </div>
+  </aside>
+</main>
+
+<!-- Start / templates -->
+<dialog id="dlg-start" aria-labelledby="dlg-start-title">
+  <div class="dlg-head"><h2 id="dlg-start-title">What should the kiosk do?</h2><div class="grow"></div><button class="icon-btn" data-act="close-dialog" aria-label="Close"><span data-icon="x"></span></button></div>
+  <div class="dlg-body">
+    <div class="tpl-grid">
+      <button class="tpl" data-act="template" data-tpl="win32"><span class="tico" data-icon="box"></span><strong>Your own app, full screen</strong><span>Single-app kiosk running a Win32 app (.exe), such as an in-house kiosk client.</span><small>v4:ClassicAppPath</small></button>
+      <button class="tpl" data-act="template" data-tpl="edge"><span class="tico" data-icon="globe"></span><strong>Microsoft Edge kiosk</strong><span>Edge in full screen (signage/interactive) or as a public browser.</span><small>msedge.exe --kiosk</small></button>
+      <button class="tpl" data-act="template" data-tpl="uwp"><span class="tico" data-icon="monitor"></span><strong>Store app, full screen</strong><span>Single-app kiosk running a UWP/Store app, such as Kiosk Browser.</span><small>AppUserModelId</small></button>
+      <button class="tpl" data-act="template" data-tpl="multi"><span class="tico" data-icon="grid"></span><strong>Restricted desktop</strong><span>Several allowed apps, your own Start menu and taskbar (multi-app).</span><small>AllAppsList · StartPins</small></button>
+      <button class="tpl" data-act="open-import"><span class="tico" data-icon="upload"></span><strong>Import existing</strong><span>Paste Assigned Access XML, or JSON from Intune/Graph.</span><small>XML · Graph JSON · kiosk template</small></button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Import -->
+<dialog id="dlg-import" aria-labelledby="dlg-import-title">
+  <div class="dlg-head"><h2 id="dlg-import-title">Import</h2><div class="grow"></div><button class="icon-btn" data-act="close-dialog" aria-label="Close"><span data-icon="x"></span></button></div>
+  <div class="dlg-body stack">
+    <div class="hint">Paste, or drop a file. The generator recognizes <b>Assigned Access XML</b>, an Intune custom profile as <b>Graph JSON</b> (<code>omaSettings</code>) and Intune's <b>kiosk template</b> (<code>windowsKioskConfiguration</code>, e.g. exported from Microsoft Graph). HTML-encoded XML (<code>&amp;lt;…</code>) works too.</div>
+    <textarea id="import-text" class="mono" rows="14" spellcheck="false" aria-label="Content to import" placeholder="&lt;AssignedAccessConfiguration xmlns=&quot;http://schemas.microsoft.com/AssignedAccess/2017/config&quot;&gt; …"></textarea>
+    <div><input type="file" id="import-file" accept=".xml,.json,.txt" hidden><button class="btn small" data-act="pick-import-file"><span data-icon="file"></span>Choose file…</button></div>
+    <div id="import-error" class="err-text" role="alert"></div>
+  </div>
+  <div class="dlg-foot"><span class="hint">Replaces what's in the editor.</span><button class="btn" data-act="close-dialog">Cancel</button><button class="btn primary" data-act="do-import">Import</button></div>
+</dialog>
+
+<!-- Common apps -->
+<dialog id="dlg-catalog" aria-labelledby="dlg-catalog-title">
+  <div class="dlg-head"><h2 id="dlg-catalog-title">Add common apps</h2><div class="grow"></div><button class="icon-btn" data-act="close-dialog" aria-label="Close"><span data-icon="x"></span></button></div>
+  <div class="dlg-body stack">
+    <div class="hint">Built-in Windows apps with known AUMIDs and paths. If in doubt, check on a reference device with <code>Get-StartApps</code>.</div>
+    <div class="pick-list" id="catalog-list"></div>
+  </div>
+  <div class="dlg-foot"><button class="btn" data-act="close-dialog">Cancel</button><button class="btn primary" data-act="catalog-add">Add selected</button></div>
+</dialog>
+
+<!-- Inventory from a reference device -->
+<dialog id="dlg-inventory" aria-labelledby="dlg-inventory-title">
+  <div class="dlg-head"><h2 id="dlg-inventory-title">Get apps from a reference device</h2><div class="grow"></div><button class="icon-btn" data-act="close-dialog" aria-label="Close"><span data-icon="x"></span></button></div>
+  <div class="dlg-body stack">
+    <div class="hint"><b>1.</b> Run this in PowerShell on a device where the apps are installed. The result lands on the clipboard: Store apps with their AUMID, desktop apps with their path and Start shortcut.</div>
+    <div class="snippet">
+<pre id="inventory-snippet">$sh = New-Object -ComObject WScript.Shell
+$store = Get-StartApps | Where-Object AppID -like '*!*' |
+    ForEach-Object { [pscustomobject]@{ Name = $_.Name; AUMID = $_.AppID } }
+$desktop = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs",
+           "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" |
+    Get-ChildItem -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
+        $target = $sh.CreateShortcut($_.FullName).TargetPath
+        if ($target -like '*.exe') { [pscustomobject]@{ Name = $_.BaseName; Path = $target; Link = $_.FullName } }
+    }
+@($store) + @($desktop) | ConvertTo-Json | Set-Clipboard</pre>
+      <button class="btn small" data-act="copy-snippet"><span data-icon="copy"></span>Copy</button>
+    </div>
+    <div class="hint"><b>2.</b> Paste the result here. Plain <code>Get-StartApps</code> output works too, but only gives paths for apps in known folders and no shortcuts.</div>
+    <textarea id="inventory-text" class="mono" rows="5" spellcheck="false" aria-label="Output from the reference device" placeholder="[ { &quot;Name&quot;: &quot;Kiosk Browser&quot;, &quot;AUMID&quot;: &quot;Microsoft.KioskBrowser_8wekyb3d8bbwe!App&quot; }, … ]"></textarea>
+    <div id="inventory-error" class="err-text" role="alert"></div>
+    <div class="input-group" id="inventory-tools" hidden>
+      <input type="text" id="inventory-filter" placeholder="Filter…" aria-label="Filter apps">
+      <button class="btn small" data-act="inventory-all">Select all visible</button>
+    </div>
+    <div class="pick-list" id="inventory-list" hidden></div>
+    <div class="hint">Shortcuts under <code>%APPDATA%</code> are per user – the kiosk account only has them if Windows or your packaging creates them for it. Prefer shortcuts under <code>%ALLUSERSPROFILE%</code>.</div>
+  </div>
+  <div class="dlg-foot"><button class="btn" data-act="close-dialog">Cancel</button><button class="btn primary" data-act="inventory-add">Add selected</button></div>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================================================
+// Constants
+// ============================================================================================
+const VERSION = '1.0.0';
+const OMA_URI = './Vendor/MSFT/AssignedAccess/Configuration';
+const STORAGE_KEY = 'aag.state.v1';
+const THEME_KEY = 'aag.theme';
+const SELFTEST = location.hash === '#selftest';
+
+const NS = {
+  def: 'http://schemas.microsoft.com/AssignedAccess/2017/config',
+  rs5: 'http://schemas.microsoft.com/AssignedAccess/201810/config',
+  v3: 'http://schemas.microsoft.com/AssignedAccess/2020/config',
+  v4: 'http://schemas.microsoft.com/AssignedAccess/2021/config',
+  v5: 'http://schemas.microsoft.com/AssignedAccess/2022/config',
+  v202010: 'http://schemas.microsoft.com/AssignedAccess/202010/config',
+};
+const NS_ORDER = ['rs5', 'v3', 'v4', 'v5', 'v202010'];
+// Lowest Windows release per namespace, as headed on Microsoft's XSD reference page.
+const NS_MIN = {
+  rs5: { rank: 3, label: 'Windows 10 1809' },
+  v3: { rank: 4, label: 'Windows 10 1909' },
+  v202010: { rank: 4, label: 'Windows 10 1909' },
+  v4: { rank: 5, label: 'Windows 11 21H2' },
+  v5: { rank: 6, label: 'Windows 11 22H2' },
+};
+const NS_WHY = {
+  rs5: 'rs5 attributes (display name, auto-launch, File Explorer access)',
+  v3: 'v3 (removable drives, no restriction, global profile)',
+  v202010: 'global profile exclusions',
+  v4: 'v4:ClassicAppPath / BreakoutSequence',
+  v5: 'v5:StartPins / TaskbarLayout',
+};
+// The sources disagree on v4: the XSD reference files it under Windows 11 21H2, while Microsoft's
+// Edge kiosk docs describe Edge single-app kiosks on Windows 10 1909/2004 with the Feb 2021 updates.
+const NS_CAVEAT = {
+  v4: "Microsoft's Edge documentation also describes Edge single-app kiosks on Windows 10 1909 and 2004+ with the February 2021 updates – test before relying on Windows 10.",
+};
+
+const EDGE_PATH = '%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe';
+const EDGE_PROXY = '%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge_proxy.exe';
+const EDGE_AUMID = 'Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe!App';
+const EDGE_LINK = '%ALLUSERSPROFILE%\\Microsoft\\Windows\\Start Menu\\Programs\\Microsoft Edge.lnk';
+
+// Built-in apps with well-known identifiers, each checked against Get-StartApps on a Windows 11
+// device or against Microsoft's documentation. 'same' = pin the AUMID as packagedAppId.
+const CATALOG = [
+  { id: 'edge', label: 'Microsoft Edge', note: 'msedge.exe, msedge_proxy.exe and the Edge AUMID (needed for pinned websites)',
+    apps: [['path', EDGE_PATH], ['path', EDGE_PROXY], ['aumid', EDGE_AUMID]], pin: ['desktopAppLink', EDGE_LINK] },
+  { id: 'explorer', label: 'File Explorer', note: 'needed to reach the folders you allow',
+    apps: [['path', '%windir%\\explorer.exe']], pin: ['desktopAppLink', '%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\File Explorer.lnk'] },
+  { id: 'kioskbrowser', label: 'Kiosk Browser', apps: [['aumid', 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'settings', label: 'Settings', apps: [['aumid', 'windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel']], pin: 'same' },
+  { id: 'calc', label: 'Calculator', apps: [['aumid', 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'photos', label: 'Photos', apps: [['aumid', 'Microsoft.Windows.Photos_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'notepad', label: 'Notepad', apps: [['aumid', 'Microsoft.WindowsNotepad_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'paint', label: 'Paint', apps: [['aumid', 'Microsoft.Paint_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'sticky', label: 'Sticky Notes', apps: [['aumid', 'Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'quickassist', label: 'Quick Assist', apps: [['aumid', 'MicrosoftCorporationII.QuickAssist_8wekyb3d8bbwe!App']], pin: 'same' },
+  { id: 'teams', label: 'Microsoft Teams', apps: [['aumid', 'MSTeams_8wekyb3d8bbwe!MSTeams']], pin: 'same' },
+];
+
+// Known-folder GUIDs that Get-StartApps uses as the prefix of desktop app IDs.
+const KNOWN_FOLDERS = {
+  '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}': '%windir%\\System32',
+  '{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}': '%windir%\\SysWOW64',
+  '{F38BF404-1D43-42F2-9305-67DE0B28FC23}': '%windir%',
+  '{6D809377-6AF0-444B-8957-A3773F02200E}': '%ProgramFiles%',
+  '{905E63B6-C1BF-494E-B29C-65B732D3D21A}': '%ProgramFiles%',
+  '{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}': '%ProgramFiles(x86)%',
+};
+
+const GUID_RE = /^\{[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\}$/;
+const BARE_GUID_RE = /^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/;
+const AUMID_RE = /^[^\s!\\]+_[a-z0-9]{13}![^\s!]+$/i;
+const XML_INVALID = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
+
+const GROUP_TYPES = [
+  ['AzureActiveDirectoryGroup', 'Entra ID group'],
+  ['ActiveDirectoryGroup', 'AD group'],
+  ['LocalGroup', 'Local group'],
+];
+// Both special groups are HoloLens account types (Microsoft's HoloLens kiosk docs).
+const SPECIAL_GROUPS = [['Visitor', 'Visitor (HoloLens visitor accounts)'], ['DeviceOwner', 'DeviceOwner (HoloLens device owners)']];
+const ACCOUNT_TYPES = [['local', 'Local account'], ['ad', 'AD account'], ['entra', 'Entra ID account']];
+const CONFIG_KINDS = [['autologon', 'Automatic sign-in'], ['account', 'User account'], ['group', 'Group'], ['special', 'Special group (HoloLens)']];
+const PIN_KINDS = [['packagedAppId', 'Store app (packagedAppId)'], ['desktopAppLink', 'Shortcut (desktopAppLink)'], ['desktopAppId', 'App ID (desktopAppId)'], ['raw', 'JSON object (secondaryTile etc.)']];
+const KEY_CHOICES = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].concat(Array.from({ length: 12 }, (_, i) => 'F' + (i + 1)));
+const MODIFIERS = ['Ctrl', 'Alt', 'Shift'];
+
+const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  upload: '<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3"/>',
+  download: '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M4 17v1a2 2 0 002 2h12a2 2 0 002-2v-1"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12M9 7V4h6v3"/>',
+  up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  theme: '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 000 16z" fill="currentColor"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  grid: '<rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
+  box: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
+  file: '<path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  ok: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>',
+  error: '<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>',
+  warn: '<path d="M12 3.5l9 16H3z"/><path d="M12 10v4M12 17v.5"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+};
+const ic = (name, size = 16) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+
+// ============================================================================================
+// Utilities
+// ============================================================================================
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const escHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const xa = s => String(s ?? '').trim().replace(XML_INVALID, '').replace(/[\r\n\t]+/g, ' ')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const xt = s => String(s ?? '').trim().replace(XML_INVALID, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const cdata = s => '<![CDATA[' + String(s ?? '').replace(XML_INVALID, '').split(']]>').join(']]]]><![CDATA[>') + ']]>';
+const sameCI = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+const normNl = s => String(s ?? '').replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+const sel = s => String(s).replace(/["\\]/g, '\\$&');
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+let uidSeq = 0;
+const uid = () => 'u' + (++uidSeq).toString(36) + Math.random().toString(36).slice(2, 7);
+
+function newGuid() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return `{${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}}`;
+}
+
+function debounce(fn, ms) {
+  let t = 0;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+function storageGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function storageSet(key, val) { try { localStorage.setItem(key, val); } catch { /* storage blocked: run without persistence */ } }
+
+function htmlDecode(s) {
+  const ta = document.createElement('textarea');
+  ta.innerHTML = s;
+  return ta.value;
+}
+
+function b64DecodeUtf8(s) {
+  const bin = atob(String(s).replace(/\s+/g, ''));
+  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+}
+
+function wellFormed(xml) {
+  const doc = new DOMParser().parseFromString(String(xml).trim(), 'application/xml');
+  return !doc.getElementsByTagName('parsererror').length;
+}
+
+// Turn absolute paths into the environment-variable form Assigned Access examples use.
+function envify(p) {
+  const rules = [
+    [/^[A-Za-z]:\\ProgramData\\/i, '%ALLUSERSPROFILE%\\'],
+    [/^[A-Za-z]:\\Users\\[^\\]+\\AppData\\Roaming\\/i, '%APPDATA%\\'],
+    [/^[A-Za-z]:\\Program Files \(x86\)\\/i, '%ProgramFiles(x86)%\\'],
+    [/^[A-Za-z]:\\Program Files\\/i, '%ProgramFiles%\\'],
+    [/^[A-Za-z]:\\Windows\\/i, '%windir%\\'],
+  ];
+  const v = String(p || '').trim();
+  for (const [re, rep] of rules) if (re.test(v)) return v.replace(re, rep);
+  return v;
+}
+
+class ImportError extends Error {}
+
+// ============================================================================================
+// Model
+// ============================================================================================
+// State: { profiles: [Profile], configs: [Config], global: { enabled, profileRef, missingId, excludeDeviceOwner } }
+// Configs reference profiles by internal uid (profileRef) so editing a GUID never breaks a link;
+// missingId keeps an imported reference to a profile that doesn't exist.
+const emptyState = () => ({ profiles: [], configs: [], global: { enabled: false, profileRef: null, missingId: '', excludeDeviceOwner: false } });
+
+function newKioskProfile() {
+  return {
+    uid: uid(), id: newGuid(), name: '', type: 'kiosk',
+    kiosk: {
+      appType: 'win32', path: '', args: '', aumid: '',
+      edge: { url: '', mode: 'fullscreen', idle: '', noFirstRun: true, extra: '' },
+    },
+    breakout: { enabled: false, key: 'Ctrl+Alt+K' },
+  };
+}
+function newMultiProfile() {
+  return {
+    uid: uid(), id: newGuid(), name: '', type: 'multi',
+    apps: [],
+    explorer: { downloads: false, removable: false, all: false },
+    showTaskbar: true,
+    pinsMode: 'list', pins: [], pinsRaw: '',
+    startLayout: '', taskbarLayout: '',
+  };
+}
+const newApp = (kind, value = '') => ({ uid: uid(), kind, value, autoLaunch: false, autoLaunchArgs: '' });
+const newPin = (kind, value = '') => ({ uid: uid(), kind, value });
+function newConfig(kind, profileRef = null) {
+  return {
+    uid: uid(), kind, displayName: '', accountType: 'local', account: '',
+    groupType: 'AzureActiveDirectoryGroup', groupName: '', special: 'Visitor',
+    profileRef, missingId: '',
+  };
+}
+
+// Fill defaults and coerce types (used for state restored from localStorage).
+function withDefaults(def, obj) {
+  if (!obj || typeof obj !== 'object') return def;
+  const out = Array.isArray(def) ? [] : {};
+  for (const k of Object.keys(def)) {
+    const d = def[k], v = obj[k];
+    if (Array.isArray(d)) out[k] = Array.isArray(v) ? v : d;
+    else if (d && typeof d === 'object') out[k] = withDefaults(d, v);
+    else if (typeof d === 'boolean') out[k] = v === undefined ? d : !!v;
+    else if (d === null) out[k] = v === undefined ? null : v;
+    else out[k] = v === undefined || v === null ? d : String(v);
+  }
+  return out;
+}
+function normalizeState(s) {
+  const st = emptyState();
+  if (!s || typeof s !== 'object') return st;
+  for (const p of Array.isArray(s.profiles) ? s.profiles : []) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.type === 'multi') {
+      const m = withDefaults(newMultiProfile(), p);
+      m.apps = m.apps.map(a => withDefaults(newApp('path'), a));
+      m.pins = m.pins.map(x => withDefaults(newPin('packagedAppId'), x));
+      st.profiles.push(m);
+    } else {
+      st.profiles.push(withDefaults(newKioskProfile(), p));
+    }
+  }
+  for (const c of Array.isArray(s.configs) ? s.configs : []) if (c && typeof c === 'object') st.configs.push(withDefaults(newConfig('autologon'), c));
+  st.global = withDefaults(emptyState().global, s.global);
+  return st;
+}
+
+const profileByRef = (st, ref) => st.profiles.find(p => p.uid === ref) || null;
+const refId = (st, ref, missingId) => { const p = profileByRef(st, ref); return p ? p.id : (missingId || ''); };
+
+function profLabel(p, i) {
+  const n = String(p.name || '').trim();
+  return n ? `Profile "${n}"` : `Profile ${i + 1} (${p.type === 'kiosk' ? 'kiosk' : 'multi-app'})`;
+}
+function profOptionLabel(p, i) {
+  const n = String(p.name || '').trim();
+  const t = p.type === 'kiosk' ? 'kiosk' : 'multi-app';
+  return n ? `${n} (${t})` : `Profile ${i + 1} (${t})`;
+}
+
+// ============================================================================================
+// Edge kiosk arguments
+// ============================================================================================
+function edgeArgs(e) {
+  const parts = ['--kiosk', String(e.url || '').trim()];
+  parts.push('--edge-kiosk-type=' + (e.mode === 'public-browsing' ? 'public-browsing' : 'fullscreen'));
+  const idle = String(e.idle ?? '').trim();
+  if (idle !== '') parts.push('--kiosk-idle-timeout-minutes=' + idle);
+  if (e.noFirstRun) parts.push('--no-first-run');
+  const extra = String(e.extra || '').trim();
+  if (extra) parts.push(extra);
+  return parts.filter(Boolean).join(' ');
+}
+// Only accept arguments the Edge editor reproduces exactly, so an import never reorders them.
+function parseEdgeArgs(args) {
+  const toks = String(args || '').trim().split(/\s+/).filter(Boolean);
+  const e = { url: '', mode: 'fullscreen', idle: '', noFirstRun: false, extra: '' };
+  const extra = [];
+  let sawKiosk = false, sawType = false;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === '--kiosk' && !sawKiosk && i + 1 < toks.length && !toks[i + 1].startsWith('--')) { e.url = toks[++i]; sawKiosk = true; }
+    else if (!sawType && /^--edge-kiosk-type=(fullscreen|public-browsing)$/.test(t)) { e.mode = t.split('=')[1]; sawType = true; }
+    else if (e.idle === '' && /^--kiosk-idle-timeout-minutes=\d+$/.test(t)) e.idle = t.split('=')[1];
+    else if (t === '--no-first-run' && !e.noFirstRun) e.noFirstRun = true;
+    else extra.push(t);
+  }
+  if (!sawKiosk) return null;
+  e.extra = extra.join(' ');
+  return edgeArgs(e) === toks.join(' ') ? e : null;
+}
+
+// ============================================================================================
+// Breakout key
+// ============================================================================================
+function parseKey(str) {
+  const parts = String(str || '').split('+').map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const key = parts.pop();
+  const mods = [];
+  for (const m of parts) {
+    const hit = MODIFIERS.find(x => x.toLowerCase() === m.toLowerCase() || (x === 'Ctrl' && /^control$/i.test(m)));
+    if (!hit || mods.includes(hit)) return null;
+    mods.push(hit);
+  }
+  return { mods, key };
+}
+const composeKey = (mods, key) => MODIFIERS.filter(m => mods.includes(m)).concat(key ? [key] : []).join('+');
+
+// ============================================================================================
+// XML builder
+// ============================================================================================
+const IND = n => '  '.repeat(n);
+
+function pinsJson(p) {
+  if (p.pinsMode === 'none') return null;
+  if (p.pinsMode === 'raw') return String(p.pinsRaw || '').trim() || null;
+  const items = p.pins.filter(x => String(x.value || '').trim());
+  if (!items.length) return null;
+  const pad = IND(3);
+  const lines = items.map(x => {
+    const v = String(x.value).trim();
+    if (x.kind === 'raw') {
+      let o = null;
+      try { o = JSON.parse(v); } catch { /* emitted as typed; the validator reports it */ }
+      return pad + '    ' + (o !== null ? JSON.stringify(o) : v);
+    }
+    return pad + '    { ' + JSON.stringify(x.kind) + ': ' + JSON.stringify(v) + ' }';
+  });
+  return '{\n' + pad + '  "pinnedList": [\n' + lines.join(',\n') + '\n' + pad + '  ]\n' + pad + '}';
+}
+
+function buildXml(st) {
+  const used = new Set();
+  const L = [];
+
+  if (!st.profiles.length) L.push(IND(1) + '<Profiles />');
+  else {
+    L.push(IND(1) + '<Profiles>');
+    for (const p of st.profiles) {
+      const name = String(p.name || '').trim();
+      L.push(`${IND(2)}<Profile Id="${xa(p.id)}"${name ? ` Name="${xa(name)}"` : ''}>`);
+      if (p.type === 'kiosk') {
+        const k = p.kiosk;
+        if (k.appType === 'uwp') {
+          L.push(`${IND(3)}<KioskModeApp AppUserModelId="${xa(k.aumid)}" />`);
+        } else {
+          used.add('v4');
+          const path = k.appType === 'edge' ? EDGE_PATH : k.path;
+          const args = String(k.appType === 'edge' ? edgeArgs(k.edge) : k.args).trim();
+          L.push(`${IND(3)}<KioskModeApp v4:ClassicAppPath="${xa(path)}"${args ? ` v4:ClassicAppArguments="${xa(args)}"` : ''} />`);
+        }
+        if (p.breakout.enabled) {
+          used.add('v4');
+          L.push(`${IND(3)}<v4:BreakoutSequence Key="${xa(p.breakout.key)}" />`);
+        }
+      } else {
+        L.push(`${IND(3)}<AllAppsList>`);
+        if (!p.apps.length) L.push(`${IND(4)}<AllowedApps />`);
+        else {
+          L.push(`${IND(4)}<AllowedApps>`);
+          for (const a of p.apps) {
+            let s = a.kind === 'aumid' ? `<App AppUserModelId="${xa(a.value)}"` : `<App DesktopAppPath="${xa(a.value)}"`;
+            if (a.autoLaunch) {
+              used.add('rs5');
+              s += ' rs5:AutoLaunch="true"';
+              if (String(a.autoLaunchArgs || '').trim()) s += ` rs5:AutoLaunchArguments="${xa(a.autoLaunchArgs)}"`;
+            }
+            L.push(IND(5) + s + ' />');
+          }
+          L.push(`${IND(4)}</AllowedApps>`);
+        }
+        L.push(`${IND(3)}</AllAppsList>`);
+
+        const ex = p.explorer;
+        if (ex.all || ex.downloads || ex.removable) {
+          used.add('rs5');
+          L.push(`${IND(3)}<rs5:FileExplorerNamespaceRestrictions>`);
+          if (ex.all) { used.add('v3'); L.push(`${IND(4)}<v3:NoRestriction />`); }
+          else {
+            if (ex.downloads) L.push(`${IND(4)}<rs5:AllowedNamespace Name="Downloads" />`);
+            if (ex.removable) { used.add('v3'); L.push(`${IND(4)}<v3:AllowRemovableDrives />`); }
+          }
+          L.push(`${IND(3)}</rs5:FileExplorerNamespaceRestrictions>`);
+        }
+        if (String(p.startLayout || '').trim()) L.push(`${IND(3)}<StartLayout>${cdata(String(p.startLayout).trim())}</StartLayout>`);
+        const pins = pinsJson(p);
+        if (pins !== null) { used.add('v5'); L.push(`${IND(3)}<v5:StartPins>${cdata(pins)}</v5:StartPins>`); }
+        L.push(`${IND(3)}<Taskbar ShowTaskbar="${p.showTaskbar ? 'true' : 'false'}" />`);
+        if (String(p.taskbarLayout || '').trim()) { used.add('v5'); L.push(`${IND(3)}<v5:TaskbarLayout>${cdata(String(p.taskbarLayout).trim())}</v5:TaskbarLayout>`); }
+      }
+      L.push(`${IND(2)}</Profile>`);
+    }
+    L.push(IND(1) + '</Profiles>');
+  }
+
+  const C = [];
+  if (st.global.enabled) {
+    used.add('v3');
+    const gid = xa(refId(st, st.global.profileRef, st.global.missingId));
+    if (st.global.excludeDeviceOwner) {
+      used.add('v202010');
+      C.push(`${IND(2)}<v3:GlobalProfile Id="${gid}">`, `${IND(3)}<v202010:Exclusions>`,
+        `${IND(4)}<v202010:SpecialGroup Name="DeviceOwner" />`, `${IND(3)}</v202010:Exclusions>`, `${IND(2)}</v3:GlobalProfile>`);
+    } else C.push(`${IND(2)}<v3:GlobalProfile Id="${gid}" />`);
+  }
+  for (const c of st.configs) {
+    C.push(IND(2) + '<Config>');
+    if (c.kind === 'autologon') {
+      if (String(c.displayName || '').trim()) { used.add('rs5'); C.push(`${IND(3)}<AutoLogonAccount rs5:DisplayName="${xa(c.displayName)}" />`); }
+      else C.push(`${IND(3)}<AutoLogonAccount />`);
+    } else if (c.kind === 'account') {
+      C.push(`${IND(3)}<Account>${xt(accountString(c))}</Account>`);
+    } else if (c.kind === 'group') {
+      C.push(`${IND(3)}<UserGroup Type="${xa(c.groupType)}" Name="${xa(c.groupName)}" />`);
+    } else {
+      C.push(`${IND(3)}<SpecialGroup Name="${xa(c.special)}" />`);
+    }
+    C.push(`${IND(3)}<DefaultProfile Id="${xa(refId(st, c.profileRef, c.missingId))}" />`);
+    C.push(IND(2) + '</Config>');
+  }
+  if (C.length) L.push(IND(1) + '<Configs>', ...C, IND(1) + '</Configs>');
+  else L.push(IND(1) + '<Configs />');
+
+  const nsAttrs = NS_ORDER.filter(k => used.has(k)).map(k => `xmlns:${k}="${NS[k]}"`);
+  const root = nsAttrs.length
+    ? `<AssignedAccessConfiguration\n    xmlns="${NS.def}"\n    ${nsAttrs.join('\n    ')}>`
+    : `<AssignedAccessConfiguration xmlns="${NS.def}">`;
+  const xml = `<?xml version="1.0" encoding="utf-8"?>\n${root}\n${L.join('\n')}\n</AssignedAccessConfiguration>\n`;
+  return { xml, used, min: minimumWindows(st, used) };
+}
+
+function accountString(c) {
+  const v = String(c.account || '').trim();
+  return c.accountType === 'entra' ? 'AzureAD\\' + v.replace(/^azuread\\/i, '') : v;
+}
+
+// Base levels from the AssignedAccess CSP page: the Configuration node exists from Windows 10 1709,
+// and the single-app (KioskModeApp) profile in it from 1803.
+function minimumWindows(st, used) {
+  let best = { rank: 1, label: 'Windows 10 1709', why: [], key: null };
+  if (st.profiles.some(p => p.type === 'kiosk')) best = { rank: 2, label: 'Windows 10 1803', why: [], key: null };
+  for (const k of NS_ORDER) {
+    if (!used.has(k)) continue;
+    const m = NS_MIN[k];
+    if (m.rank > best.rank) best = { rank: m.rank, label: m.label, why: [NS_WHY[k]], key: k };
+    else if (m.rank === best.rank && best.key) best.why.push(NS_WHY[k]);
+  }
+  best.caveat = best.key ? NS_CAVEAT[best.key] || '' : '';
+  return best;
+}
+
+// ============================================================================================
+// Import
+// ============================================================================================
+function importAny(text) {
+  let t = String(text ?? '').replace(/^\uFEFF/, '').trim();
+  if (!t) throw new ImportError('Nothing to import.');
+  if (/^&lt;/i.test(t)) t = htmlDecode(t).trim();
+  if (/^[\[{"]/.test(t)) {
+    let j;
+    try { j = JSON.parse(t); } catch (e) { throw new ImportError("The JSON couldn't be parsed: " + e.message); }
+    if (typeof j === 'string') return importAny(j);
+    const oma = findDeep(j, o => typeof o.omaUri === 'string' && /assignedaccess\/configuration\s*$/i.test(o.omaUri));
+    if (oma) {
+      const v = String(oma.value ?? '').trim();
+      if (!/^(<|&lt;)/.test(v)) throw new ImportError('Found the OMA-URI setting for Assigned Access, but its value is empty or encrypted in the JSON. Copy the XML from the Intune portal instead.');
+      const r = importAny(v);
+      r.notes.unshift({ level: 'info', msg: `Imported from the OMA-URI setting "${oma.displayName || 'Configuration'}" in an Intune custom profile.` });
+      return r;
+    }
+    const kiosk = findDeep(j, o => Array.isArray(o.kioskProfiles));
+    if (kiosk) return importIntuneKiosk(kiosk);
+    throw new ImportError('Found neither Assigned Access XML, an OMA-URI setting for ./Vendor/MSFT/AssignedAccess/Configuration nor an Intune kiosk profile in the JSON.');
+  }
+  return importAssignedAccessXml(t);
+}
+
+function findDeep(root, pred) {
+  const stack = [root];
+  const seen = new Set();
+  while (stack.length) {
+    const o = stack.shift();
+    if (!o || typeof o !== 'object' || seen.has(o)) continue;
+    seen.add(o);
+    if (Array.isArray(o)) { stack.push(...o); continue; }
+    if (pred(o)) return o;
+    for (const k of Object.keys(o)) if (o[k] && typeof o[k] === 'object') stack.push(o[k]);
+  }
+  return null;
+}
+
+function parsePins(text) {
+  let o;
+  try { o = JSON.parse(text); } catch { return { mode: 'raw', raw: text }; }
+  if (!o || typeof o !== 'object' || Array.isArray(o) || !Array.isArray(o.pinnedList) || Object.keys(o).length !== 1) return { mode: 'raw', raw: text };
+  const pins = o.pinnedList.map(it => {
+    const keys = it && typeof it === 'object' && !Array.isArray(it) ? Object.keys(it) : [];
+    if (keys.length === 1 && ['packagedAppId', 'desktopAppLink', 'desktopAppId'].includes(keys[0]) && typeof it[keys[0]] === 'string') return newPin(keys[0], it[keys[0]]);
+    return newPin('raw', JSON.stringify(it));
+  });
+  return { mode: 'list', pins };
+}
+
+function importAssignedAccessXml(text) {
+  const notes = [];
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const perr = doc.getElementsByTagName('parsererror')[0];
+  if (perr) {
+    const m = perr.textContent.match(/error on line \d+ at column \d+:[^\n]*/i);
+    throw new ImportError("The XML isn't well-formed: " + (m ? m[0] : perr.textContent.trim().split('\n')[0]));
+  }
+  const root = doc.documentElement;
+  if (root.localName !== 'AssignedAccessConfiguration') throw new ImportError(`The root element is <${root.localName}>, expected <AssignedAccessConfiguration>.`);
+  const DEF = root.namespaceURI === NS.def ? NS.def : root.namespaceURI;
+  if (DEF !== NS.def) notes.push({ level: 'warn', msg: `The root element had the namespace "${DEF || '(none)'}" instead of ${NS.def}. Windows rejects such XML – the generator writes the correct namespace.` });
+
+  const kids = el => Array.from(el ? el.children : []);
+  const is = (el, ns, name) => el.namespaceURI === ns && el.localName === name;
+  const at = (el, name) => el.hasAttribute(name) ? el.getAttribute(name) : null;
+  const atNS = (el, ns, name) => el.hasAttributeNS(ns, name) ? el.getAttributeNS(ns, name) : null;
+  const unknown = (el, where) => notes.push({ level: 'warn', msg: `Unknown element <${el.tagName}>${where ? ' in ' + where : ''} was ignored.` });
+  const isTrue = v => /^(true|1)$/i.test(String(v || '').trim());
+
+  const st = emptyState();
+  const profilesEl = kids(root).find(e => is(e, DEF, 'Profiles'));
+  const configsEl = kids(root).find(e => is(e, DEF, 'Configs'));
+  if (!profilesEl) notes.push({ level: 'warn', msg: 'The XML had no <Profiles>.' });
+  if (!configsEl) notes.push({ level: 'warn', msg: 'The XML had no <Configs>.' });
+  for (const e of kids(root)) if (e !== profilesEl && e !== configsEl) unknown(e, 'the root element');
+
+  for (const pe of kids(profilesEl)) {
+    if (!is(pe, DEF, 'Profile')) { unknown(pe, '<Profiles>'); continue; }
+    const kma = kids(pe).find(e => is(e, DEF, 'KioskModeApp'));
+    let p;
+    if (kma) {
+      p = newKioskProfile();
+      const aumid = at(kma, 'AppUserModelId');
+      const path = atNS(kma, NS.v4, 'ClassicAppPath');
+      const args = atNS(kma, NS.v4, 'ClassicAppArguments');
+      if (path !== null) {
+        if (aumid !== null) notes.push({ level: 'warn', msg: 'KioskModeApp had both AppUserModelId and v4:ClassicAppPath – only one is allowed. ClassicAppPath was kept.' });
+        const edge = sameCI(path, EDGE_PATH) ? parseEdgeArgs(args || '') : null;
+        if (edge) { p.kiosk.appType = 'edge'; p.kiosk.edge = edge; }
+        else { p.kiosk.appType = 'win32'; p.kiosk.path = path; p.kiosk.args = args || ''; }
+      } else {
+        p.kiosk.appType = 'uwp';
+        p.kiosk.aumid = aumid || '';
+        if (args !== null) notes.push({ level: 'warn', msg: 'v4:ClassicAppArguments without ClassicAppPath was ignored.' });
+      }
+      const bs = kids(pe).find(e => is(e, NS.v4, 'BreakoutSequence'));
+      if (bs) { p.breakout.enabled = true; p.breakout.key = at(bs, 'Key') || ''; }
+      for (const c of kids(pe)) if (c !== kma && c !== bs) unknown(c, 'the kiosk profile');
+    } else {
+      p = newMultiProfile();
+      let hasTaskbar = false;
+      for (const c of kids(pe)) {
+        if (is(c, DEF, 'AllAppsList')) {
+          for (const al of kids(c)) {
+            if (!is(al, DEF, 'AllowedApps')) { unknown(al, '<AllAppsList>'); continue; }
+            for (const a of kids(al)) {
+              if (!is(a, DEF, 'App')) { unknown(a, '<AllowedApps>'); continue; }
+              const au = at(a, 'AppUserModelId'), dp = at(a, 'DesktopAppPath');
+              if (au !== null && dp !== null) notes.push({ level: 'warn', msg: `An app had both AppUserModelId and DesktopAppPath – AppUserModelId was kept (${au}).` });
+              const app = newApp(au !== null ? 'aumid' : 'path', au !== null ? au : (dp || ''));
+              app.autoLaunch = isTrue(atNS(a, NS.rs5, 'AutoLaunch'));
+              app.autoLaunchArgs = atNS(a, NS.rs5, 'AutoLaunchArguments') || '';
+              p.apps.push(app);
+            }
+          }
+        } else if (is(c, NS.rs5, 'FileExplorerNamespaceRestrictions')) {
+          for (const r of kids(c)) {
+            if (is(r, NS.rs5, 'AllowedNamespace') && at(r, 'Name') === 'Downloads') p.explorer.downloads = true;
+            else if (is(r, NS.v3, 'AllowRemovableDrives')) p.explorer.removable = true;
+            else if (is(r, NS.v3, 'NoRestriction')) p.explorer.all = true;
+            else unknown(r, 'FileExplorerNamespaceRestrictions');
+          }
+        } else if (is(c, DEF, 'StartLayout')) p.startLayout = c.textContent.trim();
+        else if (is(c, NS.v5, 'StartPins')) {
+          const r = parsePins(c.textContent.trim());
+          p.pinsMode = r.mode;
+          if (r.mode === 'list') p.pins = r.pins; else p.pinsRaw = r.raw;
+        } else if (is(c, DEF, 'Taskbar')) { hasTaskbar = true; p.showTaskbar = isTrue(at(c, 'ShowTaskbar')); }
+        else if (is(c, NS.v5, 'TaskbarLayout')) p.taskbarLayout = c.textContent.trim();
+        else unknown(c, 'the profile');
+      }
+      if (!kids(pe).length) notes.push({ level: 'warn', msg: 'A profile had no content and was read as an empty multi-app profile.' });
+      else if (!hasTaskbar) notes.push({ level: 'info', msg: "<Taskbar> was missing, but the schema requires it – it was added (taskbar shown)." });
+    }
+    p.name = at(pe, 'Name') || '';
+    const id = (at(pe, 'Id') || '').trim();
+    if (id) p.id = id;
+    else notes.push({ level: 'info', msg: 'A profile had no Id – a new GUID was created.' });
+    st.profiles.push(p);
+  }
+
+  const byId = id => st.profiles.find(p => sameCI(p.id, id)) || null;
+  for (const ce of kids(configsEl)) {
+    if (is(ce, NS.v3, 'GlobalProfile')) {
+      const gid = (at(ce, 'Id') || '').trim();
+      const target = byId(gid);
+      st.global.enabled = true;
+      st.global.profileRef = target ? target.uid : null;
+      st.global.missingId = target ? '' : gid;
+      const ex = kids(ce).find(e => is(e, NS.v202010, 'Exclusions'));
+      st.global.excludeDeviceOwner = !!(ex && kids(ex).some(e => is(e, NS.v202010, 'SpecialGroup') && at(e, 'Name') === 'DeviceOwner'));
+      continue;
+    }
+    if (!is(ce, DEF, 'Config')) { unknown(ce, '<Configs>'); continue; }
+    const c = newConfig('autologon');
+    let ref = '';
+    for (const x of kids(ce)) {
+      if (is(x, DEF, 'Account')) {
+        c.kind = 'account';
+        const v = x.textContent.trim();
+        if (/^azuread\\/i.test(v)) { c.accountType = 'entra'; c.account = v.slice(8); }
+        else if (v.includes('\\') && !v.startsWith('.\\')) { c.accountType = 'ad'; c.account = v; }
+        else { c.accountType = 'local'; c.account = v; }
+      } else if (is(x, DEF, 'AutoLogonAccount')) { c.kind = 'autologon'; c.displayName = atNS(x, NS.rs5, 'DisplayName') || ''; }
+      else if (is(x, DEF, 'UserGroup')) { c.kind = 'group'; c.groupType = at(x, 'Type') || ''; c.groupName = at(x, 'Name') || ''; }
+      else if (is(x, DEF, 'SpecialGroup')) { c.kind = 'special'; c.special = at(x, 'Name') || ''; }
+      else if (is(x, DEF, 'DefaultProfile')) ref = (at(x, 'Id') || '').trim();
+      else unknown(x, '<Config>');
+    }
+    const target = byId(ref);
+    c.profileRef = target ? target.uid : null;
+    c.missingId = target ? '' : ref;
+    st.configs.push(c);
+  }
+  return { state: st, notes, source: 'Assigned Access XML' };
+}
+
+function importIntuneKiosk(cfg) {
+  const T = o => String((o && o['@odata.type']) || '').replace(/^#?microsoft\.graph\./i, '');
+  const notes = [{ level: 'info', msg: `Imported from the Intune kiosk profile "${cfg.displayName || '(unnamed)'}". Check the result – the kiosk template and Assigned Access XML don't have exactly the same capabilities.` }];
+  const st = emptyState();
+  for (const kp of cfg.kioskProfiles) {
+    const ac = kp.appConfiguration || {};
+    let p;
+    switch (T(ac)) {
+      case 'windowsKioskSingleUWPApp':
+        p = newKioskProfile();
+        p.kiosk.appType = 'uwp';
+        p.kiosk.aumid = String((ac.uwpApp && ac.uwpApp.appUserModelId) || '');
+        break;
+      case 'windowsKioskSingleWin32App': {
+        const w = ac.win32App || {};
+        p = newKioskProfile();
+        if (/(^|\\)msedge(\.exe)?$/i.test(String(w.classicAppPath || '').trim()) || w.edgeKiosk) {
+          p.kiosk.appType = 'edge';
+          p.kiosk.edge = {
+            url: String(w.edgeKiosk || ''),
+            // Graph windowsEdgeKioskType: publicBrowsing | fullScreen
+            mode: /full/i.test(String(w.edgeKioskType || '')) ? 'fullscreen' : 'public-browsing',
+            idle: w.edgeKioskIdleTimeoutMinutes == null ? '' : String(w.edgeKioskIdleTimeoutMinutes),
+            noFirstRun: !!w.edgeNoFirstRun, extra: '',
+          };
+        } else {
+          p.kiosk.appType = 'win32';
+          p.kiosk.path = String(w.classicAppPath || '');
+        }
+        break;
+      }
+      case 'windowsKioskMultipleApps': {
+        p = newMultiProfile();
+        let auto = false, unpinned = 0;
+        for (const a of Array.isArray(ac.apps) ? ac.apps : []) {
+          const t = T(a);
+          let app, pin = null;
+          if (t === 'windowsKioskUWPApp') {
+            app = newApp('aumid', String(a.appUserModelId || ''));
+            pin = newPin('packagedAppId', String(a.appUserModelId || ''));
+          } else if (t === 'windowsKioskDesktopApp') {
+            app = newApp('path', String(a.path || '').trim());
+            if (a.desktopApplicationLinkPath) pin = newPin('desktopAppLink', String(a.desktopApplicationLinkPath).trim());
+            else unpinned++;
+          } else if (t === 'windowsKioskWin32App') {
+            const cp = String(a.classicAppPath || '').trim();
+            app = newApp('path', /(^|\\)msedge(\.exe)?$/i.test(cp) ? EDGE_PATH : cp);
+            unpinned++;
+          } else {
+            notes.push({ level: 'warn', msg: `The app "${a.name || '?'}" has an unknown type (${t || 'missing'}) and was skipped.` });
+            continue;
+          }
+          if (a.autoLaunch && !auto) { app.autoLaunch = true; auto = true; }
+          p.apps.push(app);
+          if (pin && a.startLayoutTileSize !== 'hidden') p.pins.push(pin);
+        }
+        p.showTaskbar = !!ac.showTaskBar;
+        p.explorer.downloads = !!ac.allowAccessToDownloadsFolder;
+        if (ac.startMenuLayoutXml) {
+          try { p.startLayout = b64DecodeUtf8(ac.startMenuLayoutXml).trim(); }
+          catch { notes.push({ level: 'warn', msg: "The Start layout (startMenuLayoutXml) couldn't be decoded and was skipped." }); }
+        }
+        notes.push({ level: 'info', msg: "Intune's kiosk template sets up multi-app kiosks on Windows 10 only. On Windows 11, deploy this XML as a custom profile instead." });
+        if (unpinned) notes.push({ level: 'info', msg: `${plural(unpinned, 'desktop app was', 'desktop apps were')} not pinned to Start, because the kiosk profile has no shortcut path (.lnk) for ${unpinned === 1 ? 'it' : 'them'} – add desktopAppLink pins if needed.` });
+        if (ac.disallowDesktopApps) notes.push({ level: 'info', msg: 'The template had disallowDesktopApps set (probably the "Target Windows 10 in S mode devices" option, which leaves out Win32 apps). Assigned Access XML has no such switch – it allows exactly the listed apps, so remove any desktop app that shouldn\'t run.' });
+        break;
+      }
+      default:
+        notes.push({ level: 'warn', msg: `Unknown app type in the kiosk profile (${T(ac) || 'missing'}) – an empty kiosk profile was created.` });
+        p = newKioskProfile();
+    }
+    p.name = String(kp.profileName || '');
+    const pid = String(kp.profileId || '').trim().replace(/^\{|\}$/g, '');
+    if (BARE_GUID_RE.test(pid)) p.id = '{' + pid.toUpperCase() + '}';
+    else notes.push({ level: 'info', msg: `The profile ID "${kp.profileId || ''}" wasn't a GUID – a new one was created.` });
+    st.profiles.push(p);
+
+    for (const u of Array.isArray(kp.userAccountsConfiguration) ? kp.userAccountsConfiguration : []) {
+      const c = newConfig('autologon', p.uid);
+      switch (T(u)) {
+        case 'windowsKioskAutologon': break;
+        case 'windowsKioskLocalUser': c.kind = 'account'; c.accountType = 'local'; c.account = String(u.userName || ''); break;
+        case 'windowsKioskAzureADUser': c.kind = 'account'; c.accountType = 'entra'; c.account = String(u.userPrincipalName || ''); break;
+        case 'windowsKioskLocalGroup': c.kind = 'group'; c.groupType = 'LocalGroup'; c.groupName = String(u.groupName || ''); break;
+        case 'windowsKioskActiveDirectoryGroup': c.kind = 'group'; c.groupType = 'ActiveDirectoryGroup'; c.groupName = String(u.groupName || ''); break;
+        case 'windowsKioskAzureADGroup': c.kind = 'group'; c.groupType = 'AzureActiveDirectoryGroup'; c.groupName = String(u.groupId || ''); break;
+        case 'windowsKioskVisitor': c.kind = 'special'; c.special = 'Visitor'; break;
+        default: notes.push({ level: 'warn', msg: `An unknown account type (${T(u) || 'missing'}) was skipped.` }); continue;
+      }
+      st.configs.push(c);
+    }
+  }
+  if (cfg.kioskBrowserDefaultUrl || (Array.isArray(cfg.kioskBrowserBlockedURLs) && cfg.kioskBrowserBlockedURLs.length)) {
+    notes.push({ level: 'info', msg: "The Kiosk Browser settings (start URL, blocked addresses etc.) aren't part of the Assigned Access XML – they're configured separately." });
+  }
+  if (cfg.windowsKioskForceUpdateSchedule) notes.push({ level: 'info', msg: "The kiosk profile's update schedule isn't part of the XML – manage Windows Update with a separate policy." });
+  return { state: st, notes, source: 'Intune kiosk profile' };
+}
+
+// Output of the inventory snippet, raw Get-StartApps JSON, or the Get-StartApps table.
+function parseInventory(text) {
+  const t = String(text || '').replace(/^\uFEFF/, '').trim();
+  if (!t) return { items: [], error: '' };
+  const items = [];
+  const store = (name, aumid) => ({ name: name || aumid, kind: 'aumid', value: String(aumid).trim(), pin: ['packagedAppId', String(aumid).trim()] });
+  const desk = (name, path, link) => ({ name: name || path, kind: 'path', value: envify(path), pin: link ? ['desktopAppLink', envify(link)] : null });
+  const fromAppId = (name, id) => {
+    id = String(id).trim();
+    if (id.includes('!')) return store(name, id);
+    const m = id.match(/^(\{[0-9A-Fa-f-]{36}\})\\(.+)$/);
+    const base = m && KNOWN_FOLDERS[m[1].toUpperCase()];
+    if (base) return desk(name, base + '\\' + m[2], '');
+    return { name: name || id, kind: 'unsupported', value: id, pin: null };
+  };
+  if (/^[\[{]/.test(t)) {
+    let j;
+    try { j = JSON.parse(t); } catch (e) { return { items: [], error: "The JSON couldn't be parsed: " + e.message }; }
+    for (const o of Array.isArray(j) ? j : [j]) {
+      if (!o || typeof o !== 'object') continue;
+      const name = String(o.Name ?? o.name ?? '').trim();
+      const aumid = o.AUMID ?? o.AppUserModelId ?? null;
+      const path = o.Path ?? o.path ?? null;
+      const appId = o.AppID ?? o.AppId ?? o.appId ?? null;
+      if (aumid) items.push(store(name, aumid));
+      else if (path) items.push(desk(name, path, o.Link ?? o.link ?? ''));
+      else if (appId) items.push(fromAppId(name, appId));
+    }
+  } else {
+    for (const line of t.split(/\r?\n/)) {
+      if (!line.trim() || /^\s*(Name\s+AppID|-+\s+-+)\s*$/i.test(line)) continue;
+      const m = line.trim().match(/^(.*?)\s{2,}(\S+)$/);
+      if (m) items.push(fromAppId(m[1].trim(), m[2]));
+    }
+  }
+  const seen = new Set();
+  const out = items.filter(it => { const k = it.kind + '|' + it.value.toLowerCase(); if (!it.value || seen.has(k)) return false; seen.add(k); return true; });
+  if (!out.length) return { items: [], error: 'No apps found. Paste the JSON from the script above, or the output of Get-StartApps.' };
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return { items: out, error: '' };
+}
+
+// ============================================================================================
+// Validation
+// ============================================================================================
+function validate(st) {
+  const out = [];
+  const add = (level, msg, field) => out.push({ level, msg, field: field || null });
+  const err = (m, f) => add('error', m, f), warn = (m, f) => add('warn', m, f), info = (m, f) => add('info', m, f);
+
+  function checkPath(raw, field, who, what) {
+    const v = String(raw || '').trim();
+    if (!v) { err(`${who}: enter ${what}.`, field); return; }
+    if (/^["']|["']$/.test(v)) { err(`${who}: remove the quotes around the path – the XML doesn't need them.`, field); return; }
+    if (/\.exe\s+\S/i.test(v)) { err(`${who}: the path seems to contain arguments. Enter only the path to the .exe file.`, field); return; }
+    if (!/\.exe$/i.test(v)) warn(`${who}: ${what} should point to an .exe file.`, field);
+    if (/^\\\\/.test(v)) warn(`${who}: network path – the app only starts if the device can reach the share when the kiosk account signs in. Prefer a local install.`, field);
+    else if (!/^(%[A-Za-z0-9_()]+%|[A-Za-z]:\\)/.test(v)) warn(`${who}: use a full path, e.g. %ProgramFiles%\\Vendor\\App.exe.`, field);
+    if (/%(USERPROFILE|APPDATA|LOCALAPPDATA|HOMEPATH|TEMP|TMP)%|^[A-Za-z]:\\Users\\/i.test(v)) warn(`${who}: the path points into a user profile. The kiosk account is a different user – install the app per machine (Program Files).`, field);
+    if (/\\v?\d+(\.\d+){1,3}\\/i.test(v) && !/\\WindowsPowerShell\\v1\.0\\/i.test(v)) warn(`${who}: the path contains a version number. When the app is updated into a new folder, this profile has to be updated as well, or the kiosk won't start. A stable path (fixed install folder, junction or launcher) avoids that – but test it under Assigned Access before relying on it.`, field);
+  }
+  function checkAumid(raw, field, who) {
+    const v = String(raw || '').trim();
+    if (!v) { err(`${who}: enter the app's AUMID.`, field); return; }
+    if (!AUMID_RE.test(v)) warn(`${who}: "${v}" doesn't look like a Store app AUMID (PackageFamilyName!AppId). Check with Get-StartApps.`, field);
+  }
+
+  if (!st.profiles.length) err('Add at least one profile.');
+  const seenIds = new Map();
+  st.profiles.forEach((p, i) => {
+    const f = `profiles.${i}`;
+    const who = profLabel(p, i);
+    const id = String(p.id || '').trim();
+    if (!GUID_RE.test(id)) err(`${who}: the profile ID must be a GUID in braces, e.g. {EDB3036B-780D-487D-A375-69369D8A8F78}.`, `${f}.id`);
+    else if (seenIds.has(id.toUpperCase())) err(`${who}: same profile ID as ${seenIds.get(id.toUpperCase())}. Each profile needs its own ID.`, `${f}.id`);
+    else seenIds.set(id.toUpperCase(), who);
+
+    if (p.type === 'kiosk') {
+      const k = p.kiosk;
+      if (k.appType === 'uwp') checkAumid(k.aumid, `${f}.kiosk.aumid`, who);
+      else if (k.appType === 'edge') {
+        const url = String(k.edge.url || '').trim();
+        const uf = `${f}.kiosk.edge.url`;
+        if (!url || /^https?:\/\/$/i.test(url)) err(`${who}: enter the address Edge should open.`, uf);
+        else {
+          if (/\s/.test(url)) err(`${who}: the address can't contain spaces (write %20).`, uf);
+          else if (!/^(https?:\/\/|file:\/\/)/i.test(url)) warn(`${who}: the address should start with https://, http:// or file:///.`, uf);
+          if (/(^|\.)example\.(com|org|net)\b|contoso\.com/i.test(url)) warn(`${who}: replace the example address.`, uf);
+        }
+        const idle = String(k.edge.idle ?? '').trim();
+        if (idle !== '' && (!/^\d+$/.test(idle) || +idle > 1440)) err(`${who}: the idle timeout must be a whole number from 0 to 1440 minutes (0 turns it off).`, `${f}.kiosk.edge.idle`);
+        if (/--kiosk\b|--edge-kiosk-type/.test(k.edge.extra)) warn(`${who}: the extra arguments contain kiosk flags that the fields above already set.`, `${f}.kiosk.edge.extra`);
+      } else {
+        checkPath(k.path, `${f}.kiosk.path`, who, 'the path to the app');
+        if (/msedge\.exe$/i.test(String(k.path).trim())) info(`${who}: Edge kiosks have their own mode (Microsoft Edge) that builds the arguments for you.`, `${f}.kiosk.path`);
+      }
+      if (p.breakout.enabled) {
+        const key = String(p.breakout.key || '').trim();
+        const bf = `${f}.breakout.key`;
+        const pk = parseKey(key);
+        if (!key) err(`${who}: enter the key combination for the breakout sequence.`, bf);
+        else if (!pk) warn(`${who}: "${key}" has an unexpected format. Write it like Ctrl+Alt+K.`, bf);
+        else if (!pk.mods.length) warn(`${who}: the breakout sequence should include at least one of Ctrl, Alt or Shift.`, bf);
+        else if (/^(del|delete)$/i.test(pk.key) && pk.mods.includes('Ctrl') && pk.mods.includes('Alt')) info(`${who}: Ctrl+Alt+Del is already the default – no custom breakout sequence is needed.`, bf);
+      }
+    } else {
+      const af = `${f}.apps`;
+      if (!p.apps.length) err(`${who}: add at least one allowed app.`, af);
+      const exact = new Map(), loose = new Map();
+      let autos = 0;
+      p.apps.forEach((a, j) => {
+        const vf = `${f}.apps.${j}.value`;
+        const whoApp = `${who}, app ${j + 1}`;
+        if (a.kind === 'aumid') checkAumid(a.value, vf, whoApp);
+        else checkPath(a.value, vf, whoApp, 'the path');
+        const v = String(a.value || '').trim();
+        if (v) {
+          if (exact.has(v)) err(`${whoApp}: same app as app ${exact.get(v) + 1}. Each app can only be listed once.`, vf);
+          else if (loose.has(v.toLowerCase())) warn(`${whoApp}: looks like the same app as app ${loose.get(v.toLowerCase()) + 1} (differs only in letter case).`, vf);
+          exact.set(v, j);
+          loose.set(v.toLowerCase(), j);
+        }
+        if (a.autoLaunch) autos++;
+      });
+      if (autos > 1) err(`${who}: only one app can start automatically.`, af);
+
+      const ex = p.explorer;
+      const hasExplorer = p.apps.some(a => a.kind === 'path' && /(^|\\)explorer\.exe$/i.test(String(a.value).trim()));
+      if ((ex.downloads || ex.removable || ex.all) && !hasExplorer) info(`${who}: folder access goes through File Explorer – add %windir%\\explorer.exe to the apps if users should browse.`, `${f}.explorer.downloads`);
+
+      if (p.pinsMode === 'raw') {
+        const t = String(p.pinsRaw || '').trim();
+        if (t) {
+          try {
+            const o = JSON.parse(t);
+            if (!o || typeof o !== 'object' || !Array.isArray(o.pinnedList)) err(`${who}: the StartPins JSON must contain a "pinnedList" array.`, `${f}.pinsRaw`);
+          } catch (e) { err(`${who}: StartPins isn't valid JSON (${e.message}).`, `${f}.pinsRaw`); }
+        }
+      } else if (p.pinsMode === 'list') {
+        p.pins.forEach((pin, j) => {
+          const pf = `${f}.pins.${j}.value`;
+          const v = String(pin.value || '').trim();
+          if (!v) { err(`${who}: Start pin ${j + 1} is empty.`, pf); return; }
+          if (pin.kind === 'packagedAppId' && !p.apps.some(a => a.kind === 'aumid' && sameCI(a.value, v))) warn(`${who}: ${v} is pinned to Start but isn't an allowed app – it can't be started.`, pf);
+          if (pin.kind === 'desktopAppLink' && !/\.lnk$/i.test(v)) warn(`${who}: desktopAppLink should point to a shortcut (.lnk).`, pf);
+          if (pin.kind === 'raw') {
+            try { const o = JSON.parse(v); if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error(); }
+            catch { err(`${who}: Start pin ${j + 1} isn't a valid JSON object.`, pf); }
+          }
+        });
+      }
+      const hasPins = (p.pinsMode === 'list' && p.pins.some(x => String(x.value || '').trim())) || (p.pinsMode === 'raw' && String(p.pinsRaw || '').trim());
+      if (!hasPins && !String(p.startLayout || '').trim()) warn(`${who}: nothing is pinned to Start. Microsoft requires a Start layout for multi-app profiles – pin the apps users should start.`, `${f}.pins`);
+      if (String(p.startLayout || '').trim() && !wellFormed(p.startLayout)) err(`${who}: StartLayout (Windows 10) isn't well-formed XML.`, `${f}.startLayout`);
+      if (String(p.taskbarLayout || '').trim() && !wellFormed(p.taskbarLayout)) err(`${who}: TaskbarLayout isn't well-formed XML.`, `${f}.taskbarLayout`);
+
+      const edgeAllowed = p.apps.some(a => a.kind === 'path' && /\\msedge\.exe$/i.test(String(a.value).trim()));
+      const secondary = (p.pinsMode === 'list' && p.pins.some(x => x.kind === 'raw' && /secondaryTile/.test(x.value))) || (p.pinsMode === 'raw' && /secondaryTile/.test(p.pinsRaw));
+      if (secondary) {
+        const hasProxy = p.apps.some(a => a.kind === 'path' && /\\msedge_proxy\.exe$/i.test(String(a.value).trim()));
+        const hasAumid = p.apps.some(a => a.kind === 'aumid' && sameCI(a.value, EDGE_AUMID));
+        if (!edgeAllowed || !hasProxy || !hasAumid) warn(`${who}: pinned Edge websites (secondaryTile) need msedge.exe, msedge_proxy.exe and the Edge AUMID among the apps – add "Microsoft Edge" from Common apps.`, af);
+      }
+    }
+  });
+  if (st.profiles.filter(p => p.type === 'kiosk').length > 1) err('A configuration can contain only one kiosk profile (KioskModeApp). The other profiles must be multi-app.');
+
+  let autoLogons = 0;
+  const seenAccounts = new Map();
+  st.configs.forEach((c, i) => {
+    const f = `configs.${i}`;
+    const who = `Assignment ${i + 1}`;
+    const target = profileByRef(st, c.profileRef);
+    if (!target) err(c.missingId ? `${who}: the profile ${c.missingId} isn't in the configuration – choose a profile.` : `${who}: choose which profile applies.`, `${f}.profileRef`);
+    if (c.kind === 'autologon') autoLogons++;
+    else if (c.kind === 'account') {
+      const v = String(c.account || '').trim();
+      const af = `${f}.account`;
+      if (!v) err(`${who}: enter the account.`, af);
+      else if (c.accountType === 'entra') {
+        if (!/^[^@\s\\]+@[^@\s\\]+\.[^@\s\\]+$/.test(v.replace(/^azuread\\/i, ''))) err(`${who}: enter the user's UPN, e.g. kiosk@contoso.com.`, af);
+      } else if (c.accountType === 'ad') {
+        if (!/^[^\\\s]+\\[^\\]+$/.test(v)) warn(`${who}: AD accounts are written DOMAIN\\samAccountName.`, af);
+      } else if (v.includes('@')) warn(`${who}: the account looks like a UPN – choose the Entra ID account type.`, af);
+      const key = accountString(c).toLowerCase();
+      if (v && seenAccounts.has(key)) warn(`${who}: same account as assignment ${seenAccounts.get(key) + 1}.`, af);
+      seenAccounts.set(key, i);
+    } else if (c.kind === 'group') {
+      const v = String(c.groupName || '').trim();
+      const gf = `${f}.groupName`;
+      if (!GROUP_TYPES.some(([t]) => t === c.groupType)) err(`${who}: unknown group type "${c.groupType}".`, `${f}.groupType`);
+      if (!v) err(`${who}: enter the group.`, gf);
+      else if (c.groupType === 'AzureActiveDirectoryGroup' && !BARE_GUID_RE.test(v)) warn(`${who}: Entra ID groups are given by object ID (a GUID without braces).`, gf);
+      else if (c.groupType === 'ActiveDirectoryGroup' && !v.includes('\\')) warn(`${who}: AD groups are written DOMAIN\\groupname.`, gf);
+      if (target && target.type === 'kiosk') err(`${who}: a kiosk profile can only be assigned to user accounts, not to groups. Choose a multi-app profile or switch to a user account.`, `${f}.profileRef`);
+    } else if (!SPECIAL_GROUPS.some(([s]) => s === c.special)) err(`${who}: unknown special group "${c.special}".`, `${f}.special`);
+  });
+  if (autoLogons > 1) err('Only one assignment can use automatic sign-in.');
+
+  if (st.global.enabled) {
+    const g = profileByRef(st, st.global.profileRef);
+    if (!g) err(st.global.missingId ? `Global profile: the profile ${st.global.missingId} doesn't exist – choose a profile.` : 'Global profile: choose a profile.', 'global.profileRef');
+    else if (g.type === 'kiosk') warn('Global profile: Microsoft only documents global profiles with multi-app profiles, and a kiosk profile can only be assigned to user accounts.', 'global.profileRef');
+  }
+  if (!st.configs.length && !st.global.enabled && st.profiles.length) err('Add at least one assignment – otherwise the profile applies to no one.');
+
+  st.profiles.forEach((p, i) => {
+    const used = st.configs.some(c => c.profileRef === p.uid) || (st.global.enabled && st.global.profileRef === p.uid);
+    if (!used && (st.configs.length || st.global.enabled)) warn(`${profLabel(p, i)} isn't used by any assignment.`, `profiles.${i}.id`);
+  });
+  return out;
+}
+
+// ============================================================================================
+// Summary
+// ============================================================================================
+function appName(a) {
+  const v = String(a.value || '').trim();
+  const hit = CATALOG.find(c => c.apps.some(([k, x]) => k === a.kind && sameCI(x, v)));
+  if (hit) return hit.label + (a.kind === 'path' ? ` (${v.split('\\').pop()})` : '');
+  if (a.kind === 'path') return v.split('\\').pop() || '(empty)';
+  return v.split('_')[0] || '(empty)';
+}
+
+function summary(st, built) {
+  const L = [];
+  st.profiles.forEach(p => {
+    const name = String(p.name || '').trim();
+    if (p.type === 'kiosk') {
+      const k = p.kiosk;
+      L.push(`Kiosk (single app)${name ? ': ' + name : ''}`);
+      if (k.appType === 'edge') {
+        const idle = String(k.edge.idle).trim();
+        const idleText = idle === '' ? '' : idle === '0' ? '; idle reset turned off' : `; the session resets after ${idle} min without activity`;
+        L.push(`• Microsoft Edge ${k.edge.mode === 'public-browsing' ? 'as a public browser' : 'in full screen (signage/interactive)'}, opening ${k.edge.url || '–'}${idleText}.`);
+      } else if (k.appType === 'uwp') L.push(`• Runs the Store app ${k.aumid || '–'} in full screen.`);
+      else L.push(`• Runs ${String(k.path).trim() || '–'}${String(k.args).trim() ? ' with the arguments ' + String(k.args).trim() : ''} in full screen.`);
+      L.push(p.breakout.enabled ? `• Breakout sequence: ${p.breakout.key} (replaces Ctrl+Alt+Del).` : '• Breakout sequence: Ctrl+Alt+Del (default).');
+    } else {
+      L.push(`Restricted desktop (multi-app)${name ? ': ' + name : ''}`);
+      L.push(`• Allowed apps (${p.apps.length}): ${p.apps.map(appName).join(', ') || '–'}.`);
+      const auto = p.apps.find(a => a.autoLaunch);
+      if (auto) L.push(`• Starts automatically: ${appName(auto)}${String(auto.autoLaunchArgs).trim() ? ' ' + String(auto.autoLaunchArgs).trim() : ''}.`);
+      const ex = p.explorer;
+      L.push('• File Explorer: ' + (ex.all ? 'all locations allowed.' : ex.downloads && ex.removable ? 'Downloads and removable drives.' : ex.downloads ? 'Downloads only.' : ex.removable ? 'removable drives only.' : 'all folder access blocked.'));
+      const pins = p.pinsMode === 'list' ? p.pins.filter(x => String(x.value).trim()).length : null;
+      L.push('• Start menu: ' + (p.pinsMode === 'raw' ? 'custom StartPins JSON.' : p.pinsMode === 'none' || !pins ? 'nothing pinned.' : `${plural(pins, 'pinned app', 'pinned apps')}.`) + (String(p.startLayout).trim() ? ' Windows 10 layout included.' : ''));
+      L.push(`• Taskbar: ${p.showTaskbar ? 'shown' : 'hidden'}${String(p.taskbarLayout).trim() ? ', with a custom layout' : ''}.`);
+    }
+    L.push(`  Profile ID ${p.id}`);
+    L.push('');
+  });
+  L.push('Who gets what');
+  if (st.global.enabled) {
+    const g = profileByRef(st, st.global.profileRef);
+    L.push(`• Every user who isn't an administrator (global profile) → ${g ? profOptionLabel(g, st.profiles.indexOf(g)) : '–'}${st.global.excludeDeviceOwner ? ', except device owners' : ''}.`);
+  }
+  for (const c of st.configs) {
+    const t = profileByRef(st, c.profileRef);
+    const target = t ? profOptionLabel(t, st.profiles.indexOf(t)) : '–';
+    let who;
+    if (c.kind === 'autologon') who = `Automatic sign-in with a local kiosk account${String(c.displayName).trim() ? ` shown as "${String(c.displayName).trim()}"` : ''}`;
+    else if (c.kind === 'account') who = `The account ${accountString(c) || '–'}`;
+    else if (c.kind === 'group') who = `${(GROUP_TYPES.find(g => g[0] === c.groupType) || [0, c.groupType])[1]} ${String(c.groupName).trim() || '–'}`;
+    else who = `The HoloLens special group ${c.special}`;
+    L.push(`• ${who} → ${target}.`);
+  }
+  if (!st.configs.length && !st.global.enabled) L.push('• (no assignment)');
+  L.push('');
+  L.push(`Schema level: ${built.min.label} or later, per Microsoft's XSD reference.`);
+  L.push(`Intune: custom profile, OMA-URI ${OMA_URI}, data type String, assigned to a device group.`);
+  return L.join('\n');
+}
+
+// ============================================================================================
+// Syntax highlighting
+// ============================================================================================
+function highlightXml(xml) {
+  const re = /(<!\[CDATA\[[\s\S]*?\]\]>)|(<\?[\s\S]*?\?>)|(<!--[\s\S]*?-->)|(<\/?)([A-Za-z_][\w.:-]*)((?:\s+[^\s=\/>]+\s*=\s*"[^"]*")*)(\s*)(\/?>)|([^<]+)|(<)/g;
+  const name = n => {
+    const i = n.indexOf(':');
+    return i > 0 ? `<span class="t-pre">${escHtml(n.slice(0, i))}</span><span class="t-p">:</span><span class="t-tag">${escHtml(n.slice(i + 1))}</span>` : `<span class="t-tag">${escHtml(n)}</span>`;
+  };
+  const attrs = s => s.replace(/(\s+)([^\s=]+)(\s*=\s*)("[^"]*")/g, (_, ws, n, eq, v) => {
+    const i = n.indexOf(':');
+    const nm = i > 0 ? `<span class="t-pre">${escHtml(n.slice(0, i))}</span><span class="t-p">:</span><span class="t-attr">${escHtml(n.slice(i + 1))}</span>` : `<span class="t-attr">${escHtml(n)}</span>`;
+    return `${ws}${nm}<span class="t-p">${escHtml(eq)}</span><span class="t-val">${escHtml(v)}</span>`;
+  });
+  let out = '', m;
+  while ((m = re.exec(xml))) {
+    if (m[1]) out += `<span class="t-p">&lt;![CDATA[</span><span class="t-cd">${escHtml(m[1].slice(9, -3))}</span><span class="t-p">]]&gt;</span>`;
+    else if (m[2] || m[3]) out += `<span class="t-decl">${escHtml(m[2] || m[3])}</span>`;
+    else if (m[5]) out += `<span class="t-p">${escHtml(m[4])}</span>${name(m[5])}${attrs(m[6] || '')}${m[7] || ''}<span class="t-p">${escHtml(m[8])}</span>`;
+    else out += escHtml(m[9] || m[10] || '');
+  }
+  return out;
+}
+
+// ============================================================================================
+// Templates
+// ============================================================================================
+function addCatalogEntry(p, entryId, pin = true) {
+  const e = CATALOG.find(c => c.id === entryId);
+  if (!e) return;
+  for (const [kind, value] of e.apps) if (!p.apps.some(a => a.kind === kind && sameCI(a.value, value))) p.apps.push(newApp(kind, value));
+  if (pin && e.pin) {
+    const [kind, value] = e.pin === 'same' ? ['packagedAppId', e.apps[0][1]] : e.pin;
+    if (!p.pins.some(x => x.kind === kind && sameCI(x.value, value))) p.pins.push(newPin(kind, value));
+  }
+}
+
+const TEMPLATES = {
+  win32() {
+    const st = emptyState();
+    const p = newKioskProfile();
+    p.kiosk.appType = 'win32';
+    st.profiles.push(p);
+    const c = newConfig('autologon', p.uid); c.displayName = 'Kiosk';
+    st.configs.push(c);
+    return st;
+  },
+  edge() {
+    const st = TEMPLATES.win32();
+    st.profiles[0].kiosk.appType = 'edge';
+    return st;
+  },
+  uwp() {
+    const st = TEMPLATES.win32();
+    st.profiles[0].kiosk.appType = 'uwp';
+    return st;
+  },
+  multi() {
+    const st = emptyState();
+    const p = newMultiProfile();
+    addCatalogEntry(p, 'edge');
+    st.profiles.push(p);
+    const c = newConfig('autologon', p.uid); c.displayName = 'Kiosk';
+    st.configs.push(c);
+    return st;
+  },
+};
+
+// ============================================================================================
+// App state, persistence, theme
+// ============================================================================================
+let S = emptyState();
+let IMPORT_NOTES = [];
+let ACTIVE_TAB = 'xml';
+let LAST = null;
+
+const save = debounce(() => { if (!SELFTEST) storageSet(STORAGE_KEY, JSON.stringify(S)); }, 250);
+function loadSaved() {
+  const t = storageGet(STORAGE_KEY);
+  if (!t) return null;
+  try { return normalizeState(JSON.parse(t)); } catch { return null; }
+}
+function hasContent(st) { return st.profiles.length > 0 || st.configs.length > 0; }
+
+const THEMES = ['auto', 'light', 'dark'];
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  const btn = $('#theme-btn');
+  const label = THEMES.includes(t) ? t : 'auto';
+  btn.title = 'Theme: ' + label;
+  btn.setAttribute('aria-label', 'Change theme (now: ' + label + ')');
+}
+function currentTheme() { const t = storageGet(THEME_KEY); return THEMES.includes(t) ? t : 'auto'; }
+
+// ============================================================================================
+// Path binding
+// ============================================================================================
+function resolvePath(path) {
+  const keys = path.split('.');
+  let o = S;
+  for (let i = 0; i < keys.length - 1; i++) {
+    o = o[/^\d+$/.test(keys[i]) ? +keys[i] : keys[i]];
+    if (o == null || typeof o !== 'object') return null;
+  }
+  return { obj: o, key: keys[keys.length - 1] };
+}
+function setPath(path, value) { const r = resolvePath(path); if (r) r.obj[r.key] = value; }
+
+// ============================================================================================
+// Rendering helpers
+// ============================================================================================
+const idFor = bind => 'f_' + bind.replace(/[^A-Za-z0-9]/g, '_');
+function txt(bind, value, o = {}) {
+  return `<input type="text" id="${idFor(bind)}" data-bind="${bind}" value="${escHtml(value)}"` +
+    `${o.mono ? ' class="mono"' : ''}${o.placeholder ? ` placeholder="${escHtml(o.placeholder)}"` : ''}` +
+    `${o.list ? ` list="${o.list}"` : ''}${o.inputmode ? ` inputmode="${o.inputmode}"` : ''}` +
+    `${o.aria ? ` aria-label="${escHtml(o.aria)}"` : ''}${o.sync ? ` data-sync="${o.sync}"` : ''} spellcheck="false" autocomplete="off">`;
+}
+function area(bind, value, o = {}) {
+  return `<textarea id="${idFor(bind)}" data-bind="${bind}" class="mono" rows="${o.rows || 7}" spellcheck="false"` +
+    `${o.placeholder ? ` placeholder="${escHtml(o.placeholder)}"` : ''}${o.aria ? ` aria-label="${escHtml(o.aria)}"` : ''}>${escHtml(value)}</textarea>`;
+}
+function select(bind, value, options, o = {}) {
+  const opts = options.slice();
+  if (!opts.some(([v]) => v === value)) opts.push([value, `${value || '(empty)'} – unknown value`]);
+  return `<select id="${idFor(bind)}" data-bind="${bind}"${o.rerender ? ' data-rerender' : ''}${o.aria ? ` aria-label="${escHtml(o.aria)}"` : ''}>` +
+    opts.map(([v, l]) => `<option value="${escHtml(v)}"${v === value ? ' selected' : ''}>${escHtml(l)}</option>`).join('') + '</select>';
+}
+function check(bind, checked, label, o = {}) {
+  return `<label class="check${o.disabled ? ' disabled' : ''}"><input type="checkbox" id="${idFor(bind)}" data-bind="${bind}" aria-label="${escHtml(label.replace(/<[^>]+>/g, ''))}"` +
+    `${checked ? ' checked' : ''}${o.rerender ? ' data-rerender' : ''}${o.disabled ? ' disabled' : ''}><span>${label}${o.hint ? `<span class="hint">${o.hint}</span>` : ''}</span></label>`;
+}
+function seg(bind, value, options, aria) {
+  return `<div class="seg" role="radiogroup" aria-label="${escHtml(aria)}">` + options.map(([v, l]) =>
+    `<label><input type="radio" name="${idFor(bind)}" data-bind="${bind}" value="${escHtml(v)}"${v === value ? ' checked' : ''} data-rerender><span>${escHtml(l)}</span></label>`).join('') + '</div>';
+}
+function field(label, control, hint, o = {}) {
+  return `<div class="field${o.wide ? ' wide' : ''}"${o.field ? ` data-field="${o.field}"` : ''}>` +
+    (label ? `<label${o.for ? ` for="${o.for}"` : ''}>${label}</label>` : '') + control + (hint ? `<div class="hint">${hint}</div>` : '') + '</div>';
+}
+const iconBtn = (act, icon, title, data = '', o = {}) =>
+  `<button class="icon-btn${o.danger ? ' danger' : ''}" data-act="${act}" ${data} title="${escHtml(title)}" aria-label="${escHtml(title)}"${o.disabled ? ' disabled' : ''}>${ic(icon)}</button>`;
+
+// ============================================================================================
+// Editor rendering
+// ============================================================================================
+function renderEditor() {
+  const ed = $('#editor');
+  const focus = captureFocus();
+  if (!hasContent(S) && !S.global.enabled) {
+    ed.innerHTML = `<div class="card empty-state">
+        <div style="display:flex;justify-content:center;color:var(--accent)">${ic('monitor', 34)}</div>
+        <h2>Build an Assigned Access configuration</h2>
+        <p>Choose what the kiosk should do, or import existing XML.</p>
+        <div class="add-row">
+          <button class="btn primary" data-act="open-start">${ic('plus')}Choose template</button>
+          <button class="btn" data-act="open-import">${ic('upload')}Import…</button>
+        </div>
+      </div>`;
+    return;
+  }
+  ed.innerHTML = `
+    <div class="section">
+      <div class="section-head"><span class="step">1</span><h2>Profiles</h2><span class="hint">What the user may run.</span></div>
+      ${S.profiles.map(renderProfile).join('')}
+      <div class="add-row">
+        <button class="btn" data-act="add-profile" data-type="kiosk">${ic('plus')}Kiosk profile (single app)</button>
+        <button class="btn" data-act="add-profile" data-type="multi">${ic('plus')}Multi-app profile</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head"><span class="step">2</span><h2>Assignments</h2><span class="hint">Who gets which profile.</span></div>
+      ${S.configs.map(renderConfig).join('')}
+      <div class="add-row">
+        <button class="btn" data-act="add-config" data-kind="autologon">${ic('plus')}Automatic sign-in</button>
+        <button class="btn" data-act="add-config" data-kind="account">${ic('plus')}User account</button>
+        <button class="btn" data-act="add-config" data-kind="group">${ic('plus')}Group</button>
+      </div>
+      ${renderGlobal()}
+    </div>
+    <datalist id="dl-aumid">${CATALOG.filter(c => c.apps.length === 1 && c.apps[0][0] === 'aumid').map(c => `<option value="${escHtml(c.apps[0][1])}">${escHtml(c.label)}</option>`).join('')}</datalist>`;
+  restoreFocus(focus);
+}
+
+function renderProfile(p, i) {
+  const f = `profiles.${i}`;
+  return `<article class="card" data-field="${f}">
+    <div class="card-head">
+      <span class="badge ${p.type}">${p.type === 'kiosk' ? 'Kiosk · single app' : 'Multi-app · restricted desktop'}</span>
+      <div class="grow"></div>
+      ${iconBtn('del-profile', 'trash', 'Remove profile', `data-i="${i}"`, { danger: true })}
+    </div>
+    <div class="grid2">
+      ${field('Name', txt(`${f}.name`, p.name, { placeholder: p.type === 'kiosk' ? 'e.g. Lobby kiosk' : 'e.g. Visitor PC', sync: 'profile-name' }), 'Optional – helps you recognize the profile.', { for: idFor(`${f}.name`) })}
+      ${field('Profile ID', `<div class="input-group">${txt(`${f}.id`, p.id, { mono: true, aria: 'Profile ID' })}<button class="btn small" data-act="new-guid" data-i="${i}" title="Create a new GUID">New</button></div>`, 'GUID that ties the profile to its assignments.', { for: idFor(`${f}.id`) })}
+    </div>
+    ${p.type === 'kiosk' ? renderKiosk(p, f, i) : renderMulti(p, f, i)}
+  </article>`;
+}
+
+function renderKiosk(p, f, i) {
+  const k = p.kiosk;
+  let body = '';
+  if (k.appType === 'edge') {
+    const e = k.edge, ef = `${f}.kiosk.edge`;
+    body = `<div class="grid2">
+      ${field('Start address', txt(`${ef}.url`, e.url, { mono: true, placeholder: 'https://…' }), 'The page that opens. Local files: <code>file:///C:/…</code>', { for: idFor(`${ef}.url`), wide: true })}
+      ${field('Mode', seg(`${ef}.mode`, e.mode, [['fullscreen', 'Full screen'], ['public-browsing', 'Public browser']], 'Edge mode'),
+        e.mode === 'public-browsing' ? 'A limited multi-tab browser for the public. Runs InPrivate.' : 'One site in full screen – digital signage or an interactive display. Runs InPrivate.')}
+      ${field('Idle timeout (minutes)', txt(`${ef}.idle`, e.idle, { inputmode: 'numeric', placeholder: "Edge's default" }), 'Minutes without activity before Edge resets the session. 0 turns it off. Default: off in full screen, 5 in public browsing.', { for: idFor(`${ef}.idle`) })}
+      <div class="wide">${check(`${ef}.noFirstRun`, e.noFirstRun, "Skip Edge's first-run experience <code>--no-first-run</code>", { rerender: true })}</div>
+      ${field('Extra arguments', txt(`${ef}.extra`, e.extra, { mono: true, placeholder: 'Optional' }), '', { for: idFor(`${ef}.extra`), wide: true })}
+      <div class="wide preview-line" id="edge-preview-${i}"><b>msedge.exe</b> ${escHtml(edgeArgs(e))}</div>
+    </div>`;
+  } else if (k.appType === 'uwp') {
+    body = `<div class="grid2">${field('AUMID (Application User Model ID)', txt(`${f}.kiosk.aumid`, k.aumid, { mono: true, list: 'dl-aumid', placeholder: 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App' }),
+      'Get it with <code>Get-StartApps</code> in PowerShell on a device where the app is installed.', { for: idFor(`${f}.kiosk.aumid`), wide: true })}</div>`;
+  } else {
+    body = `<div class="grid2">
+      ${field('Path to the app', txt(`${f}.kiosk.path`, k.path, { mono: true, placeholder: '%ProgramFiles%\\Vendor\\App\\App.exe' }), 'Full path; environment variables such as <code>%ProgramFiles%</code> work.', { for: idFor(`${f}.kiosk.path`), wide: true })}
+      ${field('Arguments', txt(`${f}.kiosk.args`, k.args, { mono: true, placeholder: 'Optional' }), '', { for: idFor(`${f}.kiosk.args`), wide: true })}
+    </div>`;
+  }
+  const b = p.breakout, pk = parseKey(b.key) || { mods: [], key: '' };
+  const keyOpts = KEY_CHOICES.includes(pk.key) ? KEY_CHOICES : [pk.key || ''].concat(KEY_CHOICES);
+  const breakout = b.enabled ? `<div class="stack" style="margin-top:10px">
+      <div class="mods" data-breakout="${i}">
+        ${MODIFIERS.map(m => `<label class="check"><input type="checkbox" data-act="bk-mod" data-i="${i}" value="${m}" aria-label="${m}"${pk.mods.includes(m) ? ' checked' : ''}><span>${m}</span></label>`).join('<span class="plus">+</span>')}
+        <span class="plus">+</span>
+        <select data-act="bk-key" data-i="${i}" aria-label="Key">${keyOpts.map(x => `<option value="${escHtml(x)}"${x === pk.key ? ' selected' : ''}>${escHtml(x || '–')}</option>`).join('')}</select>
+      </div>
+      ${field('Combination', txt(`${f}.breakout.key`, b.key, { mono: true, sync: 'breakout' }), 'Written as <code>v4:BreakoutSequence Key</code>. Microsoft documents the format only by example (<code>Ctrl+A</code>) – test the combination on a device. You can also type it here.', { for: idFor(`${f}.breakout.key`) })}
+    </div>` : '';
+  return `<h3>Kiosk app</h3>
+    ${seg(`${f}.kiosk.appType`, k.appType, [['win32', 'Win32 app (.exe)'], ['edge', 'Microsoft Edge'], ['uwp', 'Store app (UWP)']], 'Kiosk app type')}
+    <div style="margin-top:12px">${body}</div>
+    <h3>Breakout sequence</h3>
+    ${check(`${f}.breakout.enabled`, b.enabled, 'Custom key combination to leave kiosk mode', { rerender: true, hint: 'The default is Ctrl+Alt+Del.' })}
+    ${breakout}`;
+}
+
+function renderMulti(p, f, i) {
+  const apps = p.apps.length ? p.apps.map((a, j) => {
+    const af = `${f}.apps.${j}`;
+    return `<div class="row">
+      ${select(`${af}.kind`, a.kind, [['path', 'Desktop app'], ['aumid', 'Store app (AUMID)']], { rerender: true, aria: `Type of app ${j + 1}` })}
+      ${txt(`${af}.value`, a.value, { mono: true, aria: `App ${j + 1}`, placeholder: a.kind === 'aumid' ? 'Package_hash!App' : '%ProgramFiles%\\…\\app.exe', list: a.kind === 'aumid' ? 'dl-aumid' : '' })}
+      <label class="auto" title="Start automatically at sign-in (one app only)"><input type="checkbox" data-act="autolaunch" data-p="${i}" data-j="${j}" aria-label="Start app ${j + 1} automatically"${a.autoLaunch ? ' checked' : ''}>Auto-start</label>
+      ${iconBtn('del-app', 'trash', `Remove app ${j + 1}`, `data-p="${i}" data-j="${j}"`, { danger: true })}
+      ${a.autoLaunch ? `<div class="sub">${txt(`${af}.autoLaunchArgs`, a.autoLaunchArgs, { mono: true, placeholder: 'Arguments at auto-start (optional)', aria: 'Arguments at auto-start' })}</div>` : ''}
+    </div>`;
+  }).join('') : '<div class="empty">No apps yet – add some below.</div>';
+
+  let start = '';
+  if (p.pinsMode === 'list') {
+    const pins = p.pins.length ? p.pins.map((x, j) => {
+      const pf = `${f}.pins.${j}`;
+      return `<div class="row pin">
+        ${select(`${pf}.kind`, x.kind, PIN_KINDS, { aria: `Type of pin ${j + 1}` })}
+        ${txt(`${pf}.value`, x.value, { mono: true, aria: `Pin ${j + 1}` })}
+        ${iconBtn('pin-up', 'up', 'Move up', `data-p="${i}" data-j="${j}"`, { disabled: j === 0 })}
+        ${iconBtn('pin-down', 'down', 'Move down', `data-p="${i}" data-j="${j}"`, { disabled: j === p.pins.length - 1 })}
+        ${iconBtn('del-pin', 'trash', `Remove pin ${j + 1}`, `data-p="${i}" data-j="${j}"`, { danger: true })}
+      </div>`;
+    }).join('') : '<div class="empty">Nothing pinned.</div>';
+    start = `<div class="rows" data-field="${f}.pins">${pins}</div>
+      <div class="add-row">
+        <button class="btn small" data-act="add-pin" data-p="${i}">${ic('plus')}Pin</button>
+        <button class="btn small" data-act="pin-store" data-p="${i}">${ic('list')}Pin all Store apps</button>
+      </div>`;
+  } else if (p.pinsMode === 'raw') {
+    start = field('', area(`${f}.pinsRaw`, p.pinsRaw, { rows: 9, aria: 'StartPins JSON', placeholder: '{ "pinnedList": [ { "packagedAppId": "…" } ] }' }), 'The content of an exported Windows 11 Start layout (<code>Export-StartLayout -Path …\\layout.json</code>).');
+  } else start = '<div class="hint">No <code>v5:StartPins</code> is written.</div>';
+
+  const ex = p.explorer;
+  return `<h3>Allowed apps <span class="hint">Only these can start. Apps that an app depends on must be listed too.</span></h3>
+    <div class="rows" data-field="${f}.apps">${apps}</div>
+    <div class="add-row">
+      <button class="btn small" data-act="add-app" data-p="${i}" data-kind="path">${ic('plus')}Desktop app</button>
+      <button class="btn small" data-act="add-app" data-p="${i}" data-kind="aumid">${ic('plus')}Store app</button>
+      <button class="btn small" data-act="open-catalog" data-p="${i}">${ic('grid')}Common apps…</button>
+      <button class="btn small" data-act="open-inventory" data-p="${i}">${ic('search')}From a reference device…</button>
+    </div>
+
+    <h3>Start menu (Windows 11) <span class="hint">Apps shown in Start. They must also be allowed above.</span></h3>
+    ${seg(`${f}.pinsMode`, p.pinsMode, [['list', 'Pinned apps'], ['raw', 'Custom JSON'], ['none', 'None']], 'Start menu')}
+    <div style="margin-top:10px">${start}</div>
+
+    <h3>File Explorer and taskbar</h3>
+    <div class="stack">
+      <div class="checks">
+        ${check(`${f}.explorer.downloads`, ex.downloads || ex.all, 'Allow Downloads', { disabled: ex.all })}
+        ${check(`${f}.explorer.removable`, ex.removable || ex.all, 'Allow removable drives', { disabled: ex.all })}
+        ${check(`${f}.explorer.all`, ex.all, 'No restrictions', { rerender: true })}
+      </div>
+      <div class="hint">With nothing selected, all folder access in File Explorer is blocked.</div>
+      ${check(`${f}.showTaskbar`, p.showTaskbar, 'Show the taskbar', { hint: 'A hidden taskbar is hidden permanently, not auto-hidden.' })}
+    </div>
+
+    <details class="adv"${String(p.startLayout).trim() || String(p.taskbarLayout).trim() ? ' open' : ''}>
+      <summary>Advanced: Windows 10 Start layout and taskbar layout</summary>
+      <div class="stack">
+        ${field('StartLayout (Windows 10)', area(`${f}.startLayout`, p.startLayout, { rows: 6, placeholder: '<LayoutModificationTemplate …>' }), 'Exported LayoutModificationTemplate XML (<code>Export-StartLayout</code>). Windows 11 uses StartPins above.', { for: idFor(`${f}.startLayout`) })}
+        ${field('TaskbarLayout (Windows 11)', area(`${f}.taskbarLayout`, p.taskbarLayout, { rows: 6, placeholder: '<LayoutModificationTemplate …><CustomTaskbarLayoutCollection>…' }), 'LayoutModificationTemplate with <code>CustomTaskbarLayoutCollection</code> – pins apps to the taskbar. Windows 10 kiosks can\'t pin taskbar apps.', { for: idFor(`${f}.taskbarLayout`) })}
+      </div>
+    </details>`;
+}
+
+function profileSelect(act, i, ref, missingId, label) {
+  const opts = S.profiles.map((p, k) => `<option value="${p.uid}" data-puid="${p.uid}"${p.uid === ref ? ' selected' : ''}>${escHtml(profOptionLabel(p, k))}</option>`);
+  if (!profileByRef(S, ref)) opts.unshift(`<option value="" selected>${escHtml(missingId ? `${missingId} (missing)` : '– choose a profile –')}</option>`);
+  const bind = i === null ? 'global.profileRef' : `configs.${i}.profileRef`;
+  return field(label, `<select id="${idFor(bind)}" data-bind-ref="${bind}" data-act="${act}"${i === null ? '' : ` data-i="${i}"`}>${opts.join('')}</select>`, '', { for: idFor(bind) });
+}
+
+function renderConfig(c, i) {
+  const f = `configs.${i}`;
+  let fields = '';
+  if (c.kind === 'autologon') {
+    fields = field('Display name', txt(`${f}.displayName`, c.displayName, { placeholder: 'e.g. Lobby kiosk' }), 'Shown on the sign-in screen. Windows creates and manages a local standard account that signs in automatically after a restart.', { for: idFor(`${f}.displayName`) });
+  } else if (c.kind === 'account') {
+    const ph = { local: 'kiosk or .\\kiosk', ad: 'DOMAIN\\kiosk', entra: 'kiosk@contoso.com' }[c.accountType];
+    const hint = {
+      local: 'The account must exist on the device before the profile applies.',
+      ad: 'Written DOMAIN\\samAccountName.',
+      entra: "The user's UPN – written out as <code>AzureAD\\upn</code>.",
+    }[c.accountType];
+    fields = `<div class="grid2">${field('Account type', select(`${f}.accountType`, c.accountType, ACCOUNT_TYPES, { rerender: true }), '', { for: idFor(`${f}.accountType`) })}
+      ${field('Account', txt(`${f}.account`, c.account, { mono: true, placeholder: ph }), hint, { for: idFor(`${f}.account`) })}</div>`;
+  } else if (c.kind === 'group') {
+    const ph = { AzureActiveDirectoryGroup: '00000000-0000-0000-0000-000000000000', ActiveDirectoryGroup: 'DOMAIN\\group', LocalGroup: 'groupname' }[c.groupType] || '';
+    const hint = {
+      AzureActiveDirectoryGroup: "The group's object ID. The device needs internet access when group members sign in.",
+      ActiveDirectoryGroup: "DOMAIN\\groupname. Nested groups aren't supported.",
+      LocalGroup: 'The name of the local group.',
+    }[c.groupType] || '';
+    fields = `<div class="grid2">${field('Group type', select(`${f}.groupType`, c.groupType, GROUP_TYPES, { rerender: true }), '', { for: idFor(`${f}.groupType`) })}
+      ${field(c.groupType === 'AzureActiveDirectoryGroup' ? 'Object ID' : 'Group', txt(`${f}.groupName`, c.groupName, { mono: true, placeholder: ph }), hint, { for: idFor(`${f}.groupName`) })}</div>`;
+  } else {
+    fields = field('Special group', select(`${f}.special`, c.special, SPECIAL_GROUPS), 'HoloLens account types: Visitor = temporary visitor accounts, DeviceOwner = device owners.', { for: idFor(`${f}.special`) });
+  }
+  return `<article class="card" data-field="${f}">
+    <div class="config-grid">
+      <div class="cfg-kind">${field('Type', select(`${f}.kind`, c.kind, CONFIG_KINDS, { rerender: true }), '', { for: idFor(`${f}.kind`) })}</div>
+      <div class="cfg-fields">${fields}</div>
+      <div class="del">${iconBtn('del-config', 'trash', `Remove assignment ${i + 1}`, `data-i="${i}"`, { danger: true })}</div>
+      <div class="cfg-profile">${profileSelect('config-profile', i, c.profileRef, c.missingId, 'Profile')}</div>
+    </div>
+  </article>`;
+}
+
+function renderGlobal() {
+  const g = S.global;
+  return `<div class="card subtle" data-field="global">
+    ${check('global.enabled', g.enabled, 'Global profile', { rerender: true, hint: "Applies to every user who isn't an administrator and has no assignment of their own." })}
+    ${g.enabled ? `<div class="grid2" style="margin-top:12px">
+      ${profileSelect('global-profile', null, g.profileRef, g.missingId, 'Profile')}
+      <div class="field"><label>&nbsp;</label>${check('global.excludeDeviceOwner', g.excludeDeviceOwner, 'Exclude device owners (HoloLens)')}</div>
+    </div>` : ''}
+  </div>`;
+}
+
+// Keep focus and caret across a re-render.
+function captureFocus() {
+  const a = document.activeElement;
+  if (!a || !$('#editor').contains(a)) return null;
+  return { bind: a.dataset.bind || a.dataset.bindRef || null, act: a.dataset.act || null, i: a.dataset.i, p: a.dataset.p, j: a.dataset.j,
+    value: a.type === 'radio' || a.type === 'checkbox' ? a.value : null, start: a.selectionStart, end: a.selectionEnd };
+}
+function restoreFocus(f) {
+  if (!f) return;
+  let el = null;
+  if (f.bind) {
+    const cands = $$(`[data-bind="${sel(f.bind)}"], [data-bind-ref="${sel(f.bind)}"]`);
+    el = f.value !== null ? cands.find(x => x.value === f.value) || cands[0] : cands[0];
+  } else if (f.act) {
+    el = $$(`[data-act="${sel(f.act)}"]`).find(x => x.dataset.i === f.i && x.dataset.p === f.p && x.dataset.j === f.j && (f.value === null || x.value === f.value));
+  }
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  if (f.start != null && typeof el.setSelectionRange === 'function') { try { el.setSelectionRange(f.start, f.end); } catch { /* not a text input */ } }
+}
+
+// ============================================================================================
+// Output rendering
+// ============================================================================================
+function renderOutput() {
+  const built = buildXml(S);
+  const issues = validate(S);
+  LAST = { built, issues };
+  const errors = issues.filter(x => x.level === 'error').length;
+  const warns = issues.filter(x => x.level === 'warn').length;
+
+  // "No errors" rather than "valid": this is the generator's own check – Test-AssignedAccessXml.ps1
+  // validates against Microsoft's XSD.
+  const basis = ` title="Based on the generator's checks. Test-AssignedAccessXml.ps1 validates against Microsoft's XSD."`;
+  let pill;
+  if (!hasContent(S)) pill = `<span class="pill warn">${ic('info')}Nothing to show yet</span>`;
+  else if (errors) pill = `<span class="pill err"${basis}>${ic('error')}${plural(errors, 'error', 'errors')}${warns ? ` · ${plural(warns, 'warning', 'warnings')}` : ''}</span>`;
+  else if (warns) pill = `<span class="pill warn"${basis}>${ic('warn')}No errors · ${plural(warns, 'warning', 'warnings')}</span>`;
+  else pill = `<span class="pill ok"${basis}>${ic('ok')}No errors</span>`;
+  const tip = ["Lowest Windows version per Microsoft's XSD reference."]
+    .concat(built.min.why && built.min.why.length ? ['Set by ' + built.min.why.join(', ') + '.'] : [])
+    .concat(built.min.caveat ? [built.min.caveat] : []).join(' ');
+  const assignments = S.configs.length + (S.global.enabled ? 1 : 0);
+  $('#status').innerHTML = pill + (hasContent(S) ? `<span class="chip" title="${escHtml(tip)}">Schema: ${escHtml(built.min.label)}+${built.min.caveat ? ' *' : ''}</span>` +
+    `<span class="chip">${plural(S.profiles.length, 'profile', 'profiles')} · ${plural(assignments, 'assignment', 'assignments')}</span>` : '');
+
+  const order = { error: 0, warn: 1, info: 2 };
+  const sorted = issues.slice().sort((a, b) => order[a.level] - order[b.level]);
+  const imp = IMPORT_NOTES.map(n => `<div class="issue static ${n.level}">${ic(n.level === 'error' ? 'error' : n.level)}<div><span class="src">Import</span>${escHtml(n.msg)}</div></div>`);
+  const own = hasContent(S) ? sorted.map((x, k) => `<button class="issue ${x.level}" data-act="goto-issue" data-k="${k}">${ic(x.level === 'error' ? 'error' : x.level)}<span>${escHtml(x.msg)}</span></button>`) : [];
+  LAST.sorted = sorted;
+  $('#issues').innerHTML = own.concat(imp).join('') + (IMPORT_NOTES.length ? `<div class="issue static info" style="justify-content:flex-end"><button class="btn small ghost" data-act="clear-import-notes">Hide import notes</button></div>` : '');
+
+  $('#xml-code').innerHTML = highlightXml(built.xml);
+  $('#xml-banner').innerHTML = errors && hasContent(S) ? `<div class="banner">The XML has ${plural(errors, 'error', 'errors')} according to the checks above – fix ${errors === 1 ? 'it' : 'them'} before adding it to Intune.</div>` : '';
+  $('#summary-text').textContent = summary(S, built);
+  markIssues(issues);
+  for (const o of $$('option[data-puid]')) {
+    const k = S.profiles.findIndex(p => p.uid === o.dataset.puid);
+    if (k >= 0) o.textContent = profOptionLabel(S.profiles[k], k);
+  }
+  save();
+}
+const scheduleOutput = debounce(renderOutput, 120);
+
+function markIssues(issues) {
+  for (const el of $$('.has-error, .has-warn', $('#editor'))) el.classList.remove('has-error', 'has-warn');
+  for (const x of issues) {
+    if (!x.field || x.level === 'info') continue;
+    const el = $(`[data-bind="${sel(x.field)}"]`, $('#editor')) || $(`[data-bind-ref="${sel(x.field)}"]`, $('#editor'));
+    if (!el || el.type === 'radio' || el.type === 'checkbox') continue;
+    if (x.level === 'error') { el.classList.remove('has-warn'); el.classList.add('has-error'); }
+    else if (!el.classList.contains('has-error')) el.classList.add('has-warn');
+  }
+}
+
+function gotoField(field) {
+  if (!field) return;
+  const ed = $('#editor');
+  let el = $(`[data-bind="${sel(field)}"]`, ed) || $(`[data-bind-ref="${sel(field)}"]`, ed) || $(`[data-field="${sel(field)}"]`, ed);
+  if (!el) {
+    // The field lives in a collapsed <details>: open it and retry.
+    const m = field.match(/^profiles\.\d+\.(startLayout|taskbarLayout)$/);
+    if (m) { for (const d of $$('details.adv', ed)) d.open = true; el = $(`[data-bind="${sel(field)}"]`, ed); }
+  }
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const focusable = el.matches('input, select, textarea, button') ? el : $('input, select, textarea, button', el);
+  if (focusable) setTimeout(() => focusable.focus({ preventScroll: true }), 250);
+}
+
+function renderAll() { renderEditor(); renderOutput(); }
+
+// ============================================================================================
+// Actions
+// ============================================================================================
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+async function copyText(text, okMsg) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(okMsg);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    toast(ok ? okMsg : "Couldn't copy – select the text and copy it manually.");
+  }
+}
+
+function downloadText(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type: type + ';charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function fileSlug() {
+  const n = (S.profiles.find(p => String(p.name).trim()) || {}).name || 'config';
+  return String(n).trim().replace(/[åä]/gi, 'a').replace(/ö/gi, 'o').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'config';
+}
+
+function defaultRefFor(kind) {
+  const multi = S.profiles.find(p => p.type === 'multi');
+  const kiosk = S.profiles.find(p => p.type === 'kiosk');
+  const pick = kind === 'group' ? (multi || kiosk) : (kiosk || multi);
+  return pick ? pick.uid : null;
+}
+
+function confirmReplace() { return !hasContent(S) || confirm('Replace what you have in the editor?'); }
+
+function applyState(st, notes = []) {
+  S = st;
+  IMPORT_NOTES = notes;
+  renderAll();
+  window.scrollTo({ top: 0 });
+}
+
+function handleAct(el) {
+  const act = el.dataset.act;
+  const i = el.dataset.i !== undefined ? +el.dataset.i : null;
+  const pi = el.dataset.p !== undefined ? +el.dataset.p : null;
+  const j = el.dataset.j !== undefined ? +el.dataset.j : null;
+  const P = pi !== null ? S.profiles[pi] : null;
+  switch (act) {
+    case 'open-start': openDialog('dlg-start'); break;
+    case 'open-import': closeDialogs(); openImport(); break;
+    case 'close-dialog': el.closest('dialog').close(); break;
+    case 'template':
+      if (!confirmReplace()) return;
+      closeDialogs();
+      applyState(TEMPLATES[el.dataset.tpl]());
+      setTimeout(() => { const first = $('#editor input[type=text]:not([data-bind$=".name"]):not([data-bind$=".id"])'); if (first) first.focus(); }, 30);
+      break;
+    case 'theme': {
+      const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+      storageSet(THEME_KEY, next);
+      applyTheme(next);
+      break;
+    }
+    case 'tab':
+      ACTIVE_TAB = el.dataset.tab;
+      for (const t of $$('.tab')) t.setAttribute('aria-selected', String(t.dataset.tab === ACTIVE_TAB));
+      for (const p of $$('.panel')) p.hidden = p.id !== 'panel-' + ACTIVE_TAB;
+      break;
+    case 'copy-xml': copyText(LAST.built.xml, 'XML copied.'); break;
+    case 'download-xml': downloadText(`AssignedAccess-${fileSlug()}.xml`, LAST.built.xml, 'application/xml'); break;
+    case 'copy-oma': copyText(OMA_URI, 'OMA-URI copied.'); break;
+    case 'copy-summary': copyText($('#summary-text').textContent, 'Summary copied.'); break;
+    case 'copy-snippet': copyText($('#inventory-snippet').textContent, 'Script copied.'); break;
+    case 'goto-issue': { const x = LAST.sorted[+el.dataset.k]; if (x) gotoField(x.field); break; }
+    case 'clear-import-notes': IMPORT_NOTES = []; renderOutput(); break;
+
+    case 'add-profile': {
+      const p = el.dataset.type === 'multi' ? newMultiProfile() : newKioskProfile();
+      if (p.type === 'multi' && !S.profiles.some(x => x.type === 'multi')) addCatalogEntry(p, 'edge');
+      S.profiles.push(p);
+      if (!S.configs.length && !S.global.enabled) { const c = newConfig('autologon', p.uid); c.displayName = 'Kiosk'; S.configs.push(c); }
+      renderAll();
+      gotoField(`profiles.${S.profiles.length - 1}.name`);
+      break;
+    }
+    case 'del-profile': {
+      const p = S.profiles[i];
+      const refs = S.configs.filter(c => c.profileRef === p.uid).length + (S.global.enabled && S.global.profileRef === p.uid ? 1 : 0);
+      if (!confirm(`Remove ${profLabel(p, i)}${refs ? ` and the ${plural(refs, 'assignment', 'assignments')} pointing to it` : ''}?`)) return;
+      S.profiles.splice(i, 1);
+      S.configs = S.configs.filter(c => c.profileRef !== p.uid);
+      if (S.global.profileRef === p.uid) { S.global.enabled = false; S.global.profileRef = null; }
+      renderAll();
+      break;
+    }
+    case 'new-guid': S.profiles[i].id = newGuid(); renderAll(); break;
+    case 'add-app':
+      P.apps.push(newApp(el.dataset.kind));
+      renderAll();
+      gotoField(`profiles.${pi}.apps.${P.apps.length - 1}.value`);
+      break;
+    case 'del-app': P.apps.splice(j, 1); renderAll(); break;
+    case 'add-pin':
+      P.pins.push(newPin('packagedAppId'));
+      renderAll();
+      gotoField(`profiles.${pi}.pins.${P.pins.length - 1}.value`);
+      break;
+    case 'del-pin': P.pins.splice(j, 1); renderAll(); break;
+    case 'pin-up': case 'pin-down': {
+      const k = act === 'pin-up' ? j - 1 : j + 1;
+      if (k < 0 || k >= P.pins.length) return;
+      [P.pins[j], P.pins[k]] = [P.pins[k], P.pins[j]];
+      renderAll();
+      break;
+    }
+    case 'pin-store': {
+      let n = 0;
+      for (const a of P.apps) {
+        if (a.kind !== 'aumid' || !String(a.value).trim() || sameCI(a.value, EDGE_AUMID)) continue;
+        if (!P.pins.some(x => x.kind === 'packagedAppId' && sameCI(x.value, a.value))) { P.pins.push(newPin('packagedAppId', String(a.value).trim())); n++; }
+      }
+      renderAll();
+      toast(n ? `${plural(n, 'Store app', 'Store apps')} pinned to Start.` : 'All Store apps are already pinned.');
+      break;
+    }
+    case 'open-catalog': openCatalog(pi); break;
+    case 'catalog-add': catalogAdd(); break;
+    case 'open-inventory': openInventory(pi); break;
+    case 'inventory-all': for (const cb of $$('#inventory-list .pick:not([hidden]) input[data-pick]:not(:disabled)')) cb.checked = true; break;
+    case 'inventory-add': inventoryAdd(); break;
+    case 'add-config': {
+      const c = newConfig(el.dataset.kind, defaultRefFor(el.dataset.kind));
+      if (c.kind === 'autologon') c.displayName = 'Kiosk';
+      S.configs.push(c);
+      renderAll();
+      gotoField(`configs.${S.configs.length - 1}.${c.kind === 'autologon' ? 'displayName' : c.kind === 'account' ? 'account' : 'groupName'}`);
+      break;
+    }
+    case 'del-config': S.configs.splice(i, 1); renderAll(); break;
+    case 'pick-import-file': $('#import-file').click(); break;
+    case 'do-import': doImport(); break;
+  }
+}
+
+function handleChangeAct(el) {
+  const act = el.dataset.act;
+  if (act === 'autolaunch') {
+    const p = S.profiles[+el.dataset.p];
+    p.apps.forEach((a, k) => { a.autoLaunch = k === +el.dataset.j ? el.checked : false; });
+    renderAll();
+  } else if (act === 'bk-mod' || act === 'bk-key') {
+    const i = +el.dataset.i;
+    const box = $(`[data-breakout="${i}"]`);
+    const mods = $$('input[data-act="bk-mod"]', box).filter(x => x.checked).map(x => x.value);
+    const key = $('select[data-act="bk-key"]', box).value;
+    S.profiles[i].breakout.key = composeKey(mods, key);
+    renderAll();
+  } else if (act === 'config-profile') {
+    const c = S.configs[+el.dataset.i];
+    c.profileRef = el.value || null;
+    if (c.profileRef) c.missingId = '';
+    renderAll();
+  } else if (act === 'global-profile') {
+    S.global.profileRef = el.value || null;
+    if (S.global.profileRef) S.global.missingId = '';
+    renderAll();
+  }
+}
+
+// Text-field side effects that must not wait for a re-render (a re-render on blur would eat the next click).
+function syncLive(el) {
+  const sync = el.dataset.sync;
+  const bind = el.dataset.bind;
+  const m = bind.match(/^profiles\.(\d+)\.kiosk\.edge\./);
+  if (m) {
+    const pv = $(`#edge-preview-${m[1]}`);
+    if (pv) pv.innerHTML = `<b>msedge.exe</b> ${escHtml(edgeArgs(S.profiles[+m[1]].kiosk.edge))}`;
+  }
+  if (sync === 'breakout') {
+    const i = +bind.split('.')[1];
+    const box = $(`[data-breakout="${i}"]`);
+    const pk = parseKey(el.value);
+    if (box && pk) {
+      for (const cb of $$('input[data-act="bk-mod"]', box)) cb.checked = pk.mods.includes(cb.value);
+      const s = $('select[data-act="bk-key"]', box);
+      if ([...s.options].some(o => o.value === pk.key)) s.value = pk.key;
+    }
+  }
+}
+
+function afterBoundChange(bind, value) {
+  if (bind === 'global.enabled' && value && !profileByRef(S, S.global.profileRef)) {
+    const pick = S.profiles.find(p => p.type === 'multi') || S.profiles[0];
+    S.global.profileRef = pick ? pick.uid : null;
+  }
+  const pm = bind.match(/^profiles\.(\d+)\.pinsMode$/);
+  if (pm) {
+    const p = S.profiles[+pm[1]];
+    if (value === 'raw' && !String(p.pinsRaw).trim()) {
+      const j = pinsJson(Object.assign({}, p, { pinsMode: 'list' }));
+      p.pinsRaw = j ? j.split('\n').map(l => l.replace(/^ {6}/, '')).join('\n') : '{\n  "pinnedList": []\n}';
+    } else if (value === 'list' && String(p.pinsRaw).trim()) {
+      const r = parsePins(p.pinsRaw.trim());
+      if (r.mode === 'list') p.pins = r.pins;
+      else toast("The JSON couldn't be shown as a list – the list is unchanged.");
+    }
+  }
+}
+
+// ============================================================================================
+// Dialogs
+// ============================================================================================
+function openDialog(id) {
+  const d = document.getElementById(id);
+  if (!d.open) d.showModal();
+}
+function closeDialogs() { for (const d of $$('dialog[open]')) d.close(); }
+
+function openImport() {
+  $('#import-error').textContent = '';
+  openDialog('dlg-import');
+  setTimeout(() => $('#import-text').focus(), 30);
+}
+function doImport() {
+  const text = $('#import-text').value;
+  try {
+    const r = importAny(text);
+    if (hasContent(S) && !confirm('Replace what you have in the editor with the imported configuration?')) return;
+    closeDialogs();
+    applyState(r.state, r.notes);
+    $('#import-text').value = '';
+    toast(`Imported (${r.source})${r.notes.length ? ` – ${plural(r.notes.length, 'note', 'notes')}` : ''}.`);
+  } catch (e) {
+    $('#import-error').textContent = e instanceof ImportError ? e.message : 'Import failed: ' + e.message;
+  }
+}
+function readFileInto(file, textarea) {
+  const reader = new FileReader();
+  reader.onload = () => { textarea.value = String(reader.result || ''); textarea.dispatchEvent(new Event('input', { bubbles: true })); };
+  reader.readAsText(file);
+}
+
+let CATALOG_TARGET = null;
+function openCatalog(pi) {
+  CATALOG_TARGET = pi;
+  const p = S.profiles[pi];
+  $('#catalog-list').innerHTML = CATALOG.map(e => {
+    const present = e.apps.every(([k, v]) => p.apps.some(a => a.kind === k && sameCI(a.value, v)));
+    return `<div class="pick${present ? ' disabled' : ''}">
+      <label class="pick-main"><input type="checkbox" data-cat="${e.id}" aria-label="${escHtml(e.label)}"${present ? ' disabled' : ''}>
+      <div><div class="nm">${escHtml(e.label)}${present ? ' · added' : ''}</div><div class="vl">${escHtml(e.apps.map(a => a[1]).join(' · '))}</div>${e.note ? `<div class="hint">${escHtml(e.note)}</div>` : ''}</div></label>
+      <label class="pinbox"><input type="checkbox" data-cat-pin="${e.id}" aria-label="Pin ${escHtml(e.label)} to Start" checked${present ? ' disabled' : ''}>Pin to Start</label>
+    </div>`;
+  }).join('');
+  openDialog('dlg-catalog');
+}
+function catalogAdd() {
+  const p = S.profiles[CATALOG_TARGET];
+  let n = 0;
+  for (const cb of $$('#catalog-list input[data-cat]:checked')) {
+    const pin = $(`#catalog-list input[data-cat-pin="${cb.dataset.cat}"]`).checked;
+    addCatalogEntry(p, cb.dataset.cat, pin);
+    n++;
+  }
+  closeDialogs();
+  renderAll();
+  if (n) toast(`${plural(n, 'app', 'apps')} added.`);
+}
+
+let INVENTORY_TARGET = null, INVENTORY_ITEMS = [];
+function openInventory(pi) {
+  INVENTORY_TARGET = pi;
+  renderInventory();
+  openDialog('dlg-inventory');
+}
+function renderInventory() {
+  const r = parseInventory($('#inventory-text').value);
+  INVENTORY_ITEMS = r.items;
+  $('#inventory-error').textContent = r.error;
+  const list = $('#inventory-list');
+  list.hidden = $('#inventory-tools').hidden = !r.items.length;
+  const p = S.profiles[INVENTORY_TARGET] || { apps: [] };
+  list.innerHTML = r.items.map((it, k) => {
+    const present = p.apps.some(a => a.kind === it.kind && sameCI(a.value, it.value));
+    const unsupported = it.kind === 'unsupported';
+    const off = present || unsupported;
+    const tag = it.kind === 'aumid' ? '<span class="tag store">Store</span>' : it.kind === 'path' ? '<span class="tag desk">Desktop</span>' : '<span class="tag">No path</span>';
+    return `<div class="pick${off ? ' disabled' : ''}" data-name="${escHtml((it.name + ' ' + it.value).toLowerCase())}">
+      <label class="pick-main"><input type="checkbox" data-pick="${k}" aria-label="${escHtml(it.name)}"${off ? ' disabled' : ''}>
+      <div><div class="nm">${escHtml(it.name)} ${tag}${present ? ' · added' : ''}</div><div class="vl">${escHtml(it.value)}</div>
+        ${it.pin && it.pin[0] === 'desktopAppLink' ? `<div class="vl">Shortcut: ${escHtml(it.pin[1])}</div>` : ''}
+        ${unsupported ? '<div class="hint">Get-StartApps gives no path for this app – use the script above.</div>' : ''}</div></label>
+      <label class="pinbox" title="${it.pin ? 'Pin to the Start menu' : 'Needs a .lnk shortcut – use the script above'}"><input type="checkbox" data-pick-pin="${k}" aria-label="Pin ${escHtml(it.name)} to Start"${it.pin && !off ? ' checked' : ''}${!it.pin || off ? ' disabled' : ''}>Pin to Start</label>
+    </div>`;
+  }).join('');
+  filterInventory();
+}
+function filterInventory() {
+  const q = $('#inventory-filter').value.trim().toLowerCase();
+  for (const row of $$('#inventory-list .pick')) row.hidden = !!q && !row.dataset.name.includes(q);
+}
+function inventoryAdd() {
+  const p = S.profiles[INVENTORY_TARGET];
+  let n = 0;
+  for (const cb of $$('#inventory-list input[data-pick]:checked')) {
+    const it = INVENTORY_ITEMS[+cb.dataset.pick];
+    if (!p.apps.some(a => a.kind === it.kind && sameCI(a.value, it.value))) { p.apps.push(newApp(it.kind, it.value)); n++; }
+    const pinBox = $(`#inventory-list input[data-pick-pin="${cb.dataset.pick}"]`);
+    if (it.pin && pinBox && pinBox.checked && !p.pins.some(x => x.kind === it.pin[0] && sameCI(x.value, it.pin[1]))) p.pins.push(newPin(it.pin[0], it.pin[1]));
+  }
+  closeDialogs();
+  renderAll();
+  toast(n ? `${plural(n, 'app', 'apps')} added.` : 'No new apps were added.');
+}
+
+// ============================================================================================
+// Events
+// ============================================================================================
+function bindEvents() {
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-act]');
+    if (btn && !btn.disabled) handleAct(btn);
+  });
+  document.addEventListener('input', e => {
+    const el = e.target;
+    if (el.id === 'inventory-text') { renderInventory(); return; }
+    if (el.id === 'inventory-filter') { filterInventory(); return; }
+    if (!el.matches('[data-bind]') || !(el.tagName === 'TEXTAREA' || el.type === 'text')) return;
+    setPath(el.dataset.bind, el.value);
+    syncLive(el);
+    scheduleOutput();
+  });
+  document.addEventListener('change', e => {
+    const el = e.target;
+    if (el.id === 'import-file') { if (el.files[0]) readFileInto(el.files[0], $('#import-text')); el.value = ''; return; }
+    if (el.matches('[data-act]') && !el.matches('button')) { handleChangeAct(el); return; }
+    if (!el.matches('[data-bind]') || el.tagName === 'TEXTAREA' || el.type === 'text') return;
+    if (el.type === 'radio' && !el.checked) return;
+    const value = el.type === 'checkbox' ? el.checked : el.value;
+    setPath(el.dataset.bind, value);
+    afterBoundChange(el.dataset.bind, value);
+    if (el.hasAttribute('data-rerender')) renderEditor();
+    renderOutput();
+  });
+  const ta = $('#import-text');
+  ta.addEventListener('dragover', e => { e.preventDefault(); ta.classList.add('drop'); });
+  ta.addEventListener('dragleave', () => ta.classList.remove('drop'));
+  ta.addEventListener('drop', e => {
+    e.preventDefault();
+    ta.classList.remove('drop');
+    const f = e.dataTransfer && e.dataTransfer.files[0];
+    if (f) readFileInto(f, ta);
+  });
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) doImport(); });
+  for (const d of $$('dialog')) d.addEventListener('click', e => { if (e.target === d) d.close(); });
+}
+
+// ============================================================================================
+// Self-test (open the file with #selftest). Pure functions only – never touches saved state.
+// ============================================================================================
+const SAMPLES = {
+  lobby: String.raw`<?xml version="1.0" encoding="utf-8"?>
+<AssignedAccessConfiguration
+    xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config"
+    xmlns:rs5="http://schemas.microsoft.com/AssignedAccess/201810/config"
+    xmlns:v4="http://schemas.microsoft.com/AssignedAccess/2021/config">
+  <Profiles>
+    <Profile Id="{3D9C6F42-8B1E-4A7D-9F05-6E2B7C1A8D93}" Name="Lobby kiosk">
+      <KioskModeApp v4:ClassicAppPath="%ProgramFiles%\Contoso\LobbyKiosk\versions\2.4.1.0\Lobby.exe" />
+      <v4:BreakoutSequence Key="Ctrl+Alt+L" />
+    </Profile>
+  </Profiles>
+  <Configs>
+    <Config>
+      <AutoLogonAccount rs5:DisplayName="Lobby kiosk" />
+      <DefaultProfile Id="{3D9C6F42-8B1E-4A7D-9F05-6E2B7C1A8D93}" />
+    </Config>
+  </Configs>
+</AssignedAccessConfiguration>`,
+  msEdge: String.raw`<?xml version="1.0" encoding="utf-8"?>
+<AssignedAccessConfiguration xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config" xmlns:rs5="http://schemas.microsoft.com/AssignedAccess/201810/config" xmlns:v4="http://schemas.microsoft.com/AssignedAccess/2021/config">
+  <Profiles>
+    <Profile Id="{EDB3036B-780D-487D-A375-69369D8A8F78}">
+      <KioskModeApp v4:ClassicAppPath="%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" v4:ClassicAppArguments="--kiosk https://www.contoso.com/ --edge-kiosk-type=fullscreen --kiosk-idle-timeout-minutes=2" />
+      <v4:BreakoutSequence Key="Ctrl+A" />
+    </Profile>
+  </Profiles>
+  <Configs>
+    <Config>
+      <Account>Edge kiosk</Account>
+      <DefaultProfile Id="{EDB3036B-780D-487D-A375-69369D8A8F78}" />
+    </Config>
+  </Configs>
+</AssignedAccessConfiguration>`,
+  msUwp: String.raw`<?xml version="1.0" encoding="utf-8"?>
+<AssignedAccessConfiguration xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config">
+  <Profiles>
+    <Profile Id="{EDB3036B-780D-487D-A375-69369D8A8F78}">
+      <KioskModeApp AppUserModelId="Microsoft.BingWeather_8wekyb3d8bbwe!App" />
+    </Profile>
+  </Profiles>
+  <Configs>
+    <Config>
+      <Account>Weather app</Account>
+      <DefaultProfile Id="{EDB3036B-780D-487D-A375-69369D8A8F78}" />
+    </Config>
+  </Configs>
+</AssignedAccessConfiguration>`,
+  msRueLayout: String.raw`<?xml version="1.0" encoding="utf-8"?>
+<AssignedAccessConfiguration xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config" xmlns:default="http://schemas.microsoft.com/AssignedAccess/2017/config" xmlns:rs5="http://schemas.microsoft.com/AssignedAccess/201810/config" xmlns:v3="http://schemas.microsoft.com/AssignedAccess/2020/config">
+  <Profiles>
+    <Profile Id="{9A2A490F-10F6-4764-974A-43B19E722C23}">
+      <AllAppsList>
+        <AllowedApps>
+          <App AppUserModelId="Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" />
+          <App AppUserModelId="Microsoft.Windows.Photos_8wekyb3d8bbwe!App" />
+          <App DesktopAppPath="%windir%\explorer.exe" />
+          <App DesktopAppPath="%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" />
+        </AllowedApps>
+      </AllAppsList>
+      <rs5:FileExplorerNamespaceRestrictions>
+        <rs5:AllowedNamespace Name="Downloads" />
+        <v3:AllowRemovableDrives />
+      </rs5:FileExplorerNamespaceRestrictions>
+      <StartLayout>
+        <![CDATA[<LayoutModificationTemplate xmlns:defaultlayout="http://schemas.microsoft.com/Start/2014/FullDefaultLayout" xmlns:start="http://schemas.microsoft.com/Start/2014/StartLayout" Version="1" xmlns="http://schemas.microsoft.com/Start/2014/LayoutModification">
+          <LayoutOptions StartTileGroupCellWidth="6" />
+          <DefaultLayoutOverride>
+            <StartLayoutCollection>
+              <defaultlayout:StartLayout GroupCellWidth="6">
+                <start:Group Name="">
+                  <start:Tile Size="2x2" Column="0" Row="0" AppUserModelID="Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" />
+                  <start:DesktopApplicationTile Size="2x2" Column="2" Row="4" DesktopApplicationLinkPath="%ALLUSERSPROFILE%\Microsoft\Windows\Start Menu\Programs\Microsoft Edge.lnk" />
+                </start:Group>
+              </defaultlayout:StartLayout>
+            </StartLayoutCollection>
+          </DefaultLayoutOverride>
+        </LayoutModificationTemplate>
+        ]]>
+      </StartLayout>
+      <Taskbar ShowTaskbar="true" />
+    </Profile>
+  </Profiles>
+  <Configs>
+    <Config>
+      <AutoLogonAccount rs5:DisplayName="MS Learn Example" />
+      <DefaultProfile Id="{9A2A490F-10F6-4764-974A-43B19E722C23}" />
+    </Config>
+  </Configs>
+</AssignedAccessConfiguration>`,
+  msRuePins: String.raw`<?xml version="1.0" encoding="utf-8"?>
+<AssignedAccessConfiguration xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config" xmlns:rs5="http://schemas.microsoft.com/AssignedAccess/201810/config" xmlns:v3="http://schemas.microsoft.com/AssignedAccess/2020/config" xmlns:v5="http://schemas.microsoft.com/AssignedAccess/2022/config">
+  <Profiles>
+    <Profile Id="{9A2A490F-10F6-4764-974A-43B19E722C23}">
+      <AllAppsList>
+        <AllowedApps>
+          <App AppUserModelId="Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" />
+          <App DesktopAppPath="%windir%\explorer.exe" />
+          <App AppUserModelId="windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel" />
+          <App DesktopAppPath="%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" />
+        </AllowedApps>
+      </AllAppsList>
+      <rs5:FileExplorerNamespaceRestrictions>
+        <rs5:AllowedNamespace Name="Downloads" />
+        <v3:AllowRemovableDrives />
+      </rs5:FileExplorerNamespaceRestrictions>
+      <v5:StartPins><![CDATA[{
+          "pinnedList":[
+            {"packagedAppId":"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"},
+            {"desktopAppLink":"%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\File Explorer.lnk"},
+            {"packagedAppId": "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel"},
+            {"desktopAppLink": "%ALLUSERSPROFILE%\\Microsoft\\Windows\\Start Menu\\Programs\\Microsoft Edge.lnk"}
+          ]
+        }]]></v5:StartPins>
+      <Taskbar ShowTaskbar="true" />
+    </Profile>
+  </Profiles>
+  <Configs>
+    <Config>
+      <AutoLogonAccount rs5:DisplayName="MS Learn Example" />
+      <DefaultProfile Id="{9A2A490F-10F6-4764-974A-43B19E722C23}" />
+    </Config>
+  </Configs>
+</AssignedAccessConfiguration>`,
+  startLayout: String.raw`<LayoutModificationTemplate xmlns:defaultlayout="http://schemas.microsoft.com/Start/2014/FullDefaultLayout" xmlns:start="http://schemas.microsoft.com/Start/2014/StartLayout" Version="1" xmlns="http://schemas.microsoft.com/Start/2014/LayoutModification">
+  <LayoutOptions StartTileGroupCellWidth="6" />
+  <DefaultLayoutOverride>
+    <StartLayoutCollection>
+      <defaultlayout:StartLayout GroupCellWidth="6">
+        <start:Group Name="Kiosk">
+          <start:DesktopApplicationTile Size="2x2" Column="0" Row="0" DesktopApplicationLinkPath="%ALLUSERSPROFILE%\Microsoft\Windows\Start Menu\Programs\Microsoft Edge.lnk" />
+        </start:Group>
+      </defaultlayout:StartLayout>
+    </StartLayoutCollection>
+  </DefaultLayoutOverride>
+</LayoutModificationTemplate>`,
+  taskbarLayout: String.raw`<?xml version="1.0" encoding="utf-8"?>
+<LayoutModificationTemplate xmlns="http://schemas.microsoft.com/Start/2014/LayoutModification" xmlns:defaultlayout="http://schemas.microsoft.com/Start/2014/FullDefaultLayout" xmlns:start="http://schemas.microsoft.com/Start/2014/StartLayout" xmlns:taskbar="http://schemas.microsoft.com/Start/2014/TaskbarLayout" Version="1">
+  <CustomTaskbarLayoutCollection>
+    <defaultlayout:TaskbarLayout>
+      <taskbar:TaskbarPinList>
+        <taskbar:DesktopApp DesktopApplicationID="Microsoft.Windows.Explorer" />
+        <taskbar:DesktopApp DesktopApplicationLinkPath="%ALLUSERSPROFILE%\Microsoft\Windows\Start Menu\Programs\Microsoft Edge.lnk" />
+      </taskbar:TaskbarPinList>
+    </defaultlayout:TaskbarLayout>
+  </CustomTaskbarLayoutCollection>
+</LayoutModificationTemplate>`,
+  secondaryTile: '{"secondaryTile":{"tileId":"MSEdge._pin_intranet","arguments":" --pin-url=https://intranet.contoso.com --profile-directory=Default --launch-tile","displayName":"Intranet","packagedAppId":"Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe!App"}}',
+  intuneEdge: {
+    '@odata.type': '#microsoft.graph.windowsKioskConfiguration', displayName: 'Selftest Edge kiosk',
+    kioskProfiles: [{
+      profileId: '3f2b8c1e-5d4a-4b7e-9c2d-1a0f6e8b7c55', profileName: 'profile',
+      userAccountsConfiguration: [{ '@odata.type': '#microsoft.graph.windowsKioskAutologon' }],
+      appConfiguration: { '@odata.type': '#microsoft.graph.windowsKioskSingleWin32App', win32App: { edgeNoFirstRun: true, edgeKioskIdleTimeoutMinutes: 15, edgeKioskType: 'publicBrowsing', classicAppPath: 'msedge.exe', edgeKiosk: 'file:///C:/Kiosk/index.html' } },
+    }],
+    kioskBrowserDefaultUrl: 'http://bing.com', windowsKioskForceUpdateSchedule: { recurrence: 'daily' },
+  },
+  intuneMulti: {
+    '@odata.type': '#microsoft.graph.windowsKioskConfiguration', displayName: 'Selftest multi-app kiosk',
+    kioskProfiles: [{
+      profileId: 'not-a-guid', profileName: 'profile',
+      userAccountsConfiguration: [{ '@odata.type': '#microsoft.graph.windowsKioskAutologon' }, { '@odata.type': '#microsoft.graph.windowsKioskAzureADGroup', groupId: '6b0e5c7a-2f1d-4e3b-8a9c-0d1e2f3a4b5c', displayName: 'Kiosk' }],
+      appConfiguration: {
+        '@odata.type': '#microsoft.graph.windowsKioskMultipleApps', showTaskBar: false, allowAccessToDownloadsFolder: false, disallowDesktopApps: false, startMenuLayoutXml: null,
+        apps: [
+          { '@odata.type': '#microsoft.graph.windowsKioskDesktopApp', path: 'C:\\Program Files (x86)\\Contoso\\Lobby\\Lobby.exe', desktopApplicationId: '{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}\\Contoso\\Lobby\\Lobby.exe ', desktopApplicationLinkPath: null, autoLaunch: true, startLayoutTileSize: 'large', name: 'Lobby' },
+          { '@odata.type': '#microsoft.graph.windowsKioskUWPApp', appUserModelId: 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App', autoLaunch: false, startLayoutTileSize: 'medium', name: 'Kiosk Browser' },
+          { '@odata.type': '#microsoft.graph.windowsKioskDesktopApp', path: 'C:\\Program Files\\Contoso\\Badges\\BadgePrinter.exe', desktopApplicationLinkPath: '%ALLUSERSPROFILE%\\Microsoft\\Windows\\Start Menu\\Programs\\Badge printer.lnk', autoLaunch: false, startLayoutTileSize: 'medium', name: 'Badge printer' },
+        ],
+      },
+    }],
+  },
+};
+
+function selfTest() {
+  const cases = [];
+  const run = (name, st, expect, opt = {}) => {
+    const built = buildXml(st);
+    const issues = validate(st);
+    const errors = issues.filter(x => x.level === 'error');
+    const detail = [];
+    if (expect.jsErrors === 0 && errors.length) detail.push(`expected no errors but got ${errors.length}: ${errors.map(x => x.msg).join(' | ')}`);
+    if (expect.jsErrors === 'some' && !errors.length) detail.push('expected errors, but the validator found none');
+    let roundTrip = null;
+    try {
+      const x2 = buildXml(importAny(built.xml).state).xml;
+      const x3 = buildXml(importAny(x2).state).xml;
+      roundTrip = x3 === x2 && (x2 === built.xml || !!opt.reformat);
+      if (!roundTrip) detail.push('import → export did not give the same XML');
+    } catch (e) { roundTrip = false; detail.push('re-import failed: ' + e.message); }
+    if (opt.exact != null && normNl(built.xml) !== normNl(opt.exact)) detail.push('the XML differs from the original');
+    if (opt.check) { const m = opt.check(st, built, issues); if (m) detail.push(m); }
+    cases.push({ name, xml: built.xml, expect: { schemaValid: expect.schemaValid, ruleErrors: expect.ruleErrors },
+      js: { errors: errors.length, warnings: issues.filter(x => x.level === 'warn').length, roundTrip, pass: !detail.length, detail: detail.join('; ') } });
+  };
+  const ok = { schemaValid: true, ruleErrors: false, jsErrors: 0 };
+  const fromImport = text => importAny(typeof text === 'string' ? text : JSON.stringify(text)).state;
+
+  // --- templates, filled in as a user would ---
+  { const st = TEMPLATES.edge(); Object.assign(st.profiles[0].kiosk.edge, { url: 'https://intranet.contoso.com/', idle: '2' }); run('template-edge', st, ok); }
+  { const st = TEMPLATES.win32(); const p = st.profiles[0]; p.name = 'Lobby kiosk'; p.kiosk.path = '%ProgramFiles%\\Contoso\\LobbyKiosk\\Lobby.exe'; p.kiosk.args = '--fullscreen --lang=en-US'; p.breakout.enabled = true; run('template-win32', st, ok); }
+  { const st = TEMPLATES.uwp(); st.profiles[0].kiosk.aumid = 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App'; run('template-uwp', st, ok); }
+  { const st = TEMPLATES.multi(); const p = st.profiles[0]; addCatalogEntry(p, 'settings'); addCatalogEntry(p, 'calc'); addCatalogEntry(p, 'explorer');
+    Object.assign(p.explorer, { downloads: true, removable: true }); p.showTaskbar = false; p.apps[0].autoLaunch = true; p.apps[0].autoLaunchArgs = 'https://www.contoso.com/';
+    run('template-multi', st, ok); }
+  { const st = TEMPLATES.multi(); const p = st.profiles[0]; addCatalogEntry(p, 'explorer'); p.explorer.all = true; p.pinsMode = 'raw';
+    p.pinsRaw = `{ "pinnedList": [ ${SAMPLES.secondaryTile}, { "packagedAppId": "${EDGE_AUMID}" } ] }`;
+    p.startLayout = SAMPLES.startLayout; p.taskbarLayout = SAMPLES.taskbarLayout;
+    st.configs = [];
+    const g = (type, name) => { const c = newConfig('group', p.uid); c.groupType = type; c.groupName = name; return c; };
+    st.configs.push(g('AzureActiveDirectoryGroup', '6b0e5c7a-2f1d-4e3b-8a9c-0d1e2f3a4b5c'), g('ActiveDirectoryGroup', 'CONTOSO\\KioskUsers'), g('LocalGroup', 'KioskUsers'));
+    const sp = newConfig('special', p.uid); sp.special = 'Visitor'; st.configs.push(sp);
+    Object.assign(st.global, { enabled: true, profileRef: p.uid, excludeDeviceOwner: true });
+    run('multi-advanced', st, ok, { reformat: true }); }
+  { const k = TEMPLATES.win32(); const kp = k.profiles[0]; kp.kiosk.path = '%ProgramFiles%\\Contoso\\Kiosk.exe';
+    const a = newMultiProfile(); a.name = 'Staff'; addCatalogEntry(a, 'edge'); addCatalogEntry(a, 'teams');
+    const b = newMultiProfile(); b.name = 'Visitors'; addCatalogEntry(b, 'kioskbrowser');
+    k.profiles.push(a, b);
+    const acc = (type, v, ref) => { const c = newConfig('account', ref); c.accountType = type; c.account = v; return c; };
+    k.configs.push(acc('entra', 'reception@contoso.com', a.uid), acc('ad', 'CONTOSO\\visitor01', b.uid), acc('local', '.\\staff', a.uid));
+    run('multiple-profiles', k, ok); }
+  { const st = TEMPLATES.win32(); const p = st.profiles[0]; p.name = 'Åäö & <special> "test"'; p.kiosk.path = '%ProgramFiles%\\Kiosk & Co\\App.exe';
+    p.kiosk.args = '--url "https://x.se/?a=1&b=2" --title <Öppen>'; st.configs[0].displayName = 'Reception "West" & East';
+    run('special-characters', st, ok, { check: (s, b) => /&amp;b=2/.test(b.xml) && /&lt;Öppen&gt;/.test(b.xml) ? '' : 'special characters were not escaped' }); }
+  // HoloLens visitors on a kiosk profile: a special group is not a UserGroup, so this must pass.
+  { const st = TEMPLATES.uwp(); st.profiles[0].kiosk.aumid = 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App'; const c = st.configs[0]; c.kind = 'special'; c.special = 'Visitor';
+    run('hololens-visitor-kiosk', st, ok); }
+
+  // --- imports ---
+  run('import-sample-kiosk', fromImport(SAMPLES.lobby), ok, { exact: SAMPLES.lobby, check: (s, b, iss) => iss.some(x => /version number/.test(x.msg)) ? '' : 'the warning about a version-bound path is missing' });
+  run('import-ms-edge', fromImport(SAMPLES.msEdge), ok, { check: s => s.profiles[0].kiosk.appType === 'edge' ? '' : 'the Edge arguments were not recognized as an Edge kiosk' });
+  run('import-ms-uwp', fromImport(SAMPLES.msUwp), ok);
+  run('import-ms-startlayout', fromImport(SAMPLES.msRueLayout), ok);
+  run('import-ms-startpins', fromImport(SAMPLES.msRuePins), ok, { check: s => s.profiles[0].pinsMode === 'list' && s.profiles[0].pins.length === 4 ? '' : 'StartPins was not read as a list' });
+  run('import-intune-edge', fromImport(SAMPLES.intuneEdge), ok, { check: s => s.profiles[0].kiosk.edge.mode === 'public-browsing' && s.profiles[0].kiosk.edge.idle === '15' ? '' : "the kiosk template's Edge settings were translated wrongly" });
+  run('import-intune-multi', fromImport(SAMPLES.intuneMulti), ok, { check: s => s.profiles[0].apps.length === 3 && s.profiles[0].apps[0].autoLaunch && s.configs.length === 2 ? '' : "the kiosk template's apps/accounts were translated wrongly" });
+  run('import-graph-oma', fromImport({ '@odata.type': '#microsoft.graph.windows10CustomConfiguration', omaSettings: [{ '@odata.type': '#microsoft.graph.omaSettingString', displayName: 'Configuration', omaUri: OMA_URI, value: SAMPLES.lobby }] }), ok);
+  run('import-html-escaped', fromImport(escHtml(SAMPLES.lobby)), ok, { exact: SAMPLES.lobby });
+
+  // --- negatives: the validator must object; expect.* says what the XSD/rule pass will say ---
+  { const st = TEMPLATES.win32(); run('bad-empty-path', st, { schemaValid: true, ruleErrors: false, jsErrors: 'some' }); }
+  { const st = TEMPLATES.multi(); st.profiles[0].apps.push(newApp('path', EDGE_PATH)); run('bad-duplicate-app', st, { schemaValid: false, ruleErrors: false, jsErrors: 'some' }); }
+  { const st = TEMPLATES.multi(); st.profiles[0].apps[0].autoLaunch = true; st.profiles[0].apps[1].autoLaunch = true; run('bad-two-autolaunch', st, { schemaValid: false, ruleErrors: false, jsErrors: 'some' }); }
+  { const st = TEMPLATES.uwp(); st.profiles[0].kiosk.aumid = 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App'; st.profiles[0].id = '{123}'; run('bad-invalid-guid', st, { schemaValid: false, ruleErrors: false, jsErrors: 'some' }); }
+  { const st = TEMPLATES.uwp(); st.profiles[0].kiosk.aumid = 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App';
+    const p2 = newKioskProfile(); p2.kiosk.path = '%ProgramFiles%\\Contoso\\Kiosk.exe'; st.profiles.push(p2);
+    const c = newConfig('account', p2.uid); c.account = 'kiosk2'; st.configs.push(c);
+    run('bad-two-kiosk-profiles', st, { schemaValid: true, ruleErrors: true, jsErrors: 'some' }); }
+  { const st = TEMPLATES.uwp(); st.profiles[0].kiosk.aumid = 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App'; const c = st.configs[0]; c.kind = 'group'; c.groupType = 'LocalGroup'; c.groupName = 'Kiosk';
+    run('bad-group-to-kiosk', st, { schemaValid: true, ruleErrors: true, jsErrors: 'some' }); }
+  { const st = TEMPLATES.uwp(); st.profiles[0].kiosk.aumid = 'Microsoft.KioskBrowser_8wekyb3d8bbwe!App'; st.configs[0].profileRef = null; st.configs[0].missingId = '{00000000-0000-0000-0000-000000000001}';
+    run('bad-missing-profile', st, { schemaValid: true, ruleErrors: true, jsErrors: 'some' }); }
+  { const st = TEMPLATES.multi(); st.configs.push(newConfig('autologon', st.profiles[0].uid)); run('bad-two-autologon', st, { schemaValid: false, ruleErrors: true, jsErrors: 'some' }); }
+  { const st = TEMPLATES.multi(); const p = st.profiles[0]; p.pinsMode = 'raw'; p.pinsRaw = '{ "pinnedList": [ { "packagedAppId": "x" } '; run('bad-startpins-json', st, { schemaValid: true, ruleErrors: true, jsErrors: 'some' }); }
+  { const st = TEMPLATES.multi(); st.configs = []; run('bad-no-assignment', st, { schemaValid: true, ruleErrors: true, jsErrors: 'some' }); }
+  { run('bad-empty-configuration', emptyState(), { schemaValid: false, ruleErrors: true, jsErrors: 'some' }); }
+
+  return { generator: VERSION, created: new Date().toISOString(), cases };
+}
+
+function renderSelfTest() {
+  const bundle = selfTest();
+  const failed = bundle.cases.filter(c => !c.js.pass);
+  document.title = 'Self-test – Assigned Access Generator';
+  $('#editor').innerHTML = `<div class="section">
+    <div class="section-head"><span class="step">✓</span><h2>Self-test</h2><span class="hint">${plural(bundle.cases.length, 'case', 'cases')} · ${failed.length ? failed.length + ' failed' : 'all generator checks passed'}</span></div>
+    <div class="card">
+      <p style="margin-top:0">The generator's own checks (validation, import → export, special characters) run here. The XSD part runs in PowerShell:</p>
+      <div class="preview-line">.\\Test-AssignedAccessXml.ps1 -SelfTestBundle "$HOME\\Downloads\\selftest-bundle.json"</div>
+      <div class="add-row"><button class="btn primary" id="st-download">${ic('download')}Download test bundle</button></div>
+    </div>
+    <div class="card" style="padding:0;overflow:auto">
+      <table class="st-table"><thead><tr><th>Case</th><th>Result</th><th>Errors / warnings</th><th>Expected by the XSD</th><th>Detail</th></tr></thead><tbody>
+      ${bundle.cases.map(c => `<tr><td><code>${escHtml(c.name)}</code></td><td class="res ${c.js.pass ? 'ok' : 'bad'}">${c.js.pass ? 'OK' : 'FAIL'}</td><td>${c.js.errors} / ${c.js.warnings}</td><td>${c.expect.schemaValid ? 'valid' : 'invalid'}${c.expect.ruleErrors ? ', rule errors' : ''}</td><td>${escHtml(c.js.detail)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  </div>`;
+  $('#st-download').addEventListener('click', () => downloadText('selftest-bundle.json', JSON.stringify(bundle, null, 2), 'application/json'));
+  const first = bundle.cases.find(c => c.name === 'multi-advanced') || bundle.cases[0];
+  S = importAny(first.xml).state;
+  renderOutput();
+  return bundle;
+}
+
+// ============================================================================================
+// Init
+// ============================================================================================
+function init() {
+  for (const el of $$('[data-icon]')) {
+    if (el.classList.contains('tico')) { el.innerHTML = ic(el.dataset.icon, 20); el.removeAttribute('data-icon'); }
+    else el.outerHTML = ic(el.dataset.icon, 16);
+  }
+  $('#foot-version').textContent = `Assigned Access Generator v${VERSION}`;
+  applyTheme(currentTheme());
+  bindEvents();
+  window.AAG = { version: VERSION, buildXml, validate, importAny, parseInventory, templates: TEMPLATES, selfTest, getState: () => S };
+  if (SELFTEST) { renderSelfTest(); return; }
+  const saved = loadSaved();
+  if (saved && (hasContent(saved) || saved.global.enabled)) { S = saved; renderAll(); }
+  else { renderAll(); openDialog('dlg-start'); }
+}
+init();
+})();
+</script>
+</body>
+</html>
