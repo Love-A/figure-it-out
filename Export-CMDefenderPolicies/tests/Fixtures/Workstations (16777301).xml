@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SecurityPolicy Name="Workstations &amp; [VDI] &lt;test&gt;" Description="" CreatedBy="CONTOSO\alice" LastModifiedBy="CONTOSO\alice" xmlns="http://forefront.microsoft.com/FEP/2010/01/PolicyData">
+  <PolicySection Name="FEP.AmPolicy" Disabled="false">
+    <LocalGroupPolicySettings>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Scan" Disabled="false">
+        <AddValue Name="ScanParameters" Type="REG_DWORD" Disabled="false">2</AddValue>
+        <AddValue Name="ScheduleDay" Type="REG_DWORD" Disabled="false">9</AddValue>
+      </AddKey>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Exclusions\Paths" Disabled="false">
+        <AddValue Name="%windir%\softwaredistribution\datastore\datastore.edb" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name="%windir%\Security\Database\*.edb" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name="C:\VDI\&lt;cache&gt;\" Type="REG_DWORD" Disabled="false">0</AddValue>
+      </AddKey>
+    </LocalGroupPolicySettings>
+    <SomethingNew Name="x" />
+  </PolicySection>
+</SecurityPolicy>

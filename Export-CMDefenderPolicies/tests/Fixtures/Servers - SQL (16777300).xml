@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SecurityPolicy Name="Servers - SQL" Description="SQL Server exclusions per Microsoft guidance" CreatedBy="CONTOSO\alice" LastModifiedBy="CONTOSO\bob" xmlns="http://forefront.microsoft.com/FEP/2010/01/PolicyData">
+  <PolicySection Name="FEP.AmPolicy" Disabled="false">
+    <LocalGroupPolicySettings>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Exclusions\Paths" Disabled="false">
+        <AddValue Name="D:\SQLData\" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name="%windir%\SoftwareDistribution\Datastore\Datastore.edb" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name="%WINDIR%\security\database\*.edb" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name="C:\Old\Removed\" Type="REG_DWORD" Disabled="true">0</AddValue>
+        <AddValue Name="C:\Program Files\App\app.exe\:{PathType:file,ScanTrigger:OnAccess}" Type="REG_DWORD" Disabled="false">0</AddValue>
+      </AddKey>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Exclusions\Extensions" Disabled="false">
+        <AddValue Name=".mdf" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name=".ldf" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name=".MDF" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name=".ndf" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name=".edb" Type="REG_DWORD" Disabled="false">0</AddValue>
+      </AddKey>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Exclusions\Processes" Disabled="false">
+        <AddValue Name="%ProgramFiles%\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn\sqlservr.exe" Type="REG_DWORD" Disabled="false">0</AddValue>
+        <AddValue Name="sqlagent.exe" Type="REG_DWORD" Disabled="false">0</AddValue>
+      </AddKey>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Exclusions" Disabled="false">
+        <AddValue Name="DisableAutoExclusions" Type="REG_DWORD" Disabled="false">0</AddValue>
+      </AddKey>
+    </LocalGroupPolicySettings>
+  </PolicySection>
+</SecurityPolicy>

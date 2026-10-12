@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SecurityPolicy Name="Scheduled scan only" Description="No exclusions, section disabled" xmlns="http://forefront.microsoft.com/FEP/2010/01/PolicyData">
+  <PolicySection Name="FEP.AmPolicy" Disabled="true">
+    <LocalGroupPolicySettings>
+      <AddKey Name="SOFTWARE\Policies\Microsoft\Microsoft Antimalware\Scan" Disabled="false">
+        <AddValue Name="ScheduleTime" Type="REG_DWORD" Disabled="false">60</AddValue>
+      </AddKey>
+    </LocalGroupPolicySettings>
+  </PolicySection>
+</SecurityPolicy>
