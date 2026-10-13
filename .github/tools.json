@@ -1,0 +1,46 @@
+[
+  {
+    "slug": "AssignedAccess-Generator",
+    "scripts": 1
+  },
+  {
+    "slug": "Expand-IntuneWin",
+    "scripts": 1
+  },
+  {
+    "slug": "Export-CMDefenderPolicies",
+    "scripts": 2
+  },
+  {
+    "slug": "Get-AzureLicenseStatus",
+    "scripts": 1
+  },
+  {
+    "slug": "Invoke-NextPhaseDeployment",
+    "scripts": 1
+  },
+  {
+    "slug": "New-CompanyFolderStructure",
+    "scripts": 1
+  },
+  {
+    "slug": "packwright",
+    "scripts": 3
+  },
+  {
+    "slug": "Remediation-RecoveryPartition",
+    "scripts": 2
+  },
+  {
+    "slug": "Remove-CMPackageOldVersions",
+    "scripts": 1
+  },
+  {
+    "slug": "Sequence-Insight",
+    "scripts": 19
+  },
+  {
+    "slug": "Start-OSDForm",
+    "scripts": 1
+  }
+]
