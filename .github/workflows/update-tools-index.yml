@@ -1,0 +1,69 @@
+# Keeps .github/tools.json in sync with the tool folders in this repository.
+#
+# On every push to main it lists the top-level tool folders, counts the
+# PowerShell scripts in each (Pester tests excluded) and writes the result
+# to .github/tools.json. The website reads that file instead of calling the
+# GitHub API. The file is only committed when the list actually changes.
+
+name: Update tools index
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # adds a "Run workflow" button under the Actions tab
+
+# Several uploads in a row: older runs are cancelled and only the latest finishes.
+concurrency:
+  group: tools-index
+  cancel-in-progress: true
+
+permissions:
+  contents: write           # may commit to this repository, nothing else
+
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build .github/tools.json
+        shell: pwsh
+        run: |
+          # Same rules as the website: top-level folders, except hidden ones and these.
+          $ignored = '.github', 'site', 'docs', 'assets'
+
+          $tools = Get-ChildItem -Directory -Force |
+            Where-Object { -not $_.Name.StartsWith('.') -and $_.Name -cnotin $ignored } |
+            ForEach-Object {
+              $folder  = $_
+              $scripts = Get-ChildItem -LiteralPath $folder.FullName -Recurse -File -Force |
+                Where-Object { $_.Extension -eq '.ps1' -and $_.Name -notlike '*.Tests.ps1' }
+              [pscustomobject]@{
+                slug    = $folder.Name
+                scripts = @($scripts).Count
+              }
+            } |
+            Sort-Object { $_.slug.ToLowerInvariant() }
+
+          if (-not $tools) {
+            throw 'No tool folders found. Stopping so the published list is not emptied.'
+          }
+
+          New-Item -ItemType Directory -Path .github -Force | Out-Null
+          $tools | ConvertTo-Json -AsArray | Set-Content -Path .github/tools.json -Encoding utf8NoBOM
+          $tools | ForEach-Object { '{0,-32} {1,3} scripts' -f $_.slug, $_.scripts }
+
+      - name: Commit if the list changed
+        run: |
+          git add .github/tools.json
+          if git diff --cached --quiet; then
+            echo "Tools index unchanged. Nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update tools index"
+          git pull --rebase origin main
+          git push origin HEAD:main
