@@ -4,8 +4,9 @@
     Build-IntuneWinApp + Publish-IntuneWinApp.
 
 .DESCRIPTION
-    Opens on a start screen with two choices: create a new package from a vendor
-    installer (guided wizard), or open a package folder you already have. Everything
+    Opens on a start screen with three choices: create a new package from a vendor
+    installer (guided wizard), from an app in the Microsoft Store or the WinGet
+    repository, or open a package folder you already have. Everything
     the Intune app will contain is shown as an editable, live preview with a per-field
     tag telling you where each value came from (app.json / PSADT / MSI / installer /
     default / manual). Corrections are written back to app.json in the package folder,
@@ -23,6 +24,9 @@
       - Duplicate app names in Intune are refused before anything is created
       - Build/upload runs in the background with a live log, progress and Cancel
       - Built-in help (Help button or F1) covering just what the tool needs from you
+      - Apps from WinGet: the Microsoft Store or the community repository, as the
+        organisation's Packwright.policy.json allows, detection written from the manifest
+      - Test on this computer: install and uninstall as Intune would, as SYSTEM
 
 .PARAMETER SourceFolder
     Optional: open this package folder at startup instead of the start screen.
@@ -50,6 +54,50 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
+    2026-10-20 - 2.11 - The studio's WinGet part is a file of its own, Packwright.WinGet.ps1: the
+                        WinGet dialog, the card in the editor, the runtime package and their
+                        self-tests. It is read, with New-WinGetPackage.ps1, the first time a
+                        session needs WinGet - a WinGet package opened, "Install it with WinGet",
+                        Settings, or a Packwright.policy.json for the start screen to read -
+                        rather than at every start, so a session packaging an installer reads
+                        neither. Nothing it does has changed. Its functions still run in this
+                        script's scope: Import-StudioWinGet dot-sources the two files and puts
+                        each function they define there, since it is called from wherever WinGet
+                        is first needed and anything it defined would otherwise be gone when it
+                        returned. The card's place in the editor is kept by a placeholder it is
+                        put into. The WinGet lookups name the script their runspace loads; the
+                        sign-in, which needs none, no longer loads the WinGet engine.
+    2026-10-12 - 2.10 - A WinGet package gets the app's icon, as New-WinGetPackage 1.1 finds it,
+                        and "Use the app's own icon" looks for it the same way in the background
+                        for a package that has none - for a WinGet package there is no program
+                        file in the folder to take one from. The header says which account
+                        publishing signs in as: "opens a browser sign-in" was all it said, and
+                        then no browser opened, because Microsoft Graph had remembered the sign-in
+                        from the time before. "Sign in again" beside it forgets that sign-in and
+                        opens a new one: a sign-in carries the roles the account had when it was
+                        made, so after activating an Intune role in PIM, publishing got 403
+                        Forbidden for as long as the remembered one lasted. Forgetting it takes
+                        the tokens too, in %LOCALAPPDATA%\.IdentityService: Disconnect-MgGraph
+                        leaves them, and requests take theirs from mg.msal.cache.cae, which a new
+                        sign-in does not touch. The log says which role the new one carries.
+    2026-10-08 - 2.9 - Apps from WinGet. A third way to start: pick an app from the Microsoft
+                       Store or the WinGet community repository, and New-WinGetPackage.ps1 writes
+                       the package from its manifest - which installer winget is asked for, SYSTEM
+                       or the signed-in user, and the detection rule, so most apps need no test
+                       install. Packwright.policy.json decides which sources may be used at all;
+                       an organisation that allows only the Store gets nothing else offered,
+                       built or published. A WinGet card in the editor shows where the app comes
+                       from, pins a community app to a version and moves it to the next one in
+                       one step, and notices scripts that are older than this Packwright or were
+                       changed by hand. A Store app can be delivered as Intune's own Store app
+                       type instead, which keeps working where the Microsoft Store app is blocked.
+                       The WinGet runtime package - App Installer and the Visual C++ runtime,
+                       downloaded and checked here - is built from the same card.
+                       Test on this computer installs or uninstalls any package as Intune would:
+                       as SYSTEM, from a copy, started from a 32-bit process, with the
+                       requirement and detection rules checked in that same account, and offers
+                       a detection rule written from what the install added to Apps and features.
+                       A command no longer reports a script's arguments as missing files.
     2026-10-02 - 2.8 - Packwright has a taskbar button and an icon of its own. Every window wore
                        pwsh.exe's icon, and the taskbar filed the studio under PowerShell's
                        button, stacked with the console that started it. Setting the window
@@ -227,9 +275,18 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
 
 $script:EngineBuild   = Join-Path $PSScriptRoot 'Build-IntuneWinApp.ps1'
 $script:EnginePublish = Join-Path $PSScriptRoot 'Publish-IntuneWinApp.ps1'
-foreach ($engine in $EngineBuild, $EnginePublish) {
+$script:EngineWinGet  = Join-Path $PSScriptRoot 'New-WinGetPackage.ps1'
+$script:EngineTest    = Join-Path $PSScriptRoot 'Test-IntuneWinApp.ps1'
+# The studio's WinGet part, read with New-WinGetPackage.ps1 when a session first needs WinGet
+# (Import-StudioWinGet), and the organisation's policy, which New-WinGetPackage.ps1 reads from
+# beside the scripts
+$script:StudioWinGet  = Join-Path $PSScriptRoot 'Packwright.WinGet.ps1'
+$script:PolicyFile    = Join-Path $PSScriptRoot 'Packwright.policy.json'
+foreach ($engine in $EngineBuild, $EnginePublish, $EngineWinGet, $EngineTest, $StudioWinGet) {
     if (-not (Test-Path -LiteralPath $engine)) { throw "Engine script missing: $engine" }
 }
+# Test-IntuneWinApp.ps1 is never loaded into this scope: its -SourceFolder would wipe ours. It
+# runs in its own window.
 
 #region ---- Packwright's own icon and taskbar button -----------------------------
 # Left alone, every window wears pwsh.exe's icon and the taskbar files Packwright under
@@ -792,6 +849,9 @@ $script:MainXaml = @'
             <TextBlock x:Name="TxtAuthStatus" Style="{StaticResource Tiny}" MaxWidth="330" TextWrapping="NoWrap"
                        TextTrimming="CharacterEllipsis"/>
           </Border>
+          <Button x:Name="BtnSignIn" Style="{StaticResource BtnQuiet}" Content="Sign in again" Margin="4,0,0,0"
+                  VerticalAlignment="Center" Visibility="Collapsed"
+                  ToolTip="Forget the remembered sign-in and sign in again in the browser - so publishing carries the roles you have now, such as an Intune role you just activated in PIM"/>
           <Button x:Name="BtnSettings" Style="{StaticResource BtnDefault}" Content="Settings" Margin="8,0,0,0"
                   ToolTip="Where packages and .intunewin files are kept"/>
           <Button x:Name="BtnHelp" Style="{StaticResource BtnDefault}" Content="Help" Margin="8,0,0,0"
@@ -813,7 +873,7 @@ $script:MainXaml = @'
                        Text="Pick where you want to start. Nothing is sent to Intune until you review it and press Publish."/>
             <Grid>
               <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
               <Button x:Name="BtnStartWizard" Grid.Column="0" Style="{StaticResource BtnCard}" Margin="0,0,8,0">
                 <StackPanel>
@@ -825,7 +885,17 @@ $script:MainXaml = @'
                              Text="Create a new package"/>
                 </StackPanel>
               </Button>
-              <Button x:Name="BtnStartOpen" Grid.Column="1" Style="{StaticResource BtnCard}" Margin="8,0,0,0">
+              <Button x:Name="BtnStartWinGet" Grid.Column="1" Style="{StaticResource BtnCard}" Margin="8,0,8,0">
+                <StackPanel>
+                  <TextBlock Text="Install it with WinGet" FontSize="15" FontWeight="SemiBold"
+                             Foreground="#1A1C20" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="TxtStartWinGet" Margin="0,6,0,0" FontSize="12" Foreground="#5B6169" TextWrapping="Wrap"
+                             Text="Pick an app from the Microsoft Store or the WinGet repository. No installer to provide: each device installs it with WinGet, and the detection rule is written from the app's manifest."/>
+                  <TextBlock Margin="0,10,0,0" FontSize="12" FontWeight="SemiBold" Foreground="#0F6CBD"
+                             Text="Find an app..."/>
+                </StackPanel>
+              </Button>
+              <Button x:Name="BtnStartOpen" Grid.Column="2" Style="{StaticResource BtnCard}" Margin="8,0,0,0">
                 <StackPanel>
                   <TextBlock Text="I have a package folder" FontSize="15" FontWeight="SemiBold"
                              Foreground="#1A1C20" TextWrapping="Wrap"/>
@@ -865,6 +935,10 @@ $script:MainXaml = @'
           </Grid.ColumnDefinitions>
 
           <StackPanel Grid.Column="0" Margin="0,0,16,0">
+            <!-- WinGet: only for a package New-WinGetPackage wrote. The card is Packwright.WinGet.ps1's,
+                 and is put here when that is read (Initialize-StudioWinGet) -->
+            <Border x:Name="WinGetCardHost"/>
+
             <!-- App information -->
             <Border Style="{StaticResource Card}">
               <StackPanel>
@@ -898,7 +972,7 @@ $script:MainXaml = @'
             </Border>
 
             <!-- Detection -->
-            <Border Style="{StaticResource Card}">
+            <Border x:Name="PnlDetectionCard" Style="{StaticResource Card}">
               <StackPanel>
                 <TextBlock Style="{StaticResource H2}" Text="Detection"/>
                 <TextBlock Style="{StaticResource Tiny}"
@@ -908,7 +982,7 @@ $script:MainXaml = @'
                 </Border>
                 <Button x:Name="BtnRegPick" Style="{StaticResource BtnDefault}" Margin="0,10,0,0"
                         HorizontalAlignment="Left" Content="Find the app on this computer..."/>
-                <TextBlock Style="{StaticResource Tiny}" Margin="0,6,0,0"
+                <TextBlock x:Name="TxtDetHint" Style="{StaticResource Tiny}" Margin="0,6,0,0"
                            Text="Recommended: install the app on this computer first, then pick it here — the registry rule is written for you. You can uninstall it again afterwards."/>
                 <Expander x:Name="ExpDetection" Header="Change detection method" Margin="0,12,0,0">
                   <StackPanel Margin="0,8,0,0">
@@ -984,11 +1058,13 @@ $script:MainXaml = @'
             <Border Style="{StaticResource Card}">
               <Expander x:Name="ExpAdvanced" Header="Advanced: commands, run-as, restart, architecture">
                 <StackPanel Margin="0,10,0,0">
-                  <TextBlock Style="{StaticResource FieldLabel}" Text="INSTALL COMMAND"/>
-                  <TextBox x:Name="TxtInstall"/>
-                  <TextBlock Style="{StaticResource FieldLabel}" Text="UNINSTALL COMMAND"/>
-                  <TextBox x:Name="TxtUninstall"/>
-                  <TextBlock x:Name="TxtCmdHint" Style="{StaticResource Tiny}" Margin="0,6,0,0"/>
+                  <StackPanel x:Name="PnlCommands">
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="INSTALL COMMAND"/>
+                    <TextBox x:Name="TxtInstall"/>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="UNINSTALL COMMAND"/>
+                    <TextBox x:Name="TxtUninstall"/>
+                    <TextBlock x:Name="TxtCmdHint" Style="{StaticResource Tiny}" Margin="0,6,0,0"/>
+                  </StackPanel>
                   <Grid Margin="0,4,0,0">
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
@@ -999,7 +1075,7 @@ $script:MainXaml = @'
                         <ComboBoxItem Content="system" IsSelected="True"/><ComboBoxItem Content="user"/>
                       </ComboBox>
                     </StackPanel>
-                    <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                    <StackPanel x:Name="PnlRestart" Grid.Column="1" Margin="6,0,0,0">
                       <TextBlock Style="{StaticResource FieldLabel}" Text="RESTART BEHAVIOUR"/>
                       <ComboBox x:Name="CmbRestart">
                         <ComboBoxItem Content="suppress" IsSelected="True"/><ComboBoxItem Content="basedOnReturnCode"/>
@@ -1007,7 +1083,7 @@ $script:MainXaml = @'
                       </ComboBox>
                     </StackPanel>
                   </Grid>
-                  <Grid>
+                  <Grid x:Name="PnlArchOs">
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
@@ -1015,7 +1091,7 @@ $script:MainXaml = @'
                       <TextBlock Style="{StaticResource FieldLabel}" Text="ARCHITECTURE"/>
                       <ComboBox x:Name="CmbArch">
                         <ComboBoxItem Content="x64" IsSelected="True"/><ComboBoxItem Content="x86"/>
-                        <ComboBoxItem Content="x86,x64"/><ComboBoxItem Content="arm64"/>
+                        <ComboBoxItem Content="x86,x64"/><ComboBoxItem Content="arm64"/><ComboBoxItem Content="neutral"/>
                       </ComboBox>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Margin="6,0,0,0">
@@ -1027,8 +1103,10 @@ $script:MainXaml = @'
                       </ComboBox>
                     </StackPanel>
                   </Grid>
-                  <TextBlock Style="{StaticResource FieldLabel}" Text="SETUP FILE"/>
-                  <ComboBox x:Name="CmbSetup"/>
+                  <StackPanel x:Name="PnlSetupFile">
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="SETUP FILE"/>
+                    <ComboBox x:Name="CmbSetup"/>
+                  </StackPanel>
                   <TextBlock Style="{StaticResource FieldLabel}" Text="IF THE APP ALREADY EXISTS IN INTUNE"/>
                   <TextBlock Style="{StaticResource Tiny}"
                              Text="By default publishing stops, so a re-publish cannot create a duplicate by mistake."/>
@@ -1099,6 +1177,7 @@ $script:MainXaml = @'
                   <TextBlock x:Name="ChkPublisher" Style="{StaticResource Body}" Margin="0,2"/>
                   <TextBlock x:Name="ChkCommand" Style="{StaticResource Body}" Margin="0,2"/>
                   <TextBlock x:Name="ChkDetection" Style="{StaticResource Body}" Margin="0,2"/>
+                  <TextBlock x:Name="ChkWinGet" Style="{StaticResource Body}" Margin="0,2" Visibility="Collapsed"/>
                 </StackPanel>
                 <!-- Things that are probably wrong but cannot be proven wrong: shown, never blocking -->
                 <TextBlock x:Name="TxtReadyWarn" Style="{StaticResource Body}" Margin="0,10,0,0" Visibility="Collapsed"/>
@@ -1118,6 +1197,9 @@ $script:MainXaml = @'
                 Content="Publish to Intune"/>
         <Button x:Name="BtnBuild" DockPanel.Dock="Right" Style="{StaticResource BtnDefault}"
                 Content="Build only" Margin="0,0,8,0"/>
+        <Button x:Name="BtnTest" DockPanel.Dock="Right" Style="{StaticResource BtnQuiet}"
+                Content="Test on this computer" Margin="0,0,4,0"
+                ToolTip="Install or uninstall it here the way Intune would: as SYSTEM, from a copy of the package"/>
         <Button x:Name="BtnSave" DockPanel.Dock="Right" Style="{StaticResource BtnQuiet}"
                 Content="Save settings" Margin="0,0,4,0"/>
         <Button x:Name="BtnCancelRun" DockPanel.Dock="Right" Style="{StaticResource BtnDefault}"
@@ -1431,10 +1513,13 @@ function Get-CommandFileIssue {
         if ($token.StartsWith('\\') -or [IO.Path]::IsPathRooted($token)) { continue }
         if ($token -match '[\\/]') {
             if (-not (Test-Path -LiteralPath (Join-Path $script:LoadedFolder $token) -PathType Leaf)) { return $token }
+            # What follows a script are its arguments, not files: '-Id Foo.Bar.exe' is a WinGet id
+            if ([IO.Path]::GetExtension($token) -in '.ps1', '.cmd', '.bat') { break }
             continue
         }
         if ($token -in $script:SystemExe) { continue }
         if ($packaged -notcontains $token) { return $token }
+        if ([IO.Path]::GetExtension($token) -in '.ps1', '.cmd', '.bat') { break }
     }
     $null
 }
@@ -2037,6 +2122,8 @@ function Set-IconPreview {
         $bitmap.BeginInit()
         $bitmap.UriSource = [Uri]$Path
         $bitmap.CacheOption = 'OnLoad'
+        # icon.png is written over when another icon is taken; WPF would show the one it saw first
+        $bitmap.CreateOptions = 'IgnoreImageCache'
         $bitmap.DecodePixelWidth = 128
         $bitmap.EndInit()
         $ui.ImgIcon.Source = $bitmap
@@ -2058,6 +2145,8 @@ function Clear-IconPreview {
 # from the vendor payload inside the package, else from the setup file itself.
 function Import-PackageIcon {
     if (-not $script:LoadedFolder) { return }
+    # A WinGet package holds no program file to take one from
+    if (Test-WinGetPackage) { Start-WinGetIconLookup; return }
     $destination = Join-Path $script:LoadedFolder 'icon.png'
     $attempts = @()
     if ($script:PickedApp) {
@@ -2091,6 +2180,16 @@ function Import-PackageIcon {
 
 function Show-StartView {
     $script:LoadedFolder = $null
+    $script:WinGetBlock = $null
+    $script:WinGetRuntimeBlock = $null
+    $script:WinGetScripts = @()
+    # "Install it with WinGet" says which sources Packwright.policy.json allows. Reading that takes
+    # the WinGet part, so it is read here only when there is a policy to read; without one, what
+    # the button says already is the answer.
+    if ($script:WinGetLoaded -or (Test-Path -LiteralPath $script:PolicyFile)) {
+        Import-StudioWinGet
+        $ui.TxtStartWinGet.Text = Get-WinGetStartText
+    }
     $ui.ViewEditor.Visibility = 'Collapsed'
     $ui.ViewStart.Visibility  = 'Visible'
     $ui.PnlActions.Visibility = 'Collapsed'
@@ -2139,6 +2238,12 @@ function Open-PackageFolder {
             try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
             catch { Write-GuiLog "WARNING: app.json could not be read: $($_.Exception.Message)" }
         }
+        # A WinGet package: its commands, scripts and detection are written from this block, by the
+        # WinGet part of the studio - read now, if this is the first package to need it
+        $script:WinGetBlock = if ($manifest.winget) { ConvertTo-StudioHashtable $manifest.winget } else { $null }
+        $script:WinGetRuntimeBlock = if ($manifest.wingetRuntime) { ConvertTo-StudioHashtable $manifest.wingetRuntime } else { $null }
+        $script:WinGetVersions = $null
+        if ($script:WinGetBlock -or $script:WinGetRuntimeBlock) { Import-StudioWinGet }
 
         # Setup file candidates. A script counts as one: a package whose entry point is
         # 'Install-App.ps1' is as ordinary as one built around a vendor .exe, and the
@@ -2189,6 +2294,7 @@ function Open-PackageFolder {
         $script:DerivedInstall   = $defaults.Install
         $script:DerivedUninstall = $defaults.Uninstall
         $script:DerivedVersion   = $defaults.Version
+        if ($script:WinGetLoaded) { Set-WinGetDerivedCommand }
 
         Set-ComboValue $ui.CmbRunAs   $(if ($manifest.runAsAccount)    { $manifest.runAsAccount }    else { 'system' })
         Set-ComboValue $ui.CmbRestart $(if ($manifest.restartBehavior) { $manifest.restartBehavior } else { 'suppress' })
@@ -2258,15 +2364,22 @@ function Open-PackageFolder {
     }
 
     Show-EditorView
+    # Once read, the WinGet part sees every package opened, if only to put its card away
+    if ($script:WinGetLoaded) { Update-WinGetScriptState; Update-WinGetCard }
     Update-DetectionUi
     Update-PreviewCard
     Update-Readiness
     Add-RecentPackage -Folder $Folder
-    $kindText = switch ($defaults.Kind) {
-        'psadt'  { 'PSADT package' } 'msi' { 'MSI package' }
-        'script' { "script package — $setup" }
-        'exe'    { "installer ($($defaults.Hint -replace ' —.*',''))" } default { 'no setup file found' }
-    }
+    if ($script:WinGetLoaded) { Start-WinGetVersionLookup }
+    $kindText = if ((Test-WinGetPackage) -or (Test-WinGetRuntimePackage)) { Get-WinGetPackageKind }
+        else {
+            switch ($defaults.Kind) {
+                'psadt'  { 'PSADT package' } 'msi' { 'MSI package' }
+                'script' { "script package — $setup" }
+                'exe'    { "installer ($($defaults.Hint -replace ' —.*',''))" } default { 'no setup file found' }
+            }
+        }
+    foreach ($state in @($script:WinGetScripts | Where-Object { $_.State -ne 'current' })) { Write-GuiLog "WARNING: $($state.Detail)" }
     Write-GuiLog "Opened $Folder ($kindText)"
     Set-StatusText "Opened '$(Split-Path -Leaf $Folder)'. Review the fields, then publish."
     $true
@@ -2417,6 +2530,20 @@ function Save-AppManifest {
     $merged.detection             = $detection
     if ($iconReference) { $merged.icon = $iconReference } else { $merged.Remove('icon') }
 
+    if ($script:WinGetBlock) {
+        # A rule that is no longer the generated detection script leaves that script nothing to
+        # do, and the block stops asking for one - so its absence is not reported as missing
+        if ($type -ne 'script' -or [IO.Path]::GetFileName($ui.TxtScript.Text.Trim()) -ne 'Detect-WinGetApp.ps1') {
+            $script:WinGetBlock['detect'] = $null
+        }
+        $merged.winget = $script:WinGetBlock
+    }
+    if (Test-WinGetStoreApp) {
+        # Intune's Store app type has no command, detection rule or architecture of its own
+        foreach ($key in 'installCommandLine', 'uninstallCommandLine', 'detection', 'restartBehavior',
+                         'architecture', 'minimumWindowsRelease', 'requirements', 'dependencies') { $merged.Remove($key) }
+    }
+
     ($merged | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     Write-GuiLog "Settings saved to $manifestPath"
     $manifestPath
@@ -2466,34 +2593,45 @@ function Get-PackageWarning {
             $warnings += "The uninstall command removes $uninstallCode, which is not the MSI in this package ($packageCode)."
         }
     }
+    if ($script:WinGetLoaded) { $warnings += @(Get-WinGetWarning) }
     $warnings
 }
 
 # Everything Intune insists on, as a live checklist instead of one dialog at a time
 function Update-Readiness {
-    $hasSetup     = [bool]"$($ui.CmbSetup.SelectedItem)"
+    # An Intune Store app has no setup file, command or detection rule: Intune has all three
+    $store        = Test-WinGetStoreApp
+    $hasSetup     = $store -or [bool]"$($ui.CmbSetup.SelectedItem)"
     $hasName      = [bool]$ui.TxtName.Text.Trim()
     $hasPublisher = [bool]$ui.TxtPublisher.Text.Trim()
-    $commandIssue = Get-CommandIssue
-    $detectionOk  = Update-DetectionSummary
+    $commandIssue = if ($store) { $null } else { Get-CommandIssue }
+    $detectionOk  = if ($store) { $true } else { Update-DetectionSummary }
+    $wingetBlockers = @(if (Test-WinGetPackage) { Get-WinGetBlocker })
 
-    Set-CheckLine $ui.ChkSetup     $hasSetup     $(if ($hasSetup) { "Setup file: $($ui.CmbSetup.SelectedItem)" } else { 'No installer, script or MSI in this folder' })
+    Set-CheckLine $ui.ChkSetup     $hasSetup     $(if ($store) { "Intune Store app: $($script:WinGetBlock['id'])" }
+                                                   elseif ($hasSetup) { "Setup file: $($ui.CmbSetup.SelectedItem)" } else { 'No installer, script or MSI in this folder' })
     Set-CheckLine $ui.ChkName      $hasName      $(if ($hasName) { 'Name' } else { 'Name is missing' })
     Set-CheckLine $ui.ChkPublisher $hasPublisher $(if ($hasPublisher) { 'Publisher' } else { 'Publisher is missing' })
-    Set-CheckLine $ui.ChkCommand   (-not $commandIssue) $(if ($commandIssue) { $commandIssue } else { 'Install command' })
-    Set-CheckLine $ui.ChkDetection $detectionOk  $(if ($detectionOk) { 'Detection rule' } else { 'Detection rule is not set' })
+    Set-CheckLine $ui.ChkCommand   (-not $commandIssue) $(if ($store) { 'Intune installs it' } elseif ($commandIssue) { $commandIssue } else { 'Install command' })
+    Set-CheckLine $ui.ChkDetection $detectionOk  $(if ($store) { 'Intune detects it itself' } elseif ($detectionOk) { 'Detection rule' } else { 'Detection rule is not set' })
+    $ui.ChkWinGet.Visibility = if (Test-WinGetPackage) { 'Visible' } else { 'Collapsed' }
+    if (Test-WinGetPackage) {
+        Set-CheckLine $ui.ChkWinGet (-not $wingetBlockers.Count) $(if ($wingetBlockers.Count) { $wingetBlockers[0] }
+            else { "From the $(Get-WinGetSourceLabel "$($script:WinGetBlock['source'])")" + $(if (-not $store) { ", with Packwright's own scripts" } else { '' }) })
+    }
 
     $warnings = @(Get-PackageWarning)
     $ui.TxtReadyWarn.Text = ($warnings | ForEach-Object { [string][char]0x26A0 + '   ' + $_ }) -join [Environment]::NewLine
     $ui.TxtReadyWarn.Foreground = Get-ThemeBrush 'Warn'
     $ui.TxtReadyWarn.Visibility = if ($warnings.Count) { 'Visible' } else { 'Collapsed' }
 
-    $ready = $hasSetup -and $hasName -and $hasPublisher -and $detectionOk -and -not $commandIssue
+    $ready = $hasSetup -and $hasName -and $hasPublisher -and $detectionOk -and -not $commandIssue -and -not $wingetBlockers.Count
     $ui.TxtReadyTitle.Text = if ($ready) { 'Ready to publish' } else { 'Not ready yet' }
     $ui.TxtReadyTitle.Foreground = Get-ThemeBrush $(if ($ready) { 'Ok' } else { 'Ink' })
     $ui.PnlReady.BorderBrush = Get-ThemeBrush $(if ($ready) { 'Ok' } else { 'Stroke' })
-    $ui.TxtReadyNote.Text = if (-not $ready) { 'Fill in the items marked above. "Build only" works without them.' }
+    $ui.TxtReadyNote.Text = if (-not $ready) { $(if ($store) { 'Fill in the items marked above.' } else { 'Fill in the items marked above. "Build only" works without them.' }) }
         elseif ($warnings.Count) { 'Nothing here stops you publishing — read the points above and publish if they are deliberate.' }
+        elseif ($store) { 'Publishing creates the Intune Store app; nothing is built or uploaded. No groups are assigned — do that in the portal.' }
         else { 'Publishing builds the .intunewin and creates the app in Intune. No groups are assigned — do that in the portal.' }
     $ui.TxtActionHint.Text = if ($ready) { '' } else { 'Some required information is still missing.' }
     $ready
@@ -2506,7 +2644,8 @@ function Test-ReadyToRun {
                      $ui.TxtDetPath, $ui.TxtDetFile, $ui.TxtKeyPath, $ui.TxtScript) { $box.Tag = $null }
 
     if (-not $script:LoadedFolder) { Set-StatusText 'Open a package folder first.'; return $false }
-    if (-not "$($ui.CmbSetup.SelectedItem)") {
+    $store = Test-WinGetStoreApp
+    if (-not $store -and -not "$($ui.CmbSetup.SelectedItem)") {
         $ui.ExpAdvanced.IsExpanded = $true
         Set-StatusText 'This folder has nothing to package — no .exe, .msi, .ps1, .cmd or .bat. Pick another folder.'
         return $false
@@ -2516,6 +2655,21 @@ function Test-ReadyToRun {
     $issues = @()
     if (-not $ui.TxtName.Text.Trim())      { $issues += @{ Box = $ui.TxtName;      Message = 'The app needs a name.' } }
     if (-not $ui.TxtPublisher.Text.Trim()) { $issues += @{ Box = $ui.TxtPublisher; Message = 'The app needs a publisher.' } }
+    # A source the organisation does not allow, or scripts that are not Packwright's own where it
+    # restricts its sources: the publish engine refuses these too, but before the build, not after
+    $wingetBlockers = @(if (Test-WinGetPackage) { Get-WinGetBlocker })
+    if ($wingetBlockers.Count) {
+        $issues += @{ Box = $(if ($store) { $ui.TxtName } else { $ui.TxtInstall }); Message = $wingetBlockers[0] }
+        if (-not $store) { $ui.ExpAdvanced.IsExpanded = $true }
+    }
+    if ($store) {
+        if (-not $issues) { return $true }
+        foreach ($issue in $issues) { $issue.Box.Tag = 'invalid' }
+        Set-StatusText $issues[0].Message
+        Write-GuiLog "Cannot publish yet: $($issues[0].Message)"
+        $issues[0].Box.Focus() | Out-Null
+        return $false
+    }
 
     # A command naming a file this package does not hold builds and publishes perfectly and
     # then fails on every device, so it stops the publish here rather than there.
@@ -2662,13 +2816,35 @@ It turns a folder holding an installation file into a Win32 app in Intune.
 
 Publishing does two things: the folder is packed into an .intunewin file, and an app is created in Intune with the settings shown on screen. No groups are assigned — you do that in the Intune portal afterwards.
 '@ }
-    @{ Title = 'Two ways to start'
+    @{ Title = 'Three ways to start'
        Body  = @'
 I have an installer file — pick the .exe or .msi you got from the vendor. A five-step wizard creates the package folder and fills in the silent install switches for the installer type it recognises (MSI, Inno Setup, NSIS, InstallShield, WiX Burn).
+
+Install it with WinGet — pick an app from the Microsoft Store or the WinGet community repository. No installer goes into the package: each device installs the app with WinGet, and the package holds the scripts that do it and the app's icon.
 
 I have a package folder — open a folder that already holds the installation files: a PSADT package, an MSI, a plain installer, or a payload folder that installs with a .ps1 or .cmd script. Anything previously saved in the folder is loaded.
 
 You can also drag a package folder, an installer or an install script straight onto the window.
+'@ }
+    @{ Title = 'Apps from WinGet'
+       Body  = @'
+Two sources. The Microsoft Store is curated by Microsoft: every app is certified, and the installers come from the Store's own servers. The WinGet community repository is kept by volunteers on GitHub: each installer downloads from its publisher's site and is checked against a hash in the manifest. Your organisation may allow only one of them — Packwright.policy.json next to the scripts says which, and Packwright then offers nothing else.
+
+Packwright reads the app's manifest and decides how Intune has to run it: as SYSTEM for an app that installs for every user, as the signed-in user for one that installs per user. The detection rule is written from the manifest too — the app package, the MSI product code or the uninstall key it names — so most apps need no test install for it.
+
+A community app is pinned to one version, so every device gets the same one. When a new version comes out, pick it in the WinGet card and publish again as an update. A Store app is always the newest the Store has.
+
+A Store app can also be delivered as Intune's own Microsoft Store app type: nothing is built, Intune installs and updates it, and it keeps working on devices where the Microsoft Store app is blocked — where WinGet's command line refuses Store installs.
+
+Every device needs WinGet working for SYSTEM. Build the WinGet runtime package once (from the WinGet card or the WinGet dialog), publish it and assign it to all devices. Until a device has it, the WinGet apps wait instead of failing.
+'@ }
+    @{ Title = 'Test on this computer'
+       Body  = @'
+"Test on this computer" installs the package here the way Intune would: as SYSTEM (or as you, for an app that installs per user), from a copy of the package, started from a 32-bit process exactly as Intune starts it. The requirement rules are checked first, and the detection rule before and after.
+
+It needs administrator rights and opens a window of its own. The result comes back here, in the log, with the entries the install added to Apps and features — and if the detection rule did not find the app, Packwright offers to write the rule from those entries instead.
+
+The app really is installed. Use the same button's Uninstall to remove it again, which tests the uninstall command too.
 '@ }
     @{ Title = 'What Intune insists on'
        Body  = @'
@@ -2728,7 +2904,11 @@ The usual causes: the detection rule is not set; an app with the same name alrea
        Body  = @'
 The top right corner shows how publishing authenticates.
 
-With a .secret file next to the script, the tool signs in as an app registration and never prompts. Without one, a browser sign-in opens and your own Intune permissions decide what you are allowed to do.
+With a .secret file next to the script, the tool signs in as an app registration and never prompts. Without one, you sign in as yourself in the browser, and your own Intune permissions decide what you are allowed to do. Microsoft Graph remembers that sign-in on this computer, so later publishes do not ask again until it expires; the header shows which account it is, and the log says the account and tenant on every publish.
+
+A sign-in carries the roles the account had when it signed in. If you activate an Intune role in PIM after signing in, Intune still answers 403 Forbidden, because the remembered sign-in does not have the role yet. Press "Sign in again" in the header: it forgets the remembered sign-in and opens a new one in the browser, which has the roles you have now. The same button signs in as another account.
+
+Every publish logs when its sign-in was made and which Entra roles it carries. If Intune Administrator is not among them, the role was not active when you signed in. If your rights come from a role assigned in Intune itself and it is limited to scope tags, the app needs one of them: add "roleScopeTagIds": ["<tag id>"] to app.json.
 
 That browser window can open behind this one — if a publish seems to stall right after it starts, look for it in the taskbar. Publishing stops if the sign-in fails, so nothing is half-created in Intune.
 '@ }
@@ -2847,6 +3027,9 @@ $script:SettingsXaml = @'
         <TextBlock x:Name="SetTxtWarn" Foreground="{StaticResource Warn}" TextWrapping="Wrap"/>
       </Border>
 
+      <TextBlock Style="{StaticResource FieldLabel}" Text="WINGET" Margin="0,16,0,0"/>
+      <TextBlock x:Name="SetTxtWinGet" Style="{StaticResource Tiny}" TextWrapping="Wrap"/>
+
       <Button x:Name="SetBtnDefaults" Style="{StaticResource BtnQuiet}" HorizontalAlignment="Left"
               Content="Reset to the defaults" Margin="0,14,0,0"/>
       <TextBlock x:Name="SetTxtFile" Style="{StaticResource Tiny}" Margin="0,10,0,0" TextWrapping="Wrap"/>
@@ -2944,6 +3127,9 @@ function Show-StudioSettings {
         $c.SetSubtitle.Text = 'Where Packwright puts the packages it creates and the packages it builds.'
     }
     $c.SetTxtFile.Text = "Saved in $($script:SettingsFile)"
+    # What Packwright.policy.json says about WinGet, which takes the WinGet part to read
+    Import-StudioWinGet
+    $c.SetTxtWinGet.Text = Get-WinGetPolicySummary
 
     $c.SetTxtPackages.Text = Get-StudioPackageRoot
     $c.SetTxtOutput.Text   = Get-StudioOutputRoot
@@ -3449,6 +3635,269 @@ function Show-PackageWizard {
 }
 #endregion
 
+#region ---- Background lookups (WinGet catalogs, runtime package, sign-in) ------
+# A catalog lookup takes seconds — winget refreshes its index on first use and the Store is a
+# web service — so it runs on a runspace of its own, like a build, and reports back through a
+# timer. Each lookup has a name; starting one again makes the earlier answer stale, and a stale
+# answer is dropped when it arrives instead of overwriting a newer one. Handlers are named
+# functions, called on the UI thread: never closures (see Show-StudioSettings). A lookup that
+# needs a script's functions names it with -Engine, and its runspace loads that script first:
+# New-WinGetPackage.ps1, for the WinGet ones.
+$script:Lookups = @{}
+$script:LookupGeneration = @{}
+$script:LookupTimer = New-Object Windows.Threading.DispatcherTimer
+$script:LookupTimer.Interval = [TimeSpan]::FromMilliseconds(150)
+
+$script:LookupBody = {
+    param([string]$lookupEngine, [string]$lookupScript, [hashtable]$lookupArguments)
+    $ErrorActionPreference = 'Stop'
+    if ($lookupEngine) { . $lookupEngine }
+    & ([scriptblock]::Create($lookupScript)) @lookupArguments
+}.ToString()
+
+function Start-StudioLookup {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Script,
+        [hashtable]$Arguments = @{},
+        [Parameter(Mandatory)][string]$OnDone,
+        [string]$OnProgress,
+        $Context,
+        [string]$Engine
+    )
+    $script:LookupGeneration[$Name] = 1 + [int]$script:LookupGeneration[$Name]
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.ApartmentState = 'STA'   # icons are drawn with WPF, which needs STA
+    $runspace.Open()
+    $shell = [powershell]::Create()
+    $shell.Runspace = $runspace
+    [void]$shell.AddScript($script:LookupBody).AddParameters(@{
+        lookupEngine = $Engine; lookupScript = $Script; lookupArguments = $Arguments })
+    $script:Lookups["$Name#$($script:LookupGeneration[$Name])"] = @{
+        Name = $Name; Generation = $script:LookupGeneration[$Name]; Shell = $shell; Handle = $shell.BeginInvoke()
+        OnDone = $OnDone; OnProgress = $OnProgress; Context = $Context; ProgressSeen = 0
+    }
+    $script:LookupTimer.Start()
+}
+
+function Test-StudioLookupRunning {
+    param([Parameter(Mandatory)][string]$Name)
+    [bool]@($script:Lookups.Values | Where-Object { $_.Name -eq $Name -and $_.Generation -eq $script:LookupGeneration[$Name] }).Count
+}
+
+# One tick: progress from the running lookups, results from the finished ones. Everything a
+# handler throws is caught here — an exception out of a dispatcher tick unwinds through
+# ShowDialog and takes the window with it.
+function Receive-StudioLookup {
+    foreach ($key in @($script:Lookups.Keys)) {
+        $job = $script:Lookups[$key]
+        $current = $job.Generation -eq $script:LookupGeneration[$job.Name]
+        $progress = $job.Shell.Streams.Progress
+        if ($current -and $job.OnProgress -and $progress.Count -gt $job.ProgressSeen) {
+            $job.ProgressSeen = $progress.Count
+            try { & $job.OnProgress -Record $progress[$progress.Count - 1] -Context $job.Context } catch { }
+        }
+        if (-not $job.Handle.IsCompleted) { continue }
+        $script:Lookups.Remove($key)
+        $result = @()
+        $failure = $null
+        try { $result = @($job.Shell.EndInvoke($job.Handle)) }
+        catch {
+            $failure = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+        }
+        if (-not $failure -and $job.Shell.Streams.Error.Count) { $failure = "$($job.Shell.Streams.Error[0])" }
+        $job.Shell.Runspace.Dispose()
+        $job.Shell.Dispose()
+        if (-not $current) { continue }
+        try { & $job.OnDone -Result $result -Failure $failure -Context $job.Context }
+        catch { Write-GuiLog "ERROR: $($_.Exception.Message)" }
+    }
+    if (-not $script:Lookups.Count) { $script:LookupTimer.Stop() }
+}
+$script:LookupTimer.Add_Tick({ Receive-StudioLookup })
+#endregion
+
+#region ---- WinGet, read when it is first needed ---------------------------------
+# A package New-WinGetPackage wrote carries a winget block in app.json - the WinGet runtime package
+# a wingetRuntime block - and how it installs is written from that block. All that works with it -
+# the "Install it with WinGet" dialog, the WinGet card in the editor, the runtime package - is
+# Packwright.WinGet.ps1, on top of New-WinGetPackage.ps1: thousands of lines a session packaging an
+# installer never uses. So both are read the first time something needs them: a WinGet package
+# opened, the WinGet dialog, Settings, or a Packwright.policy.json for the start screen to read.
+# What the rest of this file needs before that - whether the open package is a WinGet one - is
+# kept here, and it calls into the WinGet part only once $script:WinGetLoaded says it is there.
+$script:WinGetLoaded       = $false
+$script:WinGetBlock        = $null    # the winget block of the open package, as a hashtable
+$script:WinGetRuntimeBlock = $null    # the wingetRuntime block of the WinGet runtime package
+$script:WinGetVersions     = $null    # the community repository's versions of it, once looked up
+$script:WinGetScripts      = @()      # Get-WinGetScriptState for the open package
+
+function Test-WinGetPackage { [bool]$script:WinGetBlock }
+function Test-WinGetStoreApp { [bool]$script:WinGetBlock -and "$($script:WinGetBlock['delivery'])" -eq 'store' }
+function Test-WinGetRuntimePackage { [bool]$script:WinGetRuntimeBlock }
+
+# Reads both files, once. Dot-sourced in here, their functions would be this function's own, gone
+# again when it returns - and it is called from wherever WinGet is first needed, a click handler as
+# often as not. So each function they bring is put in the script scope, where everything in this
+# file looks for it: every function that is not the one it was before they were read, so that one
+# of the same name in a PowerShell profile gives way to theirs. Their own state is in $script:
+# variables, which land there by themselves.
+function Import-StudioWinGet {
+    if ($script:WinGetLoaded) { return }
+    $before = @{}
+    foreach ($command in Get-ChildItem -Path function:) { $before[$command.Name] = $command.ScriptBlock }
+    . $script:EngineWinGet
+    . $script:StudioWinGet
+    foreach ($command in Get-ChildItem -Path function:) {
+        if (-not [object]::ReferenceEquals($before[$command.Name], $command.ScriptBlock)) {
+            Set-Item -LiteralPath "function:script:$($command.Name)" -Value $command.ScriptBlock
+        }
+    }
+    Initialize-StudioWinGet
+    $script:WinGetLoaded = $true
+}
+#endregion
+
+#region ---- app.json blocks into the editor -------------------------------------
+function ConvertTo-StudioHashtable {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    $Value | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable
+}
+
+# Put a detection block (app.json shape) into the detection fields
+function Set-StudioDetection {
+    param($Detection)
+    $ui.TxtProductCode.Text = ''; $ui.TxtDetPath.Text = ''; $ui.TxtDetFile.Text = ''
+    $ui.TxtKeyPath.Text = ''; $ui.TxtValueName.Text = ''; $ui.TxtDetValue.Text = ''; $ui.TxtScript.Text = ''
+    if (-not $Detection) { return }
+    Set-DetTypeValue "$($Detection.type)"
+    $ui.TxtProductCode.Text = "$($Detection.productCode)"
+    $ui.TxtDetPath.Text     = "$($Detection.path)"
+    $ui.TxtDetFile.Text     = "$($Detection.fileOrFolderName)"
+    $ui.TxtKeyPath.Text     = "$($Detection.keyPath)"
+    $ui.TxtValueName.Text   = "$($Detection.valueName)"
+    Set-ComboValue $ui.CmbDetCheck    $(if ($Detection.detectionType) { $Detection.detectionType } else { 'exists' })
+    Set-ComboValue $ui.CmbDetOperator $(if ($Detection.operator)      { $Detection.operator }      else { 'notConfigured' })
+    $ui.TxtDetValue.Text   = "$($Detection.detectionValue)"
+    $ui.ChkDet32.IsChecked = [bool]$Detection.check32BitOn64System
+    $ui.TxtScript.Text     = "$($Detection.scriptFile)"
+}
+#endregion
+
+#region ---- Testing on this computer ---------------------------------------------
+# The test runs elevated in a window of its own (Test-IntuneWinApp.ps1), so its progress stays
+# readable there, and leaves its result in a file this window waits for.
+$script:TestWatch = $null
+$script:TestTimer = New-Object Windows.Threading.DispatcherTimer
+$script:TestTimer.Interval = [TimeSpan]::FromSeconds(1)
+
+function Start-PackageTest {
+    param([ValidateSet('Install', 'Uninstall')][string]$Action = 'Install')
+    if (-not $script:LoadedFolder) { return }
+    if ($script:TestWatch) { Set-StatusText 'A test is already running in its own window.'; return }
+    if (Test-WinGetStoreApp) {
+        [Windows.MessageBox]::Show('Intune installs a Store app itself, so there is nothing here to test. Publish it and assign it to a test device.',
+            'Test on this computer', 'OK', 'Information') | Out-Null
+        return
+    }
+    if ($Action -eq 'Install' -and -not $ui.TxtInstall.Text.Trim()) { Set-StatusText 'There is no install command to test yet.'; return }
+    try { Save-AppManifest | Out-Null } catch { Write-GuiLog "ERROR: $($_.Exception.Message)"; return }
+    $who = if ((Get-ComboValue $ui.CmbRunAs) -eq 'user') { 'as you, the signed-in user (it installs per user)' } else { 'as SYSTEM' }
+    $text = if ($Action -eq 'Install') {
+        "Install '$($ui.TxtName.Text.Trim())' on this computer the way Intune would: $who, from a copy of the package, started from a 32-bit process. " +
+        "The requirement rules are checked first and the detection rule after.`n`nThe app really is installed. Use 'Test on this computer' > Uninstall to remove it again.`n`nWindows asks for administrator rights. Continue?"
+    } else {
+        "Uninstall '$($ui.TxtName.Text.Trim())' from this computer with the package's uninstall command, $who, and check the detection rule no longer finds it.`n`nWindows asks for administrator rights. Continue?"
+    }
+    if ([Windows.MessageBox]::Show($text, 'Test on this computer', 'YesNo', 'Question') -ne 'Yes') { return }
+
+    $resultPath = Join-Path ([IO.Path]::GetTempPath()) ('Packwright-test-{0}.json' -f [guid]::NewGuid())
+    $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    try {
+        Start-Process -FilePath $pwsh -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:EngineTest`"",
+            '-SourceFolder', "`"$script:LoadedFolder`"", '-Action', $Action, '-ResultPath', "`"$resultPath`"", '-Pause') | Out-Null
+    }
+    catch {
+        Write-GuiLog "Test not started: $($_.Exception.Message)"
+        Set-StatusText 'The test was not started (administrator rights were not given).'
+        return
+    }
+    $script:TestWatch = @{ ResultPath = $resultPath; Action = $Action; Folder = $script:LoadedFolder; Started = Get-Date }
+    Write-GuiLog "==== Test: $($Action.ToLowerInvariant()) $($ui.TxtName.Text.Trim()) as Intune would, in its own window ===="
+    Set-StatusText "Testing the $($Action.ToLowerInvariant()) in its own window..."
+    $script:TestTimer.Start()
+}
+
+function Receive-PackageTest {
+    $watch = $script:TestWatch
+    if (-not $watch) { $script:TestTimer.Stop(); return }
+    if (-not (Test-Path -LiteralPath $watch.ResultPath)) {
+        if (((Get-Date) - $watch.Started).TotalHours -gt 3) { $script:TestWatch = $null; $script:TestTimer.Stop() }
+        return
+    }
+    $outcome = $null
+    try { $outcome = Get-Content -LiteralPath $watch.ResultPath -Raw -ErrorAction Stop | ConvertFrom-Json }
+    catch { return }   # still being written; the next tick reads it
+    $script:TestWatch = $null
+    $script:TestTimer.Stop()
+    Remove-Item -LiteralPath $watch.ResultPath -Force -ErrorAction SilentlyContinue
+    try { Show-PackageTestResult -Outcome $outcome -Folder $watch.Folder } catch { Write-GuiLog "ERROR: $($_.Exception.Message)" }
+}
+$script:TestTimer.Add_Tick({ Receive-PackageTest })
+
+# The Apps and features entry a test install added, when the install succeeded and the package's
+# detection rule did not find the app after it. One entry only - an install that added several
+# leaves the choice to whoever knows the app.
+function Get-TestDetectionOffer {
+    param([Parameter(Mandatory)]$Outcome)
+    if ($Outcome.Action -ne 'Install' -or -not $Outcome.Ran -or $Outcome.DetectedAfter -or $null -eq $Outcome.ExitCode -or
+        [int]$Outcome.ExitCode -notin 0, 1707, 3010, 1641) { return $null }
+    $added = @($Outcome.ArpAdded | Where-Object { $_.Change -eq 'added' })
+    if ($added.Count -ne 1) { return $null }
+    $added[0]
+}
+
+function Show-PackageTestResult {
+    param([Parameter(Mandatory)]$Outcome, [string]$Folder)
+    Write-GuiLog "Test result: $($Outcome.Verdict)$(if ($Outcome.Account) { " (ran as $($Outcome.Account))" })"
+    foreach ($requirement in @($Outcome.Requirements)) {
+        Write-GuiLog ("  requirement '{0}': {1}" -f $requirement.Name, $(if ($requirement.Met) { 'met' } else { "NOT met $($requirement.Output) $($requirement.Error)".Trim() }))
+    }
+    if ($Outcome.Ran) { Write-GuiLog "  exit code $($Outcome.ExitCode): $($Outcome.ExitMeaning) ($($Outcome.Seconds) s)" }
+    if ($Outcome.Error) { Write-GuiLog "  $($Outcome.Error)" }
+    if ($Outcome.DetectionDetail) { Write-GuiLog "  detection: $($Outcome.DetectionDetail)" }
+    foreach ($entry in @($Outcome.ArpAdded)) { Write-GuiLog "  Apps and features, $($entry.Change): $($entry.DisplayName) $($entry.DisplayVersion) [$($entry.KeyPath)]" }
+    foreach ($line in @($Outcome.LogTail)) { Write-GuiLog "  | $line" }
+    if ($Outcome.WorkFolder) { Write-GuiLog "  test folder: $($Outcome.WorkFolder)" }
+    Set-StatusText "Test: $($Outcome.Verdict)."
+    if ($Folder -ne $script:LoadedFolder) { return }
+
+    $entry = Get-TestDetectionOffer -Outcome $Outcome
+    if ($entry) {
+        $question = "The install added '$($entry.DisplayName) $($entry.DisplayVersion)' to Apps and features, but the detection rule did not find it." +
+                    "`n`nWrite the detection rule from that entry instead? Intune then checks its uninstall key$(if ($entry.DisplayVersion) { " and that the version is at least $($entry.DisplayVersion)" })."
+        if ([Windows.MessageBox]::Show($question, 'Test on this computer', 'YesNo', 'Question') -eq 'Yes') {
+            $app = [pscustomobject]@{ KeyPath = $entry.KeyPath; DisplayVersion = $entry.DisplayVersion; Is32Bit = [bool]$entry.Is32Bit }
+            $script:Loading = $true
+            try { Set-StudioDetection -Detection (ConvertTo-RegistryDetection -App $app) } finally { $script:Loading = $false }
+            Set-DetValueTracking
+            Update-DetectionUi
+            Write-GuiLog "Detection rule written from the entry the test install added: $($entry.KeyPath)"
+            try { Save-AppManifest | Out-Null } catch { Write-GuiLog "ERROR: $($_.Exception.Message)" }
+            if ($script:WinGetLoaded) { Update-WinGetScriptState; Update-WinGetCard }
+        }
+    }
+    Update-Readiness | Out-Null
+    $icon = if ($Outcome.Succeeded) { 'Information' } else { 'Warning' }
+    $summary = "$($Outcome.Verdict)." + $(if ($Outcome.Ran) { "`n`nExit code $($Outcome.ExitCode): $($Outcome.ExitMeaning)" } else { '' }) +
+               $(if ($Outcome.Error) { "`n`n$($Outcome.Error)" } else { '' }) + $(if ($Outcome.DetectionDetail) { "`n`nDetection: $($Outcome.DetectionDetail)" } else { '' }) +
+               "`n`nThe log at the bottom of the window has the details."
+    [Windows.MessageBox]::Show($summary, 'Test on this computer', 'OK', $icon) | Out-Null
+}
+#endregion
+
 #region ---- Background run (build/publish in a runspace) -----------------------
 $script:RunPS = $null
 $script:RunHandle = $null
@@ -3514,11 +3963,14 @@ function Get-RunInterruptWarning {
     }
 }
 
+# The buttons that start something of their own, off while a run is going. The WinGet part adds
+# its card's when it is read.
+$script:RunLockedButtons = [Collections.Generic.List[string]]@(
+    'BtnSave', 'BtnBuild', 'BtnPublish', 'BtnChangePkg', 'BtnRegPick', 'BtnIconAuto', 'BtnBrowseIcon', 'BtnTest', 'BtnSignIn')
+
 function Set-RunUiState {
     param([bool]$Busy)
-    foreach ($name in 'BtnSave', 'BtnBuild', 'BtnPublish', 'BtnChangePkg', 'BtnRegPick', 'BtnIconAuto', 'BtnBrowseIcon') {
-        $ui[$name].IsEnabled = -not $Busy
-    }
+    foreach ($name in $script:RunLockedButtons) { $ui[$name].IsEnabled = -not $Busy }
     $ui.BtnCancelRun.Visibility = if ($Busy) { 'Visible' } else { 'Collapsed' }
     $ui.Prog.Visibility = if ($Busy) { 'Visible' } else { 'Collapsed' }
     if ($Busy) { $ui.ExpLog.IsExpanded = $true } else { $ui.Prog.IsIndeterminate = $false; $ui.Prog.Value = 0 }
@@ -3581,6 +4033,7 @@ $timer.Add_Tick({
     $runspaceShell.Runspace.Dispose(); $runspaceShell.Dispose()
     $script:RunPS = $null
     Set-RunUiState -Busy $false
+    Update-AuthStatus   # a first sign-in is remembered from now on
 })
 
 # Build (and optionally publish) through the engine scripts, in a background runspace so
@@ -3627,10 +4080,18 @@ $script:RunBody = {
     param(
         [string]$runBuildScript, [string]$runPublishScript,
         [string]$runSource, [string]$runSetup, [string]$runOutputRoot,
-        [bool]$runPublish, [bool]$runUpdate, [bool]$runAllowDuplicate
+        [bool]$runPublish, [bool]$runUpdate, [bool]$runAllowDuplicate, [bool]$runStoreApp
     )
     . $runBuildScript
     . $runPublishScript
+    # An Intune Store app has nothing to build: app.json is all there is to publish
+    if ($runStoreApp) {
+        if ($runPublish) {
+            Publish-IntuneWinApp -ManifestPath (Join-Path $runSource 'app.json') -Confirm:$false -Update:$runUpdate `
+                -AllowDuplicateName:$runAllowDuplicate -SignIn Browser
+        }
+        return
+    }
     $built = Build-IntuneWinApp -SourceFolder $runSource -SetupFile $runSetup `
                  -OutputRoot $runOutputRoot -PassThru
     # Guarded: a bare '$built' emits $null into the output stream when the build produced
@@ -3648,6 +4109,8 @@ $script:RunBody = {
 function Start-EngineRun {
     param([bool]$Publish)
     if ($script:RunPS) { Set-StatusText 'A build is already running.'; return }
+    $storeApp = Test-WinGetStoreApp
+    if ($storeApp -and -not $Publish) { Set-StatusText 'An Intune Store app has nothing to build — publish it.'; return }
     if (-not (Test-ReadyToRun -ForPublish:$Publish)) { return }
     try { Save-AppManifest | Out-Null }
     catch { Write-GuiLog "ERROR: $($_.Exception.Message)"; Set-StatusText 'Could not save app.json.'; return }
@@ -3658,6 +4121,8 @@ function Start-EngineRun {
     if ($pathWarning) { Write-GuiLog "WARNING: $pathWarning" }
 
     if ($Publish) {
+        # The sign-in is the process's one session; a publish now would race the one being made
+        if (Test-StudioLookupRunning -Name 'signin') { Set-StatusText 'Finish the sign-in in the browser first.'; return }
         # Before the build, not after it: the package can take minutes, and finding out then
         # that the publish cannot even start wastes all of it.
         $graphWarning = Get-GraphModuleWarning
@@ -3668,7 +4133,7 @@ function Start-EngineRun {
                 'Publish to Intune', 'OK', 'Error')
             return
         }
-        $detection = (Get-DetectionSummary).Text
+        $detection = if ($storeApp) { 'Intune detects it itself.' } else { (Get-DetectionSummary).Text }
         $duplicateNote = if ($ui.ChkUpdateExisting.IsChecked) {
             'If Intune already has an app with this name, it is updated with this package as a new version (assignments are kept).'
         } elseif ($ui.ChkAllowDuplicate.IsChecked) {
@@ -3676,12 +4141,16 @@ function Start-EngineRun {
         } else {
             'If Intune already has an app with this name, publishing stops before anything is created.'
         }
+        $packageLine = if ($storeApp) { 'Intune Store app (nothing is built or uploaded)' } else { "$($ui.CmbSetup.SelectedItem)" }
+        $sourceLine = if (Test-WinGetPackage) {
+            "Source:     $(Get-WinGetSourceLabel "$($script:WinGetBlock['source'])") — $($script:WinGetBlock['id'])`n"
+        } else { '' }
         $answer = [Windows.MessageBox]::Show(
             ("Create this app in Intune?`n`n" +
              "Name:       $($ui.TxtName.Text.Trim())`n" +
              "Publisher:  $($ui.TxtPublisher.Text.Trim())`n" +
              "Version:    $($ui.TxtVersion.Text.Trim())`n" +
-             "Package:    $($ui.CmbSetup.SelectedItem)`n`n" +
+             "Package:    $packageLine`n" + $sourceLine + "`n" +
              "Detection:  $detection`n`n" +
              "$duplicateNote`nNo groups are assigned — do that in the portal."),
             'Publish to Intune', 'YesNo', 'Question')
@@ -3701,6 +4170,7 @@ function Start-EngineRun {
         runPublish        = $Publish
         runUpdate         = [bool]$ui.ChkUpdateExisting.IsChecked
         runAllowDuplicate = [bool]$ui.ChkAllowDuplicate.IsChecked
+        runStoreApp       = $storeApp
     })
 
     $script:RunPS = $runspaceShell
@@ -3712,7 +4182,8 @@ function Start-EngineRun {
     $ui.BtnOpenPortal.Visibility = 'Collapsed'
     Set-RunUiState -Busy $true
     $ui.Prog.IsIndeterminate = $true
-    Set-StatusText $(if ($Publish) { 'Building the package and publishing to Intune...' } else { 'Building the package...' })
+    Set-StatusText $(if ($storeApp) { 'Publishing the Intune Store app...' }
+                     elseif ($Publish) { 'Building the package and publishing to Intune...' } else { 'Building the package...' })
     Write-GuiLog ('==== ' + $(if ($Publish) { 'Build and publish' } else { 'Build' }) + " — $(Get-Date -Format 'HH:mm:ss') ====")
     $timer.Start()
 }
@@ -3721,6 +4192,24 @@ function Start-EngineRun {
 #region ---- Event wiring -------------------------------------------------------
 # Start view
 $ui.BtnStartWizard.Add_Click({ Show-PackageWizard })
+$ui.BtnStartWinGet.Add_Click({ Import-StudioWinGet; Show-WinGetDialog })
+
+# Test on this computer: install or uninstall, from a menu on the button
+$script:TestMenu = New-Object Windows.Controls.ContextMenu
+foreach ($entry in @(@{ Header = 'Install it the way Intune would'; Action = 'Install' },
+                     @{ Header = 'Uninstall it the way Intune would'; Action = 'Uninstall' })) {
+    $item = New-Object Windows.Controls.MenuItem
+    $item.Header = $entry.Header
+    $item.Tag = $entry.Action
+    $item.Add_Click({ param($sender, $eventArgs) Start-PackageTest -Action "$($sender.Tag)" })
+    [void]$script:TestMenu.Items.Add($item)
+}
+$ui.BtnTest.ContextMenu = $script:TestMenu
+$ui.BtnTest.Add_Click({
+    $ui.BtnTest.ContextMenu.PlacementTarget = $ui.BtnTest
+    $ui.BtnTest.ContextMenu.Placement = 'Top'
+    $ui.BtnTest.ContextMenu.IsOpen = $true
+})
 $ui.BtnStartOpen.Add_Click({
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
     $dlg.Description = 'Pick the package folder (the folder holding the installation files)'
@@ -3738,6 +4227,7 @@ $ui.LstRecent.Add_KeyDown({
 $ui.BtnChangePkg.Add_Click({ Show-StartView })
 
 $ui.BtnSettings.Add_Click({ [void](Show-StudioSettings) })
+$ui.BtnSignIn.Add_Click({ Start-GraphSignIn })
 
 # Help: header button and F1 anywhere in the window
 $ui.BtnHelp.Add_Click({ Show-StudioHelp })
@@ -3912,12 +4402,113 @@ $window.Add_Drop({
 #endregion
 
 #region ---- Startup ------------------------------------------------------------
-$secretPath = Join-Path $PSScriptRoot '.secret'
-$ui.TxtAuthStatus.Text = if (Test-Path -LiteralPath $secretPath) {
-    'Signed in as an app — publishing needs no sign-in prompt'
-} else {
-    'No .secret — publishing opens a browser sign-in'
+# Microsoft Graph PowerShell remembers the last interactive sign-in on this computer, in .mg in
+# the user's profile, and signs in with it again without asking until it expires - for every
+# script that uses Graph, not only this one. Only the account's name is read, never a token.
+function Get-GraphRememberedAccount {
+    try {
+        $record = Get-Content -LiteralPath (Join-Path $HOME '.mg\mg.authrecord.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ("$($record.username)" -match '^[^@\s]+@[^@\s]+$') { return "$($record.username)" }
+    }
+    catch { }
+    $null
 }
+
+# What publishing will sign in as, in the header. "Opens a browser sign-in" was all it ever said,
+# and then no browser opened: Graph had remembered the sign-in from the time before.
+function Update-AuthStatus {
+    $remembered = Get-GraphRememberedAccount
+    $appOnly = Test-Path -LiteralPath (Join-Path $PSScriptRoot '.secret')
+    $ui.BtnSignIn.Visibility = if ($appOnly) { 'Collapsed' } else { 'Visible' }
+    if ($appOnly) {
+        $ui.TxtAuthStatus.Text = 'Signed in as an app — publishing needs no sign-in prompt'
+        $ui.TxtAuthStatus.ToolTip = 'The app registration in .secret signs in; your own account is not used.'
+    }
+    elseif ($remembered) {
+        $ui.TxtAuthStatus.Text = "Publishing as $remembered"
+        $ui.TxtAuthStatus.ToolTip = ("No .secret: publishing signs in as you. Microsoft Graph remembers your last sign-in on this computer, " +
+                                     'and uses it again without asking until it expires - with the roles you had when you signed in. ' +
+                                     '"Sign in again" starts a new one.')
+    }
+    else {
+        $ui.TxtAuthStatus.Text = 'No .secret — publishing opens a browser sign-in'
+        $ui.TxtAuthStatus.ToolTip = 'No .secret: publishing signs in as you, in the browser. Microsoft Graph then remembers that sign-in on this computer.'
+    }
+}
+
+# A sign-in carries the roles the account had when it signed in. An Intune role activated in PIM
+# after that is not in it, Intune answers 403, and Graph goes on using that sign-in until it
+# expires - which can be hours away. This forgets it and signs in afresh, in the browser:
+# Disconnect-MgGraph for the session this process holds (one for all its runspaces), the
+# record of the account Graph keeps in .mg, without which it cannot sign in silently again,
+# and the tokens, which Azure.Identity keeps in %LOCALAPPDATA%\.IdentityService. Disconnect-MgGraph
+# leaves those, and there are two caches: Connect-MgGraph signs in into mg.msal.cache.nocae, but
+# each request takes its token from mg.msal.cache.cae - so a new sign-in alone left publishing
+# on the token from before PIM.
+$script:GraphSignInScript = @'
+Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+if (Get-MgContext) { Disconnect-MgGraph | Out-Null }
+Remove-Item -Path (Join-Path $HOME '.mg\mg.authrecord.json'), (Join-Path $env:LOCALAPPDATA '.IdentityService\mg.msal.cache.*') `
+    -Force -ErrorAction SilentlyContinue
+# The browser rather than WAM, whose prompt needs a console window a GUI does not have
+if (Get-Command Set-MgGraphOption -ErrorAction SilentlyContinue) { Set-MgGraphOption -EnableLoginByWAM $false }
+Connect-MgGraph -Scopes 'DeviceManagementApps.ReadWrite.All' -NoWelcome -ErrorAction Stop
+$context = Get-MgContext
+if (-not $context) { throw 'The sign-in did not finish.' }
+# One request now, while the browser is in front anyway: it fills the cache requests use - the
+# browser may ask once more - and shows the token publishing will carry. Decoded here, sent nowhere.
+$issued = $null; $roles = @()
+try {
+    $response = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$top=1&$select=id' `
+                    -OutputType HttpResponseMessage -SkipHttpErrorCheck -ErrorAction Stop
+    $payload = "$($response.RequestMessage.Headers.Authorization.Parameter)".Split('.')[1].Replace('-', '+').Replace('_', '/')
+    $payload += '=' * ((4 - $payload.Length % 4) % 4)
+    $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
+    $issued = [DateTimeOffset]::FromUnixTimeSeconds([int64]$claims.iat).LocalDateTime
+    $names = @{ '62e90394-69f5-4237-9190-012177145e10' = 'Global Administrator'; '3a2c62db-5318-420d-8d74-23affee5d9d5' = 'Intune Administrator' }
+    $roles = @($claims.wids | ForEach-Object { $names["$_".ToLowerInvariant()] } | Where-Object { $_ })
+}
+catch { }
+[pscustomobject]@{ Account = "$($context.Account)"; TenantId = "$($context.TenantId)"; Issued = $issued; Roles = $roles }
+'@
+
+function Start-GraphSignIn {
+    if ($script:RunPS) { Set-StatusText 'Wait for the build or publish to finish before signing in again.'; return }
+    if (Test-StudioLookupRunning -Name 'signin') { Set-StatusText 'A sign-in is already waiting in the browser.'; return }
+    $graphWarning = Get-GraphModuleWarning
+    if ($graphWarning) {
+        Write-GuiLog "ERROR: $graphWarning"
+        Set-StatusText 'Signing in needs Microsoft.Graph.Authentication — see the log.'
+        return
+    }
+    $ui.BtnSignIn.IsEnabled = $false
+    Write-GuiLog 'Signing in to Microsoft Graph again: the remembered sign-in is forgotten, and a new one opens in the browser.'
+    Set-StatusText 'Finish the sign-in in the browser.'
+    Start-StudioLookup -Name 'signin' -OnDone 'Complete-GraphSignIn' -Script $script:GraphSignInScript
+}
+
+function Complete-GraphSignIn {
+    param($Result, $Failure, $Context)
+    $ui.BtnSignIn.IsEnabled = $true
+    Update-AuthStatus
+    if ($Failure) {
+        Write-GuiLog "ERROR: The sign-in did not finish: $(Format-RunError $Failure) The next publish asks for a sign-in instead."
+        Set-StatusText 'Not signed in — the next publish asks.'
+        return
+    }
+    $signedIn = @($Result)[-1]
+    Write-GuiLog "Signed in again as $($signedIn.Account), tenant $($signedIn.TenantId). Publishing uses this sign-in, with the roles the account has now."
+    if ($signedIn.Issued) {
+        $roles = @($signedIn.Roles)
+        Write-GuiLog $(if ($roles) { "The sign-in from {0:HH:mm} carries {1}." -f $signedIn.Issued, ($roles -join ' and ') }
+                       else { ('The sign-in from {0:HH:mm} carries neither Intune Administrator nor Global Administrator. If you activated one ' +
+                               'in PIM, Entra can take a few minutes to include it - sign in again then. A role assigned in Intune itself ' +
+                               'does not show here, and is enough on its own.') -f $signedIn.Issued })
+    }
+    Set-StatusText "Signed in as $($signedIn.Account)."
+}
+
+Update-AuthStatus
 Update-DetectionUi
 Show-StartView
 
@@ -3972,10 +4563,18 @@ if ($TestLoad) {
 
     Write-Host "Packwright self-test"
 
+    # The WinGet part is read when a session first needs it. Nothing at startup does, unless
+    # there is a Packwright.policy.json for the start screen to read; nothing before the WinGet
+    # tests below does either.
+    $policyAtStartup = Test-Path -LiteralPath $script:PolicyFile
+    Assert-Test 'WinGet is not read at startup' ($script:WinGetLoaded -eq $policyAtStartup) $(
+        if ($policyAtStartup) { 'read for the start screen: there is a Packwright.policy.json to say what it allows' }
+        else { 'no Packwright.policy.json, so nothing needed it' })
+
     # The PowerShell 7 guard at the top of each script is only reachable if 5.1 can read the
     # file. Saved without a BOM, 5.1 decodes the em dashes as ANSI, the stray quote byte ends
     # the string it sits in, and the run dies in 41 parse errors before any guard is reached.
-    $noBom = @(foreach ($engine in $PSCommandPath, $script:EngineBuild, $script:EnginePublish) {
+    $noBom = @(foreach ($engine in $PSCommandPath, $script:StudioWinGet, $script:EngineBuild, $script:EnginePublish, $script:EngineWinGet, $script:EngineTest) {
         $head = [byte[]]::new(3)
         $reader = [IO.File]::OpenRead($engine)
         try { [void]$reader.Read($head, 0, 3) } finally { $reader.Dispose() }
@@ -3983,11 +4582,11 @@ if ($TestLoad) {
     })
     Assert-Test 'Scripts are saved UTF-8 with BOM' ($noBom.Count -eq 0) $(
         if ($noBom.Count) { "no BOM: $($noBom -join ', ') — PowerShell 5.1 cannot parse these, so the version guard never runs" }
-        else { 'all three readable by PowerShell 5.1' })
+        else { 'all six readable by PowerShell 5.1' })
 
     # PathInfo.Path is provider-qualified on a UNC path; only .ProviderPath is something
     # IntuneWinAppUtil.exe or the WindowsInstaller COM object can open.
-    $providerQualified = @(foreach ($engine in $PSCommandPath, $script:EngineBuild, $script:EnginePublish) {
+    $providerQualified = @(foreach ($engine in $PSCommandPath, $script:StudioWinGet, $script:EngineBuild, $script:EnginePublish, $script:EngineWinGet, $script:EngineTest) {
         if ((Get-Content -LiteralPath $engine -Raw) -match 'Resolve-Path[^\r\n]*\)\.Path\b') { Split-Path -Leaf $engine }
     })
     # The detail strings deliberately avoid spelling out the pattern being searched for —
@@ -4000,20 +4599,22 @@ if ($TestLoad) {
     # defined in this file are not in scope when the script is started as '.\Packwright.ps1'.
     # It fails at click time rather than at load time, and not at all under 'pwsh -File', so
     # no amount of running the suite catches it — it has to be read out of the source.
+    # Packwright.WinGet.ps1 runs in this script's scope too, and is read the same way.
     $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
-    $definedHere = @($scriptAst.FindAll({ param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
-    $closureLeaks = @($scriptAst.FindAll({ param($node)
+    $studioAsts = @($scriptAst, [System.Management.Automation.Language.Parser]::ParseFile($script:StudioWinGet, [ref]$null, [ref]$null))
+    $definedHere = @($studioAsts | ForEach-Object { $_.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) } | ForEach-Object { $_.Name })
+    $closureLeaks = @($studioAsts | ForEach-Object { $_.FindAll({ param($node)
         $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
         "$($node.Member)" -eq 'GetNewClosure' -and
-        $node.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true) |
+        $node.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true) } |
         ForEach-Object {
             $_.Expression.FindAll({ param($node)
                 $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
                 Where-Object { $definedHere -contains $_.GetCommandName() } |
-                ForEach-Object { "$($_.GetCommandName()) on line $($_.Extent.StartLineNumber)" }
+                ForEach-Object { "$($_.GetCommandName()) on line $($_.Extent.StartLineNumber) of $(Split-Path -Leaf $_.Extent.File)" }
         })
-    Assert-Test 'No closure calls a function defined in this file' ($closureLeaks.Count -eq 0) $(
+    Assert-Test 'No closure calls a function defined in the studio' ($closureLeaks.Count -eq 0) $(
         if ($closureLeaks.Count) { "$($closureLeaks -join '; ') — use a plain scriptblock over `$script: state" }
         else { 'closures call only cmdlets and methods' })
 
@@ -4291,6 +4892,7 @@ if ($TestLoad) {
     Assert-Test 'Scaffold copies the installer' (Test-Path (Join-Path $scaffolded 'nsis.exe'))
 
     Assert-Test 'Scaffolded package opens' (Open-PackageFolder -Folder $scaffolded)
+    Assert-Test 'An ordinary package does not read WinGet' ($script:WinGetLoaded -eq $policyAtStartup)
     Assert-Test 'Editor view shown after open' ($ui.ViewEditor.Visibility -eq 'Visible' -and $ui.PnlActions.Visibility -eq 'Visible')
     Assert-Test 'Name read from app.json' ($ui.TxtName.Text -eq 'Self Test App') "tag: $($ui.TagName.Text)"
     Assert-Test 'Detection type from app.json' ((Get-DetTypeValue) -eq 'registry')
@@ -4670,7 +5272,9 @@ if ($TestLoad) {
 
     $publishProbe = {
         param([string]$stubPublishScript, [string]$stubPackagePath, [hashtable]$stubArgs,
-              [bool]$stubThrottleLookup, [int]$stubBlobFailures, [hashtable]$stubExistingApp)
+              [bool]$stubThrottleLookup, [int]$stubBlobFailures, [hashtable]$stubExistingApp,
+              [bool]$stubNoPath, [hashtable]$stubDependencyApp, [object[]]$stubRelationships, [bool]$stubPipeline,
+              [bool]$stubForbidden, [string[]]$stubRoles)
         # Get-Command finds these instead of the real module, so no tenant is ever touched,
         # and the whole create-upload-commit chain runs against them.
         $script:StubCalls     = @()
@@ -4680,18 +5284,48 @@ if ($TestLoad) {
         function Connect-MgGraph { }
         function Set-MgGraphOption { }
         function Get-MgContext {
-            [pscustomobject]@{ ClientId = $null; AuthType = 'Delegated'; TenantId = 'selftest'
+            [pscustomobject]@{ ClientId = $null; AuthType = 'Delegated'; TenantId = 'selftest'; Account = 'admin@contoso.example'
                                Scopes = @('DeviceManagementApps.ReadWrite.All') }
         }
         function Invoke-MgGraphRequest {
-            param($Method, $Uri, $Body, $ContentType)
+            param($Method, $Uri, $Body, $ContentType, $OutputType)
             $script:StubCalls += "$Method $Uri"
+            # The request as sent, with the sign-in's access token on it: an unsigned one here,
+            # carrying the Entra roles this run is given
+            if ($OutputType -eq 'HttpResponseMessage') {
+                $payload = @{ iat = 1760255520; wids = @(@($stubRoles) + 'b79fbf4d-3ef9-4689-8143-76b194e85509' | Where-Object { $_ })
+                              scp = 'DeviceManagementApps.ReadWrite.All openid profile' } | ConvertTo-Json -Compress
+                $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+                $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, [Uri]$Uri)
+                $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', "eyJhbGciOiJub25lIn0.$encoded.unsigned")
+                $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::OK)
+                $response.RequestMessage = $request
+                return $response
+            }
+            # What Intune answers an account whose sign-in lacks the role, word for word
+            if ($stubForbidden -and $Method -eq 'POST' -and $Uri -like '*/mobileApps') {
+                throw ('POST https://graph.microsoft.com/beta/deviceAppManagement/mobileApps HTTP/1.1 403 Forbidden ' +
+                       '{"error":{"code":"Forbidden","message":"{\r\n  \"_version\": 3,\r\n  \"Message\": \"User is not authorized to perform this operation - Operation ID (for customer support): 00000000-0000-0000-0000-000000000000\"}"}}')
+            }
             # What the app itself is sent, on create and on update, one compressed line each
             if (($Method -in 'POST', 'PATCH') -and ($Uri -match '/mobileApps(/[^/]+)?$')) {
                 $script:StubAppBodies += "$Method $($Body | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 20)"
             }
+            # The app's relationships: what it already has, and what it is given
+            if ($Uri -like '*/updateRelationships') {
+                $script:StubAppBodies += "RELATIONSHIPS $($Body | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 20)"
+                return @{}
+            }
+            if ($Uri -like '*/relationships*') {
+                if ($Uri -like '*$filter=*') { return @{ value = @() } }   # the apps depending on a dependency
+                return @{ value = @($stubRelationships | Where-Object { $_ }) }
+            }
             if ($Uri -like '*$filter=*') {
                 if ($stubThrottleLookup) { throw 'Request_ThrottledTemporarily: too many requests' }
+                # A dependency looked up by its name
+                if ($stubDependencyApp -and [Uri]::UnescapeDataString($Uri) -like "*displayName eq '$($stubDependencyApp.displayName)'*") {
+                    return @{ value = @($stubDependencyApp) }
+                }
                 # The app an -Update finds by name, when this run is given one
                 return @{ value = @($stubExistingApp | Where-Object { $_ }) }
             }
@@ -4701,7 +5335,7 @@ if ($TestLoad) {
                 return @{ uploadState = 'azureStorageUriRequestSuccess'; azureStorageUri = 'https://stub.invalid/c?sv=stub' }
             }
             if ($Method -eq 'POST' -and $Uri -like '*/contentVersions') { return @{ id = '1' } }
-            if ($Method -eq 'POST' -and $Uri -like '*/files')           { return @{ id = 'stub-file-1' } }
+            if ($Method -eq 'POST' -and $Uri -like '*/files')           { $script:StubCommitted = $false; return @{ id = 'stub-file-1' } }
             if ($Method -eq 'POST' -and $Uri -like '*/mobileApps')      { return @{ id = 'stub-app-0001' } }
             if ($Method -eq 'PATCH') {
                 # Intune's answer since allowedArchitectures replaced applicableArchitectures
@@ -4727,22 +5361,30 @@ if ($TestLoad) {
         }
         . $stubPublishScript
         $outcome = try {
-            $published = Publish-IntuneWinApp -Path $stubPackagePath -Confirm:$false @stubArgs
+            $published = if ($stubNoPath) { Publish-IntuneWinApp -Confirm:$false @stubArgs }
+                         elseif ($stubPipeline) {
+                             # Two packages down the pipeline, the way Get-ChildItem *.intunewin hands them over
+                             @([pscustomobject]@{ FullName = $stubPackagePath }, [pscustomobject]@{ FullName = $stubPackagePath }) |
+                                 Publish-IntuneWinApp -Confirm:$false @stubArgs
+                         }
+                         else { Publish-IntuneWinApp -Path $stubPackagePath -Confirm:$false @stubArgs }
             "RETURNED:$($published.Action):$($published.AppId)"
         } catch { "THREW:$($_.Exception.Message)" }
         "$outcome@@$($script:StubCalls -join ' | ')@@$($script:StubAppBodies -join "`n")"
     }
     function Invoke-PublishProbe {
         param([hashtable]$Arguments = @{}, [bool]$ThrottleLookup = $false, [int]$BlobFailures = 0,
-              [hashtable]$ExistingApp)
+              [hashtable]$ExistingApp, [switch]$NoPath, [hashtable]$DependencyApp, [object[]]$Relationships,
+              [string]$PublishScript = $script:EnginePublish, [switch]$Pipeline, [switch]$Forbidden, [string[]]$Roles)
         $probeRunspace = [runspacefactory]::CreateRunspace()
         $probeRunspace.Open()
         $probeShell = [powershell]::Create()
         $probeShell.Runspace = $probeRunspace
         [void]$probeShell.AddScript($publishProbe.ToString()).AddParameters(@{
-            stubPublishScript = $script:EnginePublish; stubPackagePath = $probePackage
+            stubPublishScript = $PublishScript; stubPackagePath = $probePackage
             stubArgs = $Arguments; stubThrottleLookup = $ThrottleLookup; stubBlobFailures = $BlobFailures
-            stubExistingApp = $ExistingApp })
+            stubExistingApp = $ExistingApp; stubNoPath = [bool]$NoPath; stubDependencyApp = $DependencyApp
+            stubRelationships = $Relationships; stubPipeline = [bool]$Pipeline; stubForbidden = [bool]$Forbidden; stubRoles = $Roles })
         $answer = "$(@($probeShell.Invoke()) | Select-Object -Last 1)"
         $probeShell.Dispose(); $probeRunspace.Dispose()
         $parts = $answer -split '@@'
@@ -4765,9 +5407,11 @@ if ($TestLoad) {
     # -AppId says which app to update, so it contradicts -AllowDuplicateName the same way
     # -Update does. It used to slip past the check and then be ignored.
     $contradiction = Invoke-PublishProbe -Arguments @{ AppId = 'stub-app-0001'; AllowDuplicateName = $true }
+    # Nothing asked of Intune but the look at the sign-in every run starts with
+    $contradictionCalls = @($contradiction.Calls -split ' \| ' | Where-Object { $_ -and $_ -notmatch '\?\$top=1&\$select=id$' })
     Assert-Test 'AppId and AllowDuplicateName are refused together' (
         $contradiction.Outcome -like 'THREW:*-AppId and -AllowDuplicateName contradict*' -and
-        -not $contradiction.Calls) $contradiction.Outcome
+        $contradictionCalls.Count -eq 0) "$($contradiction.Outcome) — calls: $($contradiction.Calls)"
 
     # A transient 500 from Azure Storage used to throw away the whole upload. Two refusals
     # here: three PUTs for the one block, then one for the block list.
@@ -4778,6 +5422,25 @@ if ($TestLoad) {
         "$($retried.Outcome) — $(@($retried.Calls -split ' \| ' | Where-Object { $_ -eq 'PUT-BLOB' }).Count) block PUTs"
     Assert-Test 'The content is committed and the app pointed at it' (
         $retried.Calls -match '/commit' -and $retried.Calls -match 'PATCH') "calls: $($retried.Calls)"
+    # The id of the app just made must not be taken for -AppId by the next package: names are
+    # case-blind, and the second one would have updated the first one's app
+    # A 403 says what it means: a sign-in without the role - made before the role was activated in
+    # PIM, typically - and how to get one with it
+    $forbidden = Invoke-PublishProbe -Forbidden -Arguments @{ AllowDuplicateName = $true }
+    Assert-Test 'A 403 says what the sign-in carries - no administrator role here - and what to do: PIM and sign in again, or scope tags' (
+        $forbidden.Outcome -match '403 Forbidden' -and $forbidden.Outcome -match 'admin@contoso\.example' -and
+        $forbidden.Outcome -match 'made 2025-10-1\d \d\d:\d\d' -and $forbidden.Outcome -match 'no Entra administrator role' -and
+        $forbidden.Outcome -match 'PIM' -and $forbidden.Outcome -match 'Sign in again' -and $forbidden.Outcome -match 'roleScopeTagIds' -and
+        $forbidden.Outcome -notmatch 'returned no app id') $forbidden.Outcome
+    $forbiddenAdmin = Invoke-PublishProbe -Forbidden -Roles '3a2c62db-5318-420d-8d74-23affee5d9d5' -Arguments @{ AllowDuplicateName = $true }
+    Assert-Test 'With Intune Administrator in the sign-in, a 403 points at Multi Admin Approval instead' (
+        $forbiddenAdmin.Outcome -match 'carries the Entra role\(s\) Intune Administrator' -and $forbiddenAdmin.Outcome -match 'Multi Admin Approval' -and
+        $forbiddenAdmin.Outcome -notmatch 'roleScopeTagIds') $forbiddenAdmin.Outcome
+    Assert-Test 'The sign-in again script is PowerShell that parses' ($null -ne [scriptblock]::Create($script:GraphSignInScript))
+    $piped = Invoke-PublishProbe -Pipeline -Arguments @{ AllowDuplicateName = $true }
+    Assert-Test 'Two packages down the pipeline make two apps' (
+        $piped.Outcome -eq 'RETURNED:Created Created:stub-app-0001 stub-app-0001' -and
+        @($piped.Bodies | Where-Object { $_ -like 'POST *' }).Count -eq 2) "$($piped.Outcome) — $(@($piped.Bodies | Where-Object { $_ -like 'POST *' }).Count) POST"
 
     # Intune replaced applicableArchitectures with allowedArchitectures and no longer lets a
     # PATCH set the old one; the stub answers such a PATCH the way Intune does. An update
@@ -4817,6 +5480,21 @@ if ($TestLoad) {
     Assert-Test 'An architecture Intune cannot target stops the run before anything is created' (
         $arm.Outcome -like "THREW:*'arm' is not one Intune can target*" -and $arm.Calls -notmatch 'POST|PATCH') `
         "$($arm.Outcome) — calls: $($arm.Calls)"
+
+    # Scope tags from app.json, for an account whose Intune role is limited to some
+    $probeManifest.architecture = 'x64'
+    $probeManifest | Add-Member -NotePropertyName roleScopeTagIds -NotePropertyValue @('3') -Force
+    $taggedManifest = Join-Path $testRoot 'app-tagged.json'
+    $probeManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $taggedManifest -Encoding UTF8
+    $tagged = Invoke-PublishProbe -Arguments @{ ManifestPath = $taggedManifest }
+    $taggedPost = @($tagged.Bodies | Where-Object { $_ -like 'POST *' })
+    $probeManifest.roleScopeTagIds = @('Skolor')
+    $namedTagManifest = Join-Path $testRoot 'app-tagname.json'
+    $probeManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $namedTagManifest -Encoding UTF8
+    $namedTag = Invoke-PublishProbe -Arguments @{ ManifestPath = $namedTagManifest }
+    Assert-Test "Scope tags in app.json go with the app; a tag given by its name is refused before anything is created" (
+        $taggedPost.Count -eq 1 -and $taggedPost[0] -match '"roleScopeTagIds":\["3"\]' -and
+        $namedTag.Outcome -match "the tags' ids" -and $namedTag.Calls -notmatch 'POST|PATCH') "$($tagged.Outcome) / $($namedTag.Outcome)"
 
     # --- End to end: the real run body, in a real runspace -------------------------
     # Everything above tests the studio with the engines stubbed out by never reaching them.
@@ -4868,6 +5546,92 @@ if ($TestLoad) {
         }
         $e2eShell.Dispose(); $e2eRunspace.Dispose()
     }
+
+    # --- WinGet: read when it is first needed --------------------------------------------
+    # Packwright.WinGet.ps1 and New-WinGetPackage.ps1 are read the first time something needs
+    # WinGet, from wherever that is - a click handler as often as not, scopes away from the script
+    # scope their functions have to end up in. Opening a WinGet package is one such thing; this
+    # one is written by hand, since what writes them has not been read yet.
+    Assert-Test 'The start screen offers WinGet' ($null -ne $ui.BtnStartWinGet)
+    $firstWinGet = Join-Path $testRoot 'winget first'
+    $null = New-Item -ItemType Directory -Path $firstWinGet -Force
+    ([ordered]@{ displayName = 'Contoso Tool'; publisher = 'Contoso'; version = '2.1.0'
+                 winget = [ordered]@{ id = 'Contoso.Tool'; source = 'winget'; version = '2.1.0' } } | ConvertTo-Json -Depth 5) |
+        Set-Content -LiteralPath (Join-Path $firstWinGet 'app.json') -Encoding UTF8
+    $firstOpened = & { & { Open-PackageFolder -Folder $firstWinGet } }
+    Assert-Test 'A WinGet package reads the WinGet part, from wherever it is opened, for the rest of the session' (
+        $firstOpened -and $script:WinGetLoaded -and (Test-WinGetPackage) -and $ui.PnlWinGet.Visibility -eq 'Visible' -and
+        $ui.WgTxtIdLine.Text -eq 'Contoso.Tool' -and
+        @(Get-Command New-WinGetInstallPlan, Show-WinGetDialog -CommandType Function -ErrorAction SilentlyContinue).Count -eq 2) $ui.WgTxtSummary.Text
+    $wingetCard = $ui.WinGetCardHost.Child
+    $lockedCount = $script:RunLockedButtons.Count
+    Import-StudioWinGet
+    Assert-Test 'Reading it again changes nothing' (
+        [object]::ReferenceEquals($wingetCard, $ui.WinGetCardHost.Child) -and $script:RunLockedButtons.Count -eq $lockedCount)
+    $logOpen = $ui.ExpLog.IsExpanded
+    Set-RunUiState -Busy $true
+    $cardLocked = -not $ui.WgBtnVersion.IsEnabled -and -not $ui.WgBtnRuntime.IsEnabled
+    Set-RunUiState -Busy $false
+    $ui.ExpLog.IsExpanded = $logOpen   # a run opens the log, and this was not one
+    Assert-Test "The card's buttons wait for a build or publish, like the editor's own" ($cardLocked -and $ui.WgBtnVersion.IsEnabled)
+    $ui.TxtLog.Clear()   # a package written by hand has none of its scripts, which is logged as a warning
+
+    Invoke-WinGetSelfTest -TestRoot $testRoot -Scaffolded $scaffolded
+
+    # --- Test on this computer ------------------------------------------------------------
+    # The runner Test on this computer hands to its scheduled task, run here as this user. Its
+    # plan names a folder with an a-umlaut in it, which 5.1 only finds when it reads the plan
+    # as UTF-8; the command's exit code is reported as it is, and the detection rule is checked.
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
+        Write-Host '  SKIP  The test runner under Windows PowerShell 5.1 (powershell.exe is not here)'
+    }
+    else {
+        $runnerAst = [Management.Automation.Language.Parser]::ParseFile($script:EngineTest, [ref]$null, [ref]$null)
+        $runnerAssignment = $runnerAst.Find({ param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$script:TestRunner' }, $true)
+        $runWork = Join-Path $testRoot "runner L$([char]0xE4)romedel"
+        $runPackage = Join-Path $runWork 'package'
+        $null = New-Item -ItemType Directory -Path $runPackage -Force
+        Set-Content -LiteralPath (Join-Path $runPackage 'install.cmd') -Value '@echo off', 'echo x> "%~dp0marker.txt"', 'exit /b 3010' -Encoding ASCII
+        $runPlan = [ordered]@{ Action = 'Install'; Force = $false; TimeoutMinutes = 5; Requirements = @()
+                               Detection = [ordered]@{ type = 'file'; path = $runPackage; fileOrFolderName = 'marker.txt'; detectionType = 'exists' } }
+        $withBom = [Text.UTF8Encoding]::new($true)
+        [IO.File]::WriteAllText((Join-Path $runWork 'plan.json'), ($runPlan | ConvertTo-Json -Depth 6), $withBom)
+        # .\ as Packwright's own commands have it: where NoDefaultCurrentDirectoryInExePath is set,
+        # cmd does not look in the current folder for a bare name
+        [IO.File]::WriteAllText((Join-Path $runWork 'command.txt'), '.\install.cmd', $withBom)
+        [IO.File]::WriteAllText((Join-Path $runWork 'run.ps1'), $runnerAssignment.Right.Expression.Value, $withBom)
+        $null = & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $runWork 'run.ps1') -Work $runWork
+        $runResult = $null
+        try { $runResult = Get-Content -LiteralPath (Join-Path $runWork 'result.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+        Assert-Test 'The test runner reads its plan as UTF-8, reports the exit code as it is, and checks the detection rule' (
+            $runResult -and $runResult.Ran -and $runResult.ExitCode -eq 3010 -and $runResult.DetectedBefore -eq $false -and $runResult.DetectedAfter -and
+            -not $runResult.Error) $(if ($runResult) { $runResult | ConvertTo-Json -Compress } else { 'no result.json' })
+    }
+
+    # What a test install found, offered as the detection rule only when it beats the one there is
+    $oneEntry = [pscustomobject]@{ Action = 'Install'; Ran = $true; ExitCode = 0; DetectedAfter = $false
+                                   ArpAdded = @([pscustomobject]@{ Change = 'added'; KeyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\X'; DisplayName = 'X'; DisplayVersion = '1.0'; Is32Bit = $false }) }
+    Assert-Test 'A test that did not detect the app offers the entry it added' ($null -ne (Get-TestDetectionOffer -Outcome $oneEntry))
+    $oneEntry.DetectedAfter = $true
+    Assert-Test 'A test whose rule found the app offers nothing' ($null -eq (Get-TestDetectionOffer -Outcome $oneEntry))
+    $oneEntry.DetectedAfter = $false; $oneEntry.ExitCode = 1603
+    Assert-Test 'A failed install offers nothing to detect it by' ($null -eq (Get-TestDetectionOffer -Outcome $oneEntry))
+    $oneEntry.ExitCode = 0
+    $oneEntry.ArpAdded = @($oneEntry.ArpAdded[0], $oneEntry.ArpAdded[0])
+    Assert-Test 'An install that added several entries leaves the choice to you' ($null -eq (Get-TestDetectionOffer -Outcome $oneEntry))
+
+    # --- Signing in again -----------------------------------------------------------------
+    Update-AuthStatus
+    $signInOffered = $ui.BtnSignIn.Visibility -eq $(if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.secret')) { 'Collapsed' } else { 'Visible' })
+    Complete-GraphSignIn -Result @([pscustomobject]@{ Account = 'admin@contoso.example'; TenantId = 'selftest'
+                                                     Issued = [datetime]'2026-01-02 03:04'; Roles = @('Intune Administrator') }) -Failure $null -Context $null
+    Assert-Test 'Signing in again is offered without a .secret, and says who is signed in afterwards, with which role' (
+        $signInOffered -and $ui.TxtLog.Text -match 'Signed in again as admin@contoso\.example, tenant selftest' -and
+        $ui.TxtLog.Text -match 'The sign-in from 03:04 carries Intune Administrator\.' -and $ui.BtnSignIn.IsEnabled) $ui.TxtStatus.Text
+    Assert-Test 'Signing in again forgets the tokens too - both caches - not only the account' (
+        $script:GraphSignInScript -match [regex]::Escape("'.IdentityService\mg.msal.cache.*'") -and $script:GraphSignInScript -match 'mg\.authrecord\.json')
 
     # --- Wizard walkthrough -------------------------------------------------------
     $walk = New-StudioWindow -Xaml $script:WizardXaml
