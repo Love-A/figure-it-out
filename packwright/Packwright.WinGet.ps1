@@ -19,7 +19,7 @@
 .NOTES
     Author   : Love A
     Requires : PowerShell 7+, Windows; Packwright.ps1 and New-WinGetPackage.ps1 next to it.
-    Versioned with Packwright.ps1 (Studio) - its .VERSION block is this file's changelog too.
+    Versioned with Packwright.ps1 (Studio): its changes are under Studio in CHANGELOG.md.
     The self-test is Invoke-WinGetSelfTest, run by .\Packwright.ps1 -TestLoad.
 #>
 if ($MyInvocation.InvocationName -ne '.') {

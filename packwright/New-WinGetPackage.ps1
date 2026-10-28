@@ -67,31 +67,11 @@
     Requires  : PowerShell 7 on the packaging computer; winget for community packages. The
                 scripts it writes run under Windows PowerShell 5.1 on the devices.
 .VERSION
-    2026-10-27 - 1.2 - Runner 1.1: a time limit, and WinGet's install lock waited for in the open.
-                       winget.exe waits for the mutex WinGetCrossProcessInstallLock before it
-                       starts an installer, for as long as it takes and silently when its output
-                       is captured; one installation that never let go of it left every later
-                       install on a device at "Installing" until Intune stopped it after an hour,
-                       with nothing in either log. The install and uninstall scripts now look at
-                       the lock first and wait for it ten minutes at most, then give winget until
-                       55 minutes have passed, stop it there - not the installer it started - and
-                       return 1618, so Intune tries again. The log names the winget, WinGet COM
-                       server and Windows Installer processes running then, with their start
-                       times. winget's own log is copied beside the runner's as SYSTEM too: there
-                       it is in SystemTemp\WinGet\defaultState, and only a user's DiagOutputDir
-                       was looked for.
-    2026-10-12 - 1.1 - A package gets the app's icon. The catalog named one only for MSIX apps
-                       from the Store and for the few community manifests that carry one, so
-                       Win32 apps from the Store (XP ids) and most community apps had none.
-                       Now: the Store's (for XP ids from the app's page in the web Store), the
-                       manifest's, the app's when it is installed on this computer, and else the
-                       installer's - downloaded (200 MB at most), checked against the manifest's
-                       SHA-256, read without being run (an .exe's own icon, an MSI's
-                       ARPPRODUCTICON from its Icon table), and deleted. A catalog icon below
-                       128 px gives way to a larger one, and sizes are the ones the files really
-                       hold: PrivateExtractIcons enlarges a 32 px icon to whatever it is asked
-                       for. Store pages' 1080 px pictures are saved at 512.
-    2026-10-08 - 1.0 - Initial version.
+    2026-10-27 - 1.2 - Runner 1.1: a time limit, and the install lock waited for
+    2026-10-12 - 1.1 - A package gets the app's icon
+    2026-10-08 - 1.0 - Initial version
+
+    What each version changed: CHANGELOG.md
 #>
 [CmdletBinding()]
 param(

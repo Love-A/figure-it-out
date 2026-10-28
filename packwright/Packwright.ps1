@@ -54,182 +54,25 @@
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
 .VERSION
-    2026-10-20 - 2.11 - The studio's WinGet part is a file of its own, Packwright.WinGet.ps1: the
-                        WinGet dialog, the card in the editor, the runtime package and their
-                        self-tests. It is read, with New-WinGetPackage.ps1, the first time a
-                        session needs WinGet - a WinGet package opened, "Install it with WinGet",
-                        Settings, or a Packwright.policy.json for the start screen to read -
-                        rather than at every start, so a session packaging an installer reads
-                        neither. Nothing it does has changed. Its functions still run in this
-                        script's scope: Import-StudioWinGet dot-sources the two files and puts
-                        each function they define there, since it is called from wherever WinGet
-                        is first needed and anything it defined would otherwise be gone when it
-                        returned. The card's place in the editor is kept by a placeholder it is
-                        put into. The WinGet lookups name the script their runspace loads; the
-                        sign-in, which needs none, no longer loads the WinGet engine.
-    2026-10-12 - 2.10 - A WinGet package gets the app's icon, as New-WinGetPackage 1.1 finds it,
-                        and "Use the app's own icon" looks for it the same way in the background
-                        for a package that has none - for a WinGet package there is no program
-                        file in the folder to take one from. The header says which account
-                        publishing signs in as: "opens a browser sign-in" was all it said, and
-                        then no browser opened, because Microsoft Graph had remembered the sign-in
-                        from the time before. "Sign in again" beside it forgets that sign-in and
-                        opens a new one: a sign-in carries the roles the account had when it was
-                        made, so after activating an Intune role in PIM, publishing got 403
-                        Forbidden for as long as the remembered one lasted. Forgetting it takes
-                        the tokens too, in %LOCALAPPDATA%\.IdentityService: Disconnect-MgGraph
-                        leaves them, and requests take theirs from mg.msal.cache.cae, which a new
-                        sign-in does not touch. The log says which role the new one carries.
-    2026-10-08 - 2.9 - Apps from WinGet. A third way to start: pick an app from the Microsoft
-                       Store or the WinGet community repository, and New-WinGetPackage.ps1 writes
-                       the package from its manifest - which installer winget is asked for, SYSTEM
-                       or the signed-in user, and the detection rule, so most apps need no test
-                       install. Packwright.policy.json decides which sources may be used at all;
-                       an organisation that allows only the Store gets nothing else offered,
-                       built or published. A WinGet card in the editor shows where the app comes
-                       from, pins a community app to a version and moves it to the next one in
-                       one step, and notices scripts that are older than this Packwright or were
-                       changed by hand. A Store app can be delivered as Intune's own Store app
-                       type instead, which keeps working where the Microsoft Store app is blocked.
-                       The WinGet runtime package - App Installer and the Visual C++ runtime,
-                       downloaded and checked here - is built from the same card.
-                       Test on this computer installs or uninstalls any package as Intune would:
-                       as SYSTEM, from a copy, started from a 32-bit process, with the
-                       requirement and detection rules checked in that same account, and offers
-                       a detection rule written from what the install added to Apps and features.
-                       A command no longer reports a script's arguments as missing files.
-    2026-10-02 - 2.8 - Packwright has a taskbar button and an icon of its own. Every window wore
-                       pwsh.exe's icon, and the taskbar filed the studio under PowerShell's
-                       button, stacked with the console that started it. Setting the window
-                       icon alone changes only the title bar: the taskbar groups buttons by
-                       AppUserModelID, and a window without one takes its process's. The main
-                       window now carries an ID of its own (Packwright.Studio) and a parcel
-                       icon drawn in code, so there is still no file to ship beside the
-                       scripts. A pin of the button starts Packwright: the window names the
-                       command that does (pwsh -STA -File on this script) and an icon written
-                       to %LOCALAPPDATA%\Packwright\Packwright.ico for the pin to show.
-                       Drawing the icon and compiling the C# this needs would add more than
-                       half a second to startup — the first Add-Type in a process loads the
-                       compiler. Both run on runspaces of their own while the windows are
-                       parsed and are done before they are needed, so what startup pays is
-                       about a tenth of a second.
-    2026-09-24 - 2.7 -The description box can be made taller: it has a grip in its bottom-right
-                       corner, dragged the way a textarea is. It also starts at four lines in the
-                       studio rather than a line and a half. 52 px left 26 for text, because the
-                       template insets the text by the box's Padding and so does the ScrollViewer
-                       the box hands its Padding on to. The wizard's box has the same grip and
-                       starts at two whole lines, since step 2 already fills that window.
-    2026-09-22 - 2.6 - A package that installs with a script is a package. The setup file
-                       list held .exe and .msi only, so a payload folder whose entry point
-                       is Install-App.ps1 opened on the application's own .exe — the one
-                       file in there nobody meant Intune to run — and a folder holding
-                       neither came back with no setup file and nothing that could be
-                       published at all. .ps1, .cmd and .bat are offered as well, with
-                       commands derived for them (powershell.exe -NoProfile
-                       -ExecutionPolicy Bypass -File, and the Uninstall- script beside it
-                       when there is one). An app.json that carries an install command now
-                       decides which file that is: the manifest has already answered what
-                       installs this package, and reading the file list instead overrode
-                       the answer. The wizard still starts from a vendor .exe or .msi and
-                       says why when handed a script; an install script dropped on the
-                       window opens the folder around it with that script selected.
-                       A detection script the package does not hold is no longer summarised
-                       as a finished rule while the checklist beside it says the rule is
-                       not set and names nothing. A script name without a path is looked
-                       for in the package folder, and an app.json written for a folder next
-                       to this one is the ordinary way it is not there.
-    2026-09-08 - 2.5 - What a package folder carries over from the previous release is
-                       caught instead of published. A command naming a file the package
-                       does not hold is a checklist item rather than a line in the log:
-                       'msiexec /i "7z2408-x64.msi"' in a folder that now holds
-                       7z2501-x64.msi used to build, publish, and fail on every device.
-                       So did an empty install command, which nothing checked at all.
-                       Changing the setup file rewrites a command that is provably broken,
-                       and the MSI product code follows the setup file instead of only
-                       filling an empty box; an 'msi' rule holding another MSI's code no
-                       longer counts as a finished rule. A version comparison set from the
-                       version field follows it, and one that does not match is stated
-                       under the checklist: a rule left on 24.08 in a 25.01 package makes
-                       Intune treat the old release as installed, so the upgrade never
-                       runs and reports success. Two more are stated without blocking —
-                       the setup file's own version against the package's, and an
-                       uninstall command still removing the MSI that was replaced.
-                       Opening a package folder drops what was cached about the MSIs in it.
-                       That cache is keyed by full path and lived as long as the process,
-                       so a new release shipped under the same file name went on answering
-                       with the previous product code — the code the rule is written from.
-                       Two more from a read of the whole file. The installed-app picker
-                       matches with IndexOf rather than -like: a '[' in the search box
-                       opened a character class, -like refused it, and the exception came
-                       out of a TextChanged handler with nothing above it to catch — the
-                       process exited, unsaved edits with it, and entries really are named
-                       'Java 8 Update 391 [64-bit]'. And a manifest value none of the
-                       dropdowns offers is added to the list instead of dropped: dropping
-                       it left the combo on the previously opened package's selection, the
-                       editor showed that, and saving wrote it back — so an app.json with
-                       architecture 'neutral' or detectionType 'doesNotExist', both legal
-                       to Intune, came back rewritten.
-                       Closing the window during a run is asked about first and stops the
-                       run before the window goes: the runspace died with the window, so a
-                       publish interrupted that way could leave an app in Intune with no
-                       content — what Cancel warns about, and the X did not.
-                       The 8 MB scan that identifies the installer engine reads in a loop.
-                       Read is allowed to come back short of what it was asked for, and a
-                       single call left the rest of the buffer as zeros, so an ordinary
-                       Inno installer on a share could come back as 'unknown' with no
-                       silent switches.
-    2026-09-04 - 2.4 - Settings dialog (header button, and asked once on first run) for the
-                       package folder and the output folder, both defaulting to a local disk
-                       instead of a Documents folder redirected to a network home directory.
-                       Resolved paths use .ProviderPath, so a UNC path no longer reaches
-                       IntuneWinAppUtil.exe provider-qualified and unopenable.
-                       Dialog handlers are plain scriptblocks over $script: state, never
-                       .GetNewClosure(): a closure runs in a module scope of its own and
-                       cannot see the functions in this file. A settings.json that parses
-                       to nothing is written over instead of throwing 'Cannot index into
-                       a null array' from wherever settings were touched next. A run that
-                       produces no result object is reported instead of throwing the same
-                       error out of a dispatcher tick, which used to close the window.
-                       The background run's parameters carry a 'run' prefix: dot-sourcing
-                       an engine script runs its param() block in the same scope, and
-                       $OutputRoot was being reset to '' before the build ever saw it.
-                       Publishing checks for Microsoft.Graph.Authentication before the
-                       build rather than after it, and says where PowerShell looked.
-                       Self-test ends with a real end-to-end build through the run body,
-                       the one path the rest of the suite could never reach.
-    2026-09-04 - 2.3 - Delegated sign-in is asked for with -SignIn Browser: the default
-                       WAM prompt parents itself to the console window of the process,
-                       and a GUI has none, so it failed without a message and the
-                       publish carried on unauthenticated. Windows PowerShell 5.1 is
-                       turned away in a dialog instead of a wall of parse errors; the
-                       scripts are saved UTF-8 with BOM so 5.1 can read that far, and
-                       the self-test keeps the BOM from going missing again
-    2026-09-04 - 2.2 - Picking another installer in the wizard refreshes everything that
-                       came from the previous file (commands, hint, MSI product code,
-                       extracted logo, suggested folder name); hand-edited text is kept
-                       and pointed out. A hidden "use the MSI product code" option can
-                       no longer stay selected and write an empty product code.
-    2026-09-03 - 2.1 - Built-in help: Help button in the header and F1, showing a short
-                       usage guide written for the person packaging the app (the README
-                       stays the reference for setup, sign-in and the command line)
-    2026-09-03 - 2.0 - Redesigned for low-threshold use: start screen with recent
-                       packages and drag-and-drop, restyled single-window editor with
-                       live Company Portal preview and readiness checklist, detection
-                       reduced to one "find the app on this computer" button with the
-                       raw fields behind an expander, advanced settings collapsed,
-                       icon extraction from installer/installed app, Cancel for a
-                       running build, duplicate-name check before publishing.
-                       Fixes: changing the setup file now refreshes commands and
-                       detection; absolute detection-script paths validate correctly;
-                       MSI COM handles released; MSI/installed-app lookups cached;
-                       engine arguments passed as parameters instead of string
-                       concatenation; window fits small screens (scrolls).
-    2026-07-10 - 1.4 - Guided wizard from a vendor installer, installed-apps picker,
-                       engine detection, remembered package root
+    2026-10-20 - 2.11 - The WinGet part is a file of its own, read when it is needed
+    2026-10-12 - 2.10 - WinGet packages get the app's icon; the header says who publishing signs in as
+    2026-10-08 - 2.9 - Apps from WinGet, and Test on this computer
+    2026-10-02 - 2.8 - A taskbar button and an icon of its own
+    2026-09-24 - 2.7 - The description box can be made taller
+    2026-09-22 - 2.6 - A package that installs with a script is a package
+    2026-09-08 - 2.5 - What a reused package folder carries over is caught; four crashes and mix-ups fixed
+    2026-09-04 - 2.4 - Settings dialog for the package and output folders
+    2026-09-04 - 2.3 - The sign-in prompt opens in a browser
+    2026-09-04 - 2.2 - Picking another installer in the wizard refreshes what came from the old one
+    2026-09-03 - 2.1 - Built-in help (F1)
+    2026-09-03 - 2.0 - Redesigned: start screen, one-window editor, readiness checklist
+    2026-07-10 - 1.4 - Guided wizard from a vendor installer, installed-apps picker
     2026-07-07 - 1.3 - English UI, neutral publisher default
     2026-07-07 - 1.2 - Correct minimumWindowsRelease values
     2026-07-07 - 1.1 - "From MSI..." product code fetch, manual source tags
     2026-07-06 - 1.0 - Initial version
+
+    What each version changed: CHANGELOG.md
 #>
 [CmdletBinding()]
 param(

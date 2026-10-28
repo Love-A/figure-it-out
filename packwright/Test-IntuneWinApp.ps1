@@ -50,26 +50,10 @@
     Author    : Love A
     Requires  : PowerShell 7, administrator rights.
 .VERSION
-    2026-10-28 - 1.1 - The folder the package runs from as SYSTEM is one only SYSTEM and
-                       administrators can change. It was in ProgramData, which lets every user
-                       add files and folders to the folders in it, so anything running on the
-                       computer without administrator rights could put a DLL beside the installer
-                       before it ran as SYSTEM. %ProgramData%\Packwright and its Test folder are
-                       now made the administrators' own before every test, as Intune's IMECache
-                       is, and a link in their place is refused.
-                       What app.json leaves out is filled in as Publish-IntuneWinApp fills it in:
-                       the commands of a PSADT or MSI package, an MSI rule's product code, the
-                       MSI rule itself for an MSI package without one - and app.json itself, for
-                       such a package. The minimal app.json the README suggests stopped at "no
-                       install command".
-                       A requirement rule is judged by its operator and type, with Publish's
-                       defaults for what it leaves out (boolean, equal, true): one that named
-                       none was never met. Requirement and detection scripts run as 32-bit
-                       PowerShell when the rule says runAs32Bit.
-                       The WinGet runtime package's log is shown like a WinGet package's, and the
-                       apps a package depends on - which Intune installs first, and this test
-                       does not - are named.
-    2026-10-08 - 1.0 - Initial version.
+    2026-10-28 - 1.1 - A folder only administrators can change, and app.json read as Publish reads it
+    2026-10-08 - 1.0 - Initial version
+
+    What each version changed: CHANGELOG.md
 #>
 [CmdletBinding()]
 param(

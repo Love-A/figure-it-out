@@ -68,33 +68,14 @@
     Author    : Love A
     File Name : Build-IntuneWinApp.ps1 (can be used as a module .psm1 as well)
 .VERSION
-    2026-09-22 - 2.4 - Auto-detection accepts a single Install*.ps1/.cmd/.bat in a folder
-                       that holds no .msi, so a package built around an install script no
-                       longer has to be given -SetupFile by hand. -SetupFile always took
-                       any file — IntuneWinAppUtil.exe records whatever it is handed and
-                       only reads properties out of an .msi — it was the guess that stopped
-                       at PSADT and MSI, and the error now counts the scripts it saw too.
-    2026-09-08 - 2.3 - A build that wrote no .intunewin can no longer report one that was
-                       already in the output folder. IntuneWinAppUtil.exe exits 0 even when
-                       it writes nothing, and the fallback that looks for the newest
-                       .intunewin had no time bound: a package left there by an earlier
-                       build of a differently named setup file was hashed, reported as
-                       Produced, and handed to the publish step, which uploaded months-old
-                       content as a new version. Candidates must now be newer than the run,
-                       and the error names the files it left alone and why the tool wrote
-                       nothing. Packwright's self-test drives this through the real fallback
-                       with only the call to the tool stubbed.
-    2026-09-04 - 2.2 - Stops with one sentence on Windows PowerShell 5.1 instead of failing
-                       somewhere further in; saved UTF-8 with BOM so 5.1 can read that far.
-                       SourceFolder resolves through .ProviderPath, so a UNC source is no
-                       longer handed to IntuneWinAppUtil.exe provider-qualified — that was
-                       "ERROR The setup file you specified cannot be accessed"
-    2026-07-07 - 2.1 - Auto-download IntuneWinAppUtil.exe from GitHub when missing
-    2026-07-06 - 2.0 - Direct script invocation with parameters (no more editing the last line),
-                       setup file auto-detection, deterministic output detection, backup pruning,
-                       rich -PassThru object (SHA256/size/duration), fixed console echo and
-                       output stream pollution, pipeline input for batch builds
+    2026-09-22 - 2.4 - Auto-detects a single Install*.ps1/.cmd/.bat as the setup file
+    2026-09-08 - 2.3 - A build that wrote no .intunewin no longer reports an older one
+    2026-09-04 - 2.2 - Windows PowerShell 5.1 turned away; UNC source folders work
+    2026-07-07 - 2.1 - Downloads IntuneWinAppUtil.exe from GitHub when it is missing
+    2026-07-06 - 2.0 - Run as a script with parameters, setup file auto-detection, -PassThru object
     2025-09-24 - 1.0 - Initial advanced function version (SupportsShouldProcess, -Clean, -Quiet, -PassThru)
+
+    What each version changed: CHANGELOG.md
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
