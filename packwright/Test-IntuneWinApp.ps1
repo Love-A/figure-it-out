@@ -38,7 +38,8 @@
     Also write the result as JSON to this file (Packwright reads it from there).
 
 .PARAMETER TimeoutMinutes
-    How long the command may run. Intune's default is 60 minutes.
+    How long the command may run: by default what app.json gives as maxRunTimeInMinutes, else
+    Intune's default of 60 minutes.
 
 .PARAMETER Pause
     Wait for Enter before the window closes, so the result can be read.
@@ -61,6 +62,7 @@
     Author    : Love A
     Requires  : PowerShell 7, administrator rights (or -Elevate), Packwright.Package.ps1 next to it.
 .VERSION
+    2026-11-03 - 1.4 - Judged by the package's own return codes, and given its run time
     2026-11-03 - 1.3 - What app.json leaves out filled in by the same functions as Publish and the studio
     2026-11-02 - 1.2 - -Elevate asks Windows for administrator rights
     2026-10-28 - 1.1 - A folder only administrators can change, and app.json read as Publish reads it
@@ -311,12 +313,14 @@ function Get-ArpSnapshot {
 
 # What an exit code means, in Intune's words or WinGet's
 function Get-ExitCodeMeaning {
-    param($Code)
+    param($Code, [object[]]$ReturnCode = @(Get-PackageReturnCode))
     if ($null -eq $Code) { return '' }
     $code = [int]$Code
-    $known = @{ 0 = 'success'; 1707 = 'success'; 3010 = 'success, restart needed (soft reboot)'; 1641 = 'success, restart started (hard reboot)'
-                1618 = 'retry: Intune tries again in five minutes, three times'; 1 = 'failed' }
-    if ($known.ContainsKey($code)) { return $known[$code] }
+    $type = @($ReturnCode | Where-Object { $_.returnCode -eq $code } | ForEach-Object { $_.type }) | Select-Object -First 1
+    $meanings = @{ success = 'success'; softReboot = 'success, restart needed (soft reboot)'; hardReboot = 'success, restart started (hard reboot)'
+                   retry = 'retry: Intune tries again in five minutes, three times'; failed = 'failed' }
+    if ($type -and $meanings.ContainsKey($type)) { return $meanings[$type] }
+    if ($code -eq 1) { return 'failed' }
     $hex = '0x{0:X8}' -f $code
     $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($hex -like '0x8A15*' -and $winget) {
@@ -365,6 +369,24 @@ function Get-PackageDefault {
     @{ Install = $commands.Install; Uninstall = $commands.Uninstall; ProductCode = "$productCode"; MsiSetup = (Get-SetupKind $setup) -eq 'msi' }
 }
 
+# As Intune judges it: the exit code first - a failure is a failure whatever the detection finds
+# afterwards - and only after a successful one, the detection rule. What counts as success, retry
+# or failure are the return codes the package is published with (Get-PackageReturnCode).
+function Get-TestVerdict {
+    param([Parameter(Mandatory)]$Ran, [string]$Action = 'Install', [object[]]$ReturnCode = @(Get-PackageReturnCode))
+    $type = if ($null -ne $Ran.ExitCode) { @($ReturnCode | Where-Object { $_.returnCode -eq [int]$Ran.ExitCode } | ForEach-Object { $_.type }) | Select-Object -First 1 }
+    if ($Ran.Error -like 'Not applicable*') { 'Not applicable' }
+    elseif (-not $Ran.Ran -and $Ran.Error) { 'Could not run' }
+    elseif (-not $Ran.Ran) { if ($Action -eq 'Install') { 'Already installed' } else { 'Not installed' } }
+    elseif ($null -eq $Ran.ExitCode) { "$Action timed out" }
+    elseif ($type -eq 'retry') { "$Action to be tried again ($($Ran.ExitCode))" }
+    elseif ($type -notin 'success', 'softReboot', 'hardReboot') { "$Action failed" }
+    elseif ($Action -eq 'Install' -and $Ran.DetectedAfter) { 'Installed and detected' }
+    elseif ($Action -eq 'Install') { 'Not detected after install' }
+    elseif (-not $Ran.DetectedAfter) { 'Uninstalled' }
+    else { 'Still detected after uninstall' }
+}
+
 # What a test found, the same whether it ran here or elevated in a window of its own
 function Write-TestOutcome {
     param([Parameter(Mandatory)]$Outcome)
@@ -405,12 +427,14 @@ function Start-ElevatedProcess {
 # the outcome says the package was not tested.
 function Invoke-ElevatedTest {
     param([Parameter(Mandatory)][string]$SourceFolder, [string]$Action = 'Install', [switch]$Force,
-          [int]$TimeoutMinutes = 60, [string]$ResultPath)
+          [int]$TimeoutMinutes, [string]$ResultPath)
     $SourceFolder = (Resolve-Path -LiteralPath $SourceFolder).ProviderPath
     $handOver = Join-Path ([IO.Path]::GetTempPath()) ('Packwright-test-{0}.json' -f [guid]::NewGuid())
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (ConvertTo-ProcessArgument $script:TestScriptPath),
                    '-SourceFolder', (ConvertTo-ProcessArgument $SourceFolder), '-Action', $Action,
-                   '-TimeoutMinutes', $TimeoutMinutes, '-ResultPath', (ConvertTo-ProcessArgument $handOver))
+                   '-ResultPath', (ConvertTo-ProcessArgument $handOver))
+    # Only a time limit that was given: without one, the test takes app.json's maxRunTimeInMinutes
+    if ($TimeoutMinutes -gt 0) { $arguments += '-TimeoutMinutes', $TimeoutMinutes }
     if ($Force) { $arguments += '-Force' }
     Write-Host "$Action $SourceFolder the way Intune would, in a window of its own. Windows asks for administrator rights first." -ForegroundColor Cyan
     try { $process = Start-ElevatedProcess -FilePath (Join-Path $PSHOME 'pwsh.exe') -Arguments ($arguments -join ' ') }
@@ -457,7 +481,9 @@ function Test-IntuneWinApp {
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         if ($Elevate) {
-            return Invoke-ElevatedTest -SourceFolder $SourceFolder -Action $Action -Force:$Force -TimeoutMinutes $TimeoutMinutes -ResultPath $ResultPath
+            $elevated = @{ SourceFolder = $SourceFolder; Action = $Action; Force = $Force; ResultPath = $ResultPath }
+            if ($PSBoundParameters.ContainsKey('TimeoutMinutes')) { $elevated.TimeoutMinutes = $TimeoutMinutes }
+            return Invoke-ElevatedTest @elevated
         }
         throw ('The test runs the package as SYSTEM through a scheduled task, which needs an elevated PowerShell. Start it as administrator, ' +
                'or add -Elevate to have Windows ask for administrator rights.')
@@ -468,6 +494,12 @@ function Test-IntuneWinApp {
     $manifest = if ($hasManifest) { Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
     if ("$($manifest.winget.delivery)" -eq 'store') {
         throw 'An Intune Store app is installed by Intune itself; there is no command here to test. Publish it and assign it to a test device.'
+    }
+    # Judged as Intune will judge it: by the return codes it is published with, and given the time
+    # it is given there — app.json's maxRunTimeInMinutes, unless -TimeoutMinutes says otherwise
+    $returnCodes = @(Get-PackageReturnCode -Manifest $manifest)
+    if (-not $PSBoundParameters.ContainsKey('TimeoutMinutes') -and "$($manifest.maxRunTimeInMinutes)" -match '^\d+$') {
+        $TimeoutMinutes = [int]"$($manifest.maxRunTimeInMinutes)"
     }
     $defaults = Get-PackageDefault -Folder $SourceFolder -InstallCommand "$($manifest.installCommandLine)"
     $command = if ($Action -eq 'Install') { "$($manifest.installCommandLine)".Trim() } else { "$($manifest.uninstallCommandLine)".Trim() }
@@ -575,18 +607,7 @@ function Test-IntuneWinApp {
         if ("$($dependency.displayName)".Trim()) { "$($dependency.displayName)".Trim() } else { "$($dependency.appId)".Trim() }
     })
 
-    # As Intune judges it: the exit code first - a failure is a failure whatever the detection
-    # finds afterwards - and only after a successful one, the detection rule
-    $verdict = if ($ran.Error -like 'Not applicable*') { 'Not applicable' }
-               elseif (-not $ran.Ran -and $ran.Error) { 'Could not run' }
-               elseif (-not $ran.Ran) { if ($Action -eq 'Install') { 'Already installed' } else { 'Not installed' } }
-               elseif ($null -eq $ran.ExitCode) { "$Action timed out" }
-               elseif ([int]$ran.ExitCode -eq 1618) { "$Action to be tried again (1618)" }
-               elseif ([int]$ran.ExitCode -notin 0, 1707, 3010, 1641) { "$Action failed" }
-               elseif ($Action -eq 'Install' -and $ran.DetectedAfter) { 'Installed and detected' }
-               elseif ($Action -eq 'Install') { 'Not detected after install' }
-               elseif (-not $ran.DetectedAfter) { 'Uninstalled' }
-               else { 'Still detected after uninstall' }
+    $verdict = Get-TestVerdict -Ran $ran -Action $Action -ReturnCode $returnCodes
     $outcome = [pscustomobject]@{
         Action          = $Action
         Verdict         = $verdict
@@ -596,7 +617,7 @@ function Test-IntuneWinApp {
         DetectedBefore  = $ran.DetectedBefore
         Ran             = $ran.Ran
         ExitCode        = $ran.ExitCode
-        ExitMeaning     = Get-ExitCodeMeaning $ran.ExitCode
+        ExitMeaning     = Get-ExitCodeMeaning $ran.ExitCode -ReturnCode $returnCodes
         Seconds         = $ran.Seconds
         DetectedAfter   = $ran.DetectedAfter
         DetectionDetail = $ran.DetectionDetail
@@ -618,7 +639,10 @@ function Test-IntuneWinApp {
 if ($PSBoundParameters.ContainsKey('SourceFolder')) {
     $exitCode = 0
     try {
-        $outcome = Test-IntuneWinApp -SourceFolder $SourceFolder -Action $Action -Force:$Force -ResultPath $ResultPath -TimeoutMinutes $TimeoutMinutes -Elevate:$Elevate
+        $testArgs = @{ SourceFolder = $SourceFolder; Action = $Action; Force = $Force; ResultPath = $ResultPath; Elevate = $Elevate }
+        # Only a time limit that was given: without one, app.json's maxRunTimeInMinutes decides
+        if ($PSBoundParameters.ContainsKey('TimeoutMinutes')) { $testArgs.TimeoutMinutes = $TimeoutMinutes }
+        $outcome = Test-IntuneWinApp @testArgs
         if (-not $outcome.Succeeded) { $exitCode = 1 }
     }
     catch {

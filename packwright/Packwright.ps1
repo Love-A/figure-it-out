@@ -4615,6 +4615,17 @@ if ($TestLoad) {
         -Detection @{ type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' })
     Assert-Test 'A registry rule stopping at the Uninstall key itself blocks the publish' (
         $parentKey.Count -eq 1 -and $parentKey[0].Severity -eq 'Block' -and $parentKey[0].Field -eq 'detection') ($parentKey.Message -join ' | ')
+    # What app.json says: a key nobody reads is said, a value Intune would refuse stops the run, and
+    # its return codes go on top of Intune's own five
+    $oddManifest = '{"displayName":"X","insallCommandLine":"x","_comment":"read by nobody, on purpose","maxRunTimeInMinutes":2000,
+                     "allowAvailableUninstall":"yes","returnCodes":[{"returnCode":1,"type":"retry"},{"returnCode":3010,"type":"success"}]}' | ConvertFrom-Json
+    $oddIssues = @(Get-ManifestProblem -Manifest $oddManifest)
+    Assert-Test 'A misspelt app.json key is said; a run time over 1440 and a quoted true or false stop the run; a _comment is left alone' (
+        @($oddIssues | Where-Object { $_.Severity -eq 'Warn' -and $_.Field -eq 'insallCommandLine' }).Count -eq 1 -and
+        @($oddIssues | Where-Object { $_.Severity -eq 'Block' }).Field -join ',' -eq 'maxRunTimeInMinutes,allowAvailableUninstall' -and
+        -not @($oddIssues | Where-Object { $_.Field -eq '_comment' }).Count) ($oddIssues.Message -join ' | ')
+    $mergedCodes = (Get-PackageReturnCode -Manifest $oddManifest | ForEach-Object { "$($_.returnCode)=$($_.type)" }) -join ','
+    Assert-Test "app.json's return codes go on top of Intune's five" ($mergedCodes -eq '0=success,1707=success,3010=success,1641=hardReboot,1618=retry,1=retry') $mergedCodes
 
     [void](Open-PackageFolder -Folder $scaffolded -PreferSetup 'nsis.exe')
 
@@ -5226,6 +5237,87 @@ if ($TestLoad) {
         $staleCopy.Outcome -like 'THREW:Not published:*setup-1.0.msi*Nothing was created*' -and $staleCopy.Calls -notmatch 'POST|PATCH') $staleCopy.Outcome
     Assert-Test 'It warns, too, that the detection rule is left on an earlier version' ($staleCopy.Warned -match 'compares against 1\.0') $staleCopy.Warned
 
+    # The app a package folder was published as, remembered in app.json per tenant: the next
+    # update goes there even after a rename in the portal, where a lookup by name finds nothing
+    function New-RememberingManifest {
+        param([string]$Name, [string]$DisplayName, [hashtable]$Intune)
+        $manifestFile = Join-Path $testRoot $Name
+        $content = [ordered]@{
+            displayName = $DisplayName; publisher = 'IT'; version = '1.0'
+            installCommandLine = 'msiexec /i "setup.msi" /qn'; uninstallCommandLine = 'msiexec /x "setup.msi" /qn'
+            detection = [ordered]@{ type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\PublishProbe'; detectionType = 'exists' }
+        }
+        if ($Intune) { $content.intune = $Intune }
+        ($content | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $manifestFile -Encoding UTF8
+        $manifestFile
+    }
+    $publishedAs = @{ selftest = [ordered]@{ appId = 'stub-app-0001'; displayName = 'Publish Probe' } }
+    $rememberingManifest = New-RememberingManifest -Name 'app-remembering.json' -DisplayName 'Publish Probe' -Intune $publishedAs
+    $renamedApp = $heldApp.Clone(); $renamedApp.displayName = 'Renamed in the portal'
+    $remembered = Invoke-PublishProbe -Arguments @{ ManifestPath = $rememberingManifest; Update = $true } -ExistingApp $renamedApp
+    Assert-Test 'An update goes to the app the package was published as, renamed in the portal or not, without a lookup by name' (
+        $remembered.Outcome -eq 'RETURNED:Updated:stub-app-0001' -and $remembered.Calls -notmatch 'displayName%20eq' -and
+        $remembered.Said -match "displayName: 'Renamed in the portal' -> 'Publish Probe'") "$($remembered.Outcome) — $($remembered.Said)"
+    $republished = Invoke-PublishProbe -Arguments @{ ManifestPath = $rememberingManifest } -ExistingApp $renamedApp
+    Assert-Test 'Without -Update, a package published before stops, and names the app it became' (
+        $republished.Outcome -like "THREW:This package was published before, as 'Renamed in the portal' (stub-app-0001)*" -and
+        $republished.Calls -notmatch 'POST|PATCH') $republished.Outcome
+    $copiedManifest = New-RememberingManifest -Name 'app-copied.json' -DisplayName 'Another App' -Intune $publishedAs
+    $copiedFolder = Invoke-PublishProbe -Arguments @{ ManifestPath = $copiedManifest; Update = $true } -ExistingApp $renamedApp
+    Assert-Test 'A folder copied to make another app is not taken for the app it was copied from' (
+        $copiedFolder.Outcome -like "THREW:app.json says 'Another App', but this package was published as 'Publish Probe'*-AppId stub-app-0001*" -and
+        $copiedFolder.Calls -notmatch 'POST|PATCH') $copiedFolder.Outcome
+    $freshManifest = New-RememberingManifest -Name 'app-fresh.json' -DisplayName 'Publish Probe'
+    $freshPublish = Invoke-PublishProbe -Arguments @{ ManifestPath = $freshManifest }
+    $freshRecord = Get-Content -LiteralPath $freshManifest -Raw | ConvertFrom-Json
+    Assert-Test 'After publishing, app.json remembers the app it became, and keeps the rest as it was' (
+        $freshPublish.Outcome -eq 'RETURNED:Created:stub-app-0001' -and $freshRecord.intune.selftest.appId -eq 'stub-app-0001' -and
+        $freshRecord.intune.selftest.displayName -eq 'Publish Probe' -and $freshRecord.detection.keyPath -eq 'HKEY_LOCAL_MACHINE\SOFTWARE\PublishProbe') `
+        "$($freshPublish.Outcome) — $(($freshRecord.intune | ConvertTo-Json -Compress -Depth 4))"
+
+    # One command: a package folder given without its .intunewin is built first, by the
+    # Build-IntuneWinApp.ps1 beside the publish script — here one that hands over the probe package
+    $oneCommand = Join-Path $testRoot 'onecommand'
+    $null = New-Item -ItemType Directory -Path $oneCommand -Force
+    Copy-Item -LiteralPath $script:EnginePublish, $script:EnginePackage -Destination $oneCommand
+    ("[CmdletBinding(SupportsShouldProcess = `$true)]`nparam([string]`$SourceFolder, [switch]`$PassThru)`n" +
+     "Set-Content -LiteralPath (Join-Path `$PSScriptRoot 'built.txt') -Value `$SourceFolder`n" +
+     "[pscustomobject]@{ IntuneWinFile = '$probePackage'; SourceFolder = `$SourceFolder; SetupFile = 'setup.msi' }") |
+        Set-Content -LiteralPath (Join-Path $oneCommand 'Build-IntuneWinApp.ps1') -Encoding utf8BOM
+    $oneCommandFolder = Join-Path $testRoot 'onecommand-src'
+    $null = New-Item -ItemType Directory -Path $oneCommandFolder -Force
+    Set-Content -LiteralPath (Join-Path $oneCommandFolder 'setup.msi') -Value 'x'
+    Copy-Item -LiteralPath (New-RememberingManifest -Name 'app-onecommand.json' -DisplayName 'Publish Probe') -Destination (Join-Path $oneCommandFolder 'app.json')
+    $oneShot = Invoke-PublishProbe -PublishScript (Join-Path $oneCommand 'Publish-IntuneWinApp.ps1') -NoPath `
+                   -Arguments @{ SourceFolder = $oneCommandFolder; AllowDuplicateName = $true }
+    $builtFrom = Get-Content -LiteralPath (Join-Path $oneCommand 'built.txt') -ErrorAction SilentlyContinue
+    Assert-Test 'A package folder given alone is built first, and what was built is published' (
+        $oneShot.Outcome -eq 'RETURNED:Created:stub-app-0001' -and "$builtFrom" -eq $oneCommandFolder -and $oneShot.Calls -match 'PUT-BLOB') `
+        "$($oneShot.Outcome) — built from: $builtFrom"
+
+    # The settings app.json may give besides: return codes, a run time, uninstalling from the
+    # Company Portal, being featured there - sent, and read back as sent
+    $extrasManifest = New-RememberingManifest -Name 'app-extras.json' -DisplayName 'Publish Probe'
+    $extras = Get-Content -LiteralPath $extrasManifest -Raw | ConvertFrom-Json
+    $extras | Add-Member -NotePropertyName returnCodes -NotePropertyValue @([ordered]@{ returnCode = 1; type = 'retry' }, [ordered]@{ returnCode = 3010; type = 'success' })
+    $extras | Add-Member -NotePropertyName maxRunTimeInMinutes -NotePropertyValue 120
+    $extras | Add-Member -NotePropertyName allowAvailableUninstall -NotePropertyValue $true
+    $extras | Add-Member -NotePropertyName isFeatured -NotePropertyValue $true
+    $extras | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $extrasManifest -Encoding UTF8
+    $extrasPublish = Invoke-PublishProbe -Arguments @{ ManifestPath = $extrasManifest }
+    $extrasPost = "$(@($extrasPublish.Bodies | Where-Object { $_ -like 'POST *' }))"
+    Assert-Test 'Return codes, the run time, uninstalling from the Company Portal and featuring go to Intune, and are read back as sent' (
+        $extrasPublish.Outcome -eq 'RETURNED:Created:stub-app-0001' -and $extrasPost -match '"maxRunTimeInMinutes":120' -and
+        $extrasPost -match '"allowAvailableUninstall":true' -and $extrasPost -match '"isFeatured":true' -and
+        $extrasPost -match '\{"returnCode":1,"type":"retry"\}|\{"type":"retry","returnCode":1\}' -and
+        $extrasPost -match '\{"returnCode":3010,"type":"success"\}|\{"type":"success","returnCode":3010\}' -and
+        $extrasPublish.Checked -eq 'VERIFIED:True|DIFFERENT:') "$($extrasPublish.Outcome) / $($extrasPublish.Checked)"
+    $extras.maxRunTimeInMinutes = 2000
+    $extras | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $extrasManifest -Encoding UTF8
+    $tooLong = Invoke-PublishProbe -Arguments @{ ManifestPath = $extrasManifest }
+    Assert-Test 'A value Intune would refuse stops the publish before any app is looked up or created' (
+        $tooLong.Outcome -like 'THREW:Not published: maxRunTimeInMinutes*' -and $tooLong.Calls -notmatch 'POST|PATCH|filter') "$($tooLong.Outcome) — calls: $($tooLong.Calls)"
+
     # --- End to end: the real run body, in a real runspace -------------------------
     # Everything above tests the studio with the engines stubbed out by never reaching them.
     # This runs $script:RunBody itself — dot-sourcing the engine scripts, binding the run
@@ -5347,6 +5439,17 @@ if ($TestLoad) {
     $elevateProbe = {
         param([string]$enginePath, [string]$folder, [string]$answer)
         . $enginePath
+        if ($answer -eq 'verdict') {
+            # Judged by the package's own return codes, as they are published
+            $codes = Get-PackageReturnCode -Manifest ([pscustomobject]@{ returnCodes = @(@{ returnCode = 1; type = 'retry' }, @{ returnCode = 3010; type = 'success' }) })
+            return (@(
+                Get-TestVerdict -Ran @{ Ran = $true; ExitCode = 1 } -ReturnCode $codes
+                Get-TestVerdict -Ran @{ Ran = $true; ExitCode = 3010; DetectedAfter = $true } -ReturnCode $codes
+                Get-TestVerdict -Ran @{ Ran = $true; ExitCode = 5 } -ReturnCode $codes
+                Get-TestVerdict -Ran @{ Ran = $true; ExitCode = 1 }
+                Get-ExitCodeMeaning 1 -ReturnCode $codes
+            ) -join '|')
+        }
         if ($answer -eq 'quote') {
             # A real process, given a command line made the way the elevated one is
             $echoScript = Join-Path $folder 'echo.ps1'
@@ -5397,6 +5500,9 @@ if ($TestLoad) {
         $elevatedTest.Contains("-SourceFolder `"$elevateFolder\`"")) $elevatedTest
     $quotedTest = Invoke-ElevateProbe -Answer 'quote'
     Assert-Test '-Elevate: its command line splits back into exactly the paths that went in, a trailing backslash included' ($quotedTest -eq 'True') $quotedTest
+    $verdicts = Invoke-ElevateProbe -Answer 'verdict'
+    Assert-Test "A test install is judged by the package's own return codes, as they are published" (
+        $verdicts -eq 'Install to be tried again (1)|Installed and detected|Install failed|Install failed|retry: Intune tries again in five minutes, three times') $verdicts
 
     # What a test install found, offered as the detection rule only when it beats the one there is
     $oneEntry = [pscustomobject]@{ Action = 'Install'; Ran = $true; ExitCode = 0; DetectedAfter = $false

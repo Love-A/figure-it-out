@@ -31,6 +31,8 @@
       .\New-WinGetPackage.ps1 -Id 9MSPC6MP8FM4 -Source msstore
       .\New-WinGetPackage.ps1 -Search whiteboard -Source msstore
       .\New-WinGetPackage.ps1 -Runtime
+      .\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04"                  # current scripts
+      .\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04" -Version 26.05   # another version
     or dot-source it to load the functions, as Packwright does.
 
 .PARAMETER Id
@@ -62,11 +64,20 @@
     Do not download the installer to take the app's icon from it, when neither the catalog nor
     an installed copy on this computer has one.
 
+.PARAMETER Refresh
+    A package folder this script wrote earlier: its scripts are written again from this
+    Packwright's templates, as "Refresh the scripts" in the studio does — for a package made
+    before a newer runner. With -Version, or -Latest, a community package moves to that version
+    first, as the studio's WinGet card moves it: the commands, the detection rule and the version
+    label follow. Everything else in app.json is left as it is. Publishing it as an update is a
+    step of its own.
+
 .NOTES
     Author    : Love A
     Requires  : PowerShell 7 on the packaging computer; winget for community packages. The
                 scripts it writes run under Windows PowerShell 5.1 on the devices.
 .VERSION
+    2026-11-03 - 1.3 - -Refresh brings a package's scripts up to date, or moves it to another version
     2026-10-27 - 1.2 - Runner 1.1: a time limit, and the install lock waited for
     2026-10-12 - 1.1 - A package gets the app's icon
     2026-10-08 - 1.0 - Initial version
@@ -93,7 +104,9 @@ param(
 
     [switch]$Runtime,
 
-    [switch]$NoIconDownload
+    [switch]$NoIconDownload,
+
+    [string]$Refresh
 )
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -2876,6 +2889,61 @@ function Update-WinGetScript {
     foreach ($name in $set.Keys) { Write-WinGetScriptFile -Path (Join-Path $Folder $name) -Content $set[$name] }
     @($set.Keys)
 }
+
+# A package folder this script wrote earlier, brought up to date: its scripts written again from
+# this Packwright's templates (Update-WinGetScript, as "Refresh the scripts" in the studio), and
+# with -Version or -Latest — the community repository's alone; the Store has the newest only —
+# moved to that version first, as the studio's WinGet card moves it (Set-WinGetPlan): the winget
+# block, the commands, the account and architecture, the detection rule and the version label
+# follow that version's manifest. The name, the description, the icon and the app Intune has it
+# as stay. Publishing it as an update is a step of its own. -Info is the catalog entry, when the
+# caller has it already. @{ Folder; Previous; Version; Scripts; Plan }
+function Update-WinGetPackage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Folder, [string]$Version, [switch]$Latest, $Info)
+    $Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
+    $manifestPath = Join-Path $Folder 'app.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) { throw "$Folder has no app.json: it is no package Packwright wrote." }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable
+    $block = $manifest['winget']
+    $moving = $Latest -or $Version
+    if ($block -isnot [Collections.IDictionary]) {
+        if ($manifest['wingetRuntime'] -isnot [Collections.IDictionary]) { throw "$Folder holds no WinGet package: app.json has no winget block." }
+        if ($moving) { throw 'The WinGet runtime package has no version to pick: create it again with -Runtime for a newer App Installer.' }
+        return [pscustomobject]@{ Folder = $Folder; Previous = $null; Version = $null; Scripts = @(Update-WinGetScript -Folder $Folder); Plan = $null }
+    }
+    if ("$($block['delivery'])" -eq 'store') { throw 'An Intune Store app has no scripts: Intune installs, detects and updates it itself.' }
+    # A source the organisation does not allow gets no scripts out of this script, as with a new package
+    $policy = Get-PackwrightPolicy
+    $refusal = Get-WinGetSourceRefusal -Source "$($block['source'])" -Policy $policy
+    if ($refusal) { throw $refusal }
+    $previous = "$($block['version'])"
+    $plan = $null
+    if ($moving) {
+        if ("$($block['source'])" -ne 'winget') { throw 'The Microsoft Store offers only the newest version of an app, and a Store package installs that already.' }
+        if (-not $Info) { $Info = Get-WinGetCatalogEntry -Id "$($block['id'])" -Source winget -Version $(if ($Latest) { '' } else { $Version }) -Policy $policy }
+        $plan = New-WinGetInstallPlan -Info $Info -Latest:$Latest -Delivery "$($block['delivery'])" -Policy $policy
+        if ($plan.Blockers.Count) { throw ($plan.Blockers -join ' ') }
+        $block['version']           = $plan.Version
+        $block['scope']             = $plan.Scope
+        $block['architecture']      = $plan.Architecture
+        $block['installerType']     = $plan.InstallerType
+        $block['packageFamilyName'] = $plan.PackageFamilyName
+        $block['productCode']       = if ($plan.Detect -and $plan.Detect.kind -eq 'appx') { '' } else { $plan.ProductCode }
+        $block['detect']            = $plan.Detect
+        $block['runner']            = $script:WinGetRunnerVersion
+        $commands = Get-WinGetCommandLine -WinGet $block
+        $manifest['installCommandLine']   = $commands.Install
+        $manifest['uninstallCommandLine'] = $commands.Uninstall
+        $manifest['runAsAccount']         = $plan.RunAs
+        $manifest['architecture']         = $plan.IntuneArchitecture
+        if ($plan.Label) { $manifest['version'] = $plan.Label } else { [void]$manifest.Remove('version') }
+        if ($plan.Detection) { $manifest['detection'] = $plan.Detection }
+    }
+    $scripts = @(Write-WinGetScripts -Folder $Folder -WinGet $block)
+    if ($moving) { ($manifest | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8 }
+    [pscustomobject]@{ Folder = $Folder; Previous = $previous; Version = "$($block['version'])"; Scripts = $scripts; Plan = $plan }
+}
 #endregion
 
 #region ---- The WinGet runtime package ------------------------------------------------
@@ -3087,9 +3155,18 @@ function New-WinGetRuntimePackage {
 }
 #endregion
 
-# Run directly with -Id, -Search or -Runtime; dot-source the file to only load the functions.
-if ($MyInvocation.InvocationName -ne '.' -and ($Id -or $Search -or $Runtime)) {
-    if ($Runtime) { New-WinGetRuntimePackage -PackageRoot $PackageRoot }
+# Run directly with -Id, -Search, -Runtime or -Refresh; dot-source the file to only load the functions.
+if ($MyInvocation.InvocationName -ne '.' -and ($Id -or $Search -or $Runtime -or $Refresh)) {
+    if ($Refresh) {
+        $updated = Update-WinGetPackage -Folder $Refresh -Version $Version -Latest:$Latest
+        foreach ($line in @($updated.Plan.Notes | Where-Object { $_ }) + @($updated.Plan.Warnings | Where-Object { $_ } | ForEach-Object { "WARNING: $_" })) { Write-Host $line }
+        $now = if ($updated.Version) { "version $($updated.Version)" } else { 'the newest version, whenever a device installs it' }
+        Write-Host $(if ($updated.Plan) { "$(Split-Path -Leaf $updated.Folder) now installs $now$(if ($updated.Previous -and $updated.Previous -ne $updated.Version) { " (was $($updated.Previous))" })." }
+                     else { "Scripts written again from runner $($script:WinGetRunnerVersion): $($updated.Scripts -join ', ')." })
+        Write-Host "Publish it as an update to bring it to the devices: .\Publish-IntuneWinApp.ps1 -SourceFolder `"$($updated.Folder)`" -Update"
+        $updated
+    }
+    elseif ($Runtime) { New-WinGetRuntimePackage -PackageRoot $PackageRoot }
     elseif ($Search) {
         $searchSource = if ($Source) { $Source } else { (Get-PackwrightPolicy).DefaultSource }
         Search-WinGetCatalog -Query $Search -Source $searchSource | Format-Table Id, Name, Version, Publisher, Kind -AutoSize

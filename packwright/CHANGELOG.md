@@ -12,6 +12,22 @@ Packwright is five components, versioned separately:
 
 Newest first. A heading names every component the release changed; under a heading that names several, each bullet starts with its component. Why a change was made, and how it was tested, is in its commit message.
 
+## Publish 1.13 · Test 1.4 · WinGet 1.3 — 2026-11-03
+
+### Added
+- Publish: `app.json` may set `returnCodes` (on top of Intune's five), `maxRunTimeInMinutes`, `allowAvailableUninstall` and `isFeatured`. See [App settings](README.md#app-settings--appjson).
+- Publish: a key in `app.json` that Packwright does not read is a warning, and a value Intune would refuse stops the publish before anything is created.
+- Publish: `app.schema.json` describes every key `app.json` may have, for an editor to complete and check.
+- Test: a test install is judged by the package's own return codes and given its `maxRunTimeInMinutes`, as Intune will.
+- WinGet: `New-WinGetPackage.ps1 -Refresh <folder>` writes a package's scripts again; with `-Version` or `-Latest` it moves a community package to that version. See [Apps from WinGet](README.md#apps-from-winget--the-microsoft-store-or-the-community-repository).
+
+## Publish 1.12 — 2026-11-03
+
+### Added
+- `-SourceFolder` without `-Path` builds the folder first, so one command builds and publishes it. See [Idempotent publishing](README.md#idempotent-publishing--update).
+- `app.json` remembers the app a package was published as, per tenant, and the next run goes to that app even after a rename in the portal.
+- A package published before stops without `-Update`, naming the app it became, and a copied folder given another name stops until `-AppId` says which app it is.
+
 ## Studio 2.14 · Build 2.5 · Publish 1.11 · Test 1.3 — 2026-11-03
 
 **Action:** a script copied out on its own needs `Packwright.Package.ps1` beside it — keep the Packwright scripts together.

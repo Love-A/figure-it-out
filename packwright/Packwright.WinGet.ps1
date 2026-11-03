@@ -1181,6 +1181,31 @@ ManifestType: merged
     [void](Update-WinGetScript -Folder $communityPackage)
     Assert-Test 'Refreshing the scripts makes them current again' (@(Get-WinGetScriptState -Folder $communityPackage | Where-Object { $_.State -ne 'current' }).Count -eq 0)
 
+    # The same from the command line (New-WinGetPackage -Refresh), on a copy the tests below do
+    # not use: the scripts current again and app.json as it was - the app Intune has it as included
+    $refreshPackage = Join-Path $wgRoot 'Contoso Tool refreshed'
+    Copy-Item -LiteralPath $communityPackage -Destination $refreshPackage -Recurse
+    $refreshManifestPath = Join-Path $refreshPackage 'app.json'
+    $refreshManifest = Get-Content -LiteralPath $refreshManifestPath -Raw | ConvertFrom-Json -AsHashtable
+    $refreshManifest['intune'] = [ordered]@{ selftest = [ordered]@{ appId = 'stub-app-0001'; displayName = 'Contoso Tool' } }
+    ($refreshManifest | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $refreshManifestPath -Encoding UTF8
+    $manifestBefore = (Get-FileHash -LiteralPath $refreshManifestPath).Hash
+    $refreshUninstall = Join-Path $refreshPackage 'Uninstall-WinGetApp.ps1'
+    [IO.File]::WriteAllText($refreshUninstall, ([IO.File]::ReadAllText($refreshUninstall) -replace 'Packwright WinGet runner \d+(\.\d+)+', 'Packwright WinGet runner 0.9'))
+    $refreshed = Update-WinGetPackage -Folder $refreshPackage
+    Assert-Test 'A package refreshed from the command line has current scripts, and its app.json is left as it was' (
+        @(Get-WinGetScriptState -Folder $refreshPackage | Where-Object { $_.State -ne 'current' }).Count -eq 0 -and
+        (Get-FileHash -LiteralPath $refreshManifestPath).Hash -eq $manifestBefore -and $refreshed.Version -eq '2.1.0') "$($refreshed.Version)"
+    # ...and moved to another version, as the studio's WinGet card moves it
+    $olderInfo = $communityInfo.PSObject.Copy(); $olderInfo.Version = '2.0.0'
+    $movedPackage = Update-WinGetPackage -Folder $refreshPackage -Version '2.0.0' -Info $olderInfo
+    $movedManifest = Get-Content -LiteralPath $refreshManifestPath -Raw | ConvertFrom-Json
+    Assert-Test 'Moved to another version, the commands, the label and the block follow it, and the rest stays' (
+        $movedPackage.Previous -eq '2.1.0' -and $movedManifest.winget.version -eq '2.0.0' -and $movedManifest.version -eq '2.0.0' -and
+        $movedManifest.installCommandLine -match '-Version 2\.0\.0' -and $movedManifest.intune.selftest.appId -eq 'stub-app-0001' -and
+        $movedManifest.description -eq $communityManifest.description -and
+        @(Get-WinGetScriptState -Folder $refreshPackage | Where-Object { $_.State -ne 'current' }).Count -eq 0) "$($movedManifest.version) — $($movedManifest.installCommandLine)"
+
     # --- WinGet: the app's icon --------------------------------------------------------
     # All offline: pwsh.exe stands in for a program file, an MSI is made here, and the download
     # of an installer is a copy - so the SHA-256 check and the reading are the real ones

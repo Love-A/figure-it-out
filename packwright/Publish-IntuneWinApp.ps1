@@ -23,6 +23,11 @@
     silently create a duplicate. An update lists the settings it changes before it changes
     them, and with -WhatIf that list is all it does.
 
+    After a publish, app.json remembers the app it became, per tenant (an "intune" block), and
+    the next run goes to that app even when it has been renamed in the portal since. A folder
+    copied for the next release keeps finding the same app; one copied to start another app,
+    and given another displayName, is stopped until -AppId says which app it is.
+
     App settings come from an app.json manifest (see app.example.json) placed next to the
     installation source (or given via -ManifestPath). Sensible defaults are derived when
     possible, so an MSI or PSADT package can often be published without any manifest at all:
@@ -44,8 +49,10 @@
     says delivery "store"): that is published from -ManifestPath alone, with nothing to upload.
 
 .PARAMETER SourceFolder
-    Optional. Used to locate app.json next to the installation source. Populated automatically
-    when piping from Build-IntuneWinApp; with -MetadataOnly, the package folder alone is enough.
+    The package folder: where app.json is found, and what the checks before publishing look in.
+    Populated automatically when piping from Build-IntuneWinApp. Given without -Path, the folder
+    is built first with Build-IntuneWinApp.ps1 next to this script, so one command builds and
+    publishes; with -MetadataOnly, nothing is built and the folder alone is enough.
 
 .PARAMETER ManifestPath
     Optional explicit path to an app.json manifest. If omitted, app.json is searched for in
@@ -131,12 +138,20 @@
     on every later run. Safe to run from a scheduled task or a pipeline.
 
 .EXAMPLE
+    .\Publish-IntuneWinApp.ps1 -SourceFolder "C:\IntunePackages\7-Zip 26.04" -Update
+
+    Builds the folder and publishes it in one command: the app it was published as before gets
+    a new content version, and the first time it is created.
+
+.EXAMPLE
     .\Publish-IntuneWinApp.ps1 -SourceFolder "C:\IntunePackages\7-Zip 26.04" -MetadataOnly -WhatIf
 
     Lists the settings Intune holds otherwise than app.json says, without changing them.
     Without -WhatIf it changes them, and the app keeps running the content it has.
 
 .VERSION
+    2026-11-03 - 1.13 - Return codes, a run time, uninstalling from the Company Portal and featuring in app.json, and its keys checked
+    2026-11-03 - 1.12 - One command builds and publishes a folder, and app.json remembers the app it became
     2026-11-03 - 1.11 - Stops where the studio's checklist stops, and warns where it warns
     2026-11-02 - 1.10 - x64 without ARM64, -MetadataOnly, and changes listed before and checked after
     2026-10-12 - 1.9 - Says who it signed in as and explains a 403; roleScopeTagIds
@@ -597,12 +612,50 @@ function Publish-IntuneWinApp {
             finally { $stream.Dispose() }
         }
 
-        # Create or update? One answer for both app types: the app named by -AppId, the one app of
-        # this name and type, or none. Without -Update an existing app stops the run, so nobody
-        # creates a duplicate by publishing twice. -AppId names the app to update, so it
-        # contradicts -AllowDuplicateName exactly as -Update does.
+        # --- The app a package folder was published as ----------------------------------
+        # After a publish, app.json remembers the app it became, per tenant:
+        #   "intune": { "<tenant id>": { "appId": "...", "displayName": "<as it was published>" } }
+        # The next run goes to that app even when it has been renamed in the portal since — a
+        # lookup by name finds nothing then, and -Update would create a second app beside it. A
+        # copied folder takes the record along, which is the point for the next release of the
+        # same app. But a folder copied to start another app takes it along too, so once app.json
+        # carries another name than the one it was published under, the record is only followed
+        # on -AppId. @{ AppId; DisplayName } or $null.
+        function Get-PublishedRecord {
+            param($Manifest, [string]$Tenant)
+            if (-not $Tenant) { return $null }
+            $entry = $Manifest.intune.$Tenant
+            if ($entry -and "$($entry.appId)".Trim()) {
+                [pscustomobject]@{ AppId = "$($entry.appId)".Trim(); DisplayName = "$($entry.displayName)".Trim() }
+            }
+        }
+
+        # Written into app.json when it says something new: the rest of the file is left as it was
+        # read, and a file that cannot be written is a warning — the app is published either way
+        function Save-PublishedRecord {
+            param([string]$ManifestFile, [string]$Tenant, [string]$Id, [string]$DisplayName, $Current)
+            if (-not $ManifestFile -or -not $Tenant -or -not $Id) { return }
+            if ($Current -and $Current.AppId -eq $Id -and $Current.DisplayName -eq $DisplayName) { return }
+            try {
+                $json = Get-Content -LiteralPath $ManifestFile -Raw | ConvertFrom-Json -AsHashtable
+                if ($json['intune'] -isnot [System.Collections.IDictionary]) { $json['intune'] = [ordered]@{} }
+                $json['intune'][$Tenant] = [ordered]@{ appId = $Id; displayName = $DisplayName }
+                ($json | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $ManifestFile -Encoding UTF8
+                Write-Host "  app.json now remembers this package as app $Id, for the next update."
+            }
+            catch {
+                Write-Warning ("Published, but app.json could not be told which app it became ($($_.Exception.Message)). " +
+                               'The next update finds the app by its name, as before.')
+            }
+        }
+
+        # Create or update? One answer for both app types: the app named by -AppId, the app
+        # app.json remembers being published as, the one app of this name and type, or none.
+        # Without -Update an existing app stops the run, so nobody creates a duplicate by
+        # publishing twice. -AppId names the app to update, so it contradicts
+        # -AllowDuplicateName exactly as -Update does.
         function Find-PublishTarget {
-            param([string]$DisplayName, [string]$ODataType, [string]$TypeLabel)
+            param([string]$DisplayName, [string]$ODataType, [string]$TypeLabel, $Record)
             if (($Update -or $AppId) -and $AllowDuplicateName) {
                 $named = if ($AppId) { '-AppId' } else { '-Update' }
                 throw "$named and -AllowDuplicateName contradict each other: one replaces the app that is already there, the other creates a second one. Pick one."
@@ -616,6 +669,36 @@ function Publish-IntuneWinApp {
                 return $found
             }
             if ($AllowDuplicateName) { return $null }
+
+            if ($Record) {
+                if ($Record.DisplayName -and $Record.DisplayName -ne $DisplayName) {
+                    throw ("app.json says '$DisplayName', but this package was published as '$($Record.DisplayName)' (app $($Record.AppId)). " +
+                           "If it is that app under a new name, pass -AppId $($Record.AppId) once. If the folder was copied to make another app, " +
+                           'take the "intune" block out of app.json. Nothing was created.')
+                }
+                $found = $null
+                try { $found = Invoke-MgGraphRequest -Method GET -Uri "$graphBase/deviceAppManagement/mobileApps/$($Record.AppId)" -ErrorAction Stop }
+                catch {
+                    if (Test-GraphForbidden $_) { throw (Get-GraphForbiddenMessage -Action "read the app this package was published as ($($Record.AppId))") }
+                    if ("$_" -notmatch '\b404\b|NotFound|does not exist') {
+                        throw "Could not read app $($Record.AppId), which this package was published as: $($_.Exception.Message) Nothing was created."
+                    }
+                    Write-Warning "This package was published as app $($Record.AppId), which Intune no longer has; it is looked up by its name instead."
+                }
+                if ($found) {
+                    if ("$($found.'@odata.type')" -ne "#microsoft.graph.$ODataType") {
+                        throw "App $($Record.AppId), which this package was published as, is $($found.'@odata.type'), not $TypeLabel. Nothing was created."
+                    }
+                    if (-not $Update) {
+                        throw ("This package was published before, as '$($found.displayName)' ($($Record.AppId)). Pass -Update to give that app " +
+                               'this content, or -AllowDuplicateName to create a second app. Nothing was created.')
+                    }
+                    if ("$($found.displayName)" -ne $DisplayName) {
+                        Write-Host "  This package was published as app $($Record.AppId), which is called '$($found.displayName)' in Intune now."
+                    }
+                    return $found
+                }
+            }
 
             $nameFilter = "isof('microsoft.graph.$ODataType') and displayName eq '$($DisplayName -replace "'", "''")'"
             $existingApps = @()
@@ -793,6 +876,8 @@ function Publish-IntuneWinApp {
             foreach ($field in 'informationUrl', 'privacyInformationUrl', 'developer', 'owner', 'notes') {
                 if ("$($Manifest.$field)".Trim()) { $Body[$field] = "$($Manifest.$field)".Trim() }
             }
+            # Shown among the featured apps in the Company Portal; left as Intune has it unless said
+            if ($Manifest.isFeatured -is [bool]) { $Body.isFeatured = $Manifest.isFeatured }
             # Scope tags, for an account whose Intune role is limited to some of them: without one
             # of its tags the app is created under Default, which such an account may not touch
             $scopeTags = @($Manifest.roleScopeTagIds | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
@@ -940,7 +1025,7 @@ function Publish-IntuneWinApp {
         $appJsonNames = @{
             displayVersion = 'version'; largeIcon = 'icon'; detectionRules = 'detection'; requirementRules = 'requirements'
             allowedArchitectures = 'architecture'; minimumSupportedWindowsRelease = 'minimumWindowsRelease'
-            installExperience = 'runAsAccount/restartBehavior'; returnCodes = 'return codes'
+            installExperience = 'runAsAccount/restartBehavior/maxRunTimeInMinutes'; returnCodes = 'returnCodes'
             fileName = 'package file'; setupFilePath = 'setup file'; committedContentVersion = 'content version'
         }
 
@@ -1018,7 +1103,7 @@ function Publish-IntuneWinApp {
         # its own copy of winget — which, unlike winget's command line, still works on devices
         # where the Microsoft Store app is blocked — detects it and keeps it current.
         function Publish-WinGetStoreApp {
-            param($Manifest, [string]$ManifestDir)
+            param($Manifest, [string]$ManifestDir, [string]$ManifestFile)
             $winget = $Manifest.winget
             if ("$($winget.source)" -ne 'msstore' -or -not "$($winget.id)".Trim()) {
                 throw "Only a Microsoft Store app can be published as an Intune Store app (app.json has source '$($winget.source)')."
@@ -1037,7 +1122,8 @@ function Publish-IntuneWinApp {
             Add-CommonAppProperty -Body $body -Manifest $Manifest -ManifestDir $ManifestDir
 
             $tenant = (Get-MgContext).TenantId
-            $target = Find-PublishTarget -DisplayName $displayName -ODataType 'winGetApp' -TypeLabel 'an Intune Store app'
+            $record = Get-PublishedRecord -Manifest $Manifest -Tenant $tenant
+            $target = Find-PublishTarget -DisplayName $displayName -ODataType 'winGetApp' -TypeLabel 'an Intune Store app' -Record $record
             if ($target -and "$($target.packageIdentifier)" -and "$($target.packageIdentifier)" -ine "$($winget.id)") {
                 throw ("The Intune Store app '$displayName' ($($target.id)) installs $($target.packageIdentifier), not $($winget.id). " +
                        'Intune cannot change that on an existing app — publish this one under another name. Nothing was changed.')
@@ -1079,6 +1165,7 @@ function Publish-IntuneWinApp {
                             'to fetch it from the Store before it can be assigned.') -ForegroundColor Green
             }
             $check = Confirm-AppState -Id $storeAppId -Sent $(if ($target) { $patch } else { $body })
+            Save-PublishedRecord -ManifestFile $ManifestFile -Tenant $tenant -Id $storeAppId -DisplayName $displayName -Current $record
             [pscustomobject]@{
                 Action         = if ($target) { 'Updated' } else { 'Created' }
                 AppId          = $storeAppId
@@ -1099,17 +1186,19 @@ function Publish-IntuneWinApp {
         if ($Path) { $Path = (Resolve-Path -LiteralPath $Path).ProviderPath }
 
         # --- Locate and read manifest (app.json) ---
-        $manifest    = $null
-        $manifestDir = $null
-        $candidates  = @()
+        $manifest     = $null
+        $manifestDir  = $null
+        $manifestFile = $null
+        $candidates   = @()
         if ($ManifestPath)  { $candidates += $ManifestPath }
         if ($SourceFolder)  { $candidates += (Join-Path -Path $SourceFolder -ChildPath 'app.json') }
         if ($Path)          { $candidates += (Join-Path -Path (Split-Path -Path $Path -Parent) -ChildPath 'app.json') }
         foreach ($candidate in $candidates) {
             if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-                $resolved    = (Resolve-Path -LiteralPath $candidate).ProviderPath
-                $manifest    = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
-                $manifestDir = Split-Path -Path $resolved -Parent
+                $resolved     = (Resolve-Path -LiteralPath $candidate).ProviderPath
+                $manifest     = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
+                $manifestDir  = Split-Path -Path $resolved -Parent
+                $manifestFile = $resolved
                 Write-Host "Using manifest: $resolved"
                 break
             }
@@ -1117,6 +1206,12 @@ function Publish-IntuneWinApp {
         if ($ManifestPath -and -not $manifest) {
             throw "Manifest not found: $ManifestPath"
         }
+        # What app.json says that cannot be right stops the run before anything is built or
+        # created; a key nobody reads is said, since its setting would be left out unnoticed
+        $manifestProblems = @(Get-ManifestProblem -Manifest $manifest)
+        foreach ($problem in @($manifestProblems | Where-Object { $_.Severity -eq 'Warn' })) { Write-Warning $problem.Message }
+        $manifestBlocks = @($manifestProblems | Where-Object { $_.Severity -eq 'Block' })
+        if ($manifestBlocks) { throw ('Not published: ' + (($manifestBlocks | ForEach-Object { $_.Message }) -join ' ') + ' Nothing was created or changed.') }
 
         # A WinGet package is checked against the organisation's sources first of all, and an
         # Intune Store app has nothing to upload: it is published from app.json alone
@@ -1125,11 +1220,26 @@ function Publish-IntuneWinApp {
             if ($Path) {
                 throw "app.json describes an Intune Store app, which has no content to upload. Publish it with -ManifestPath alone, without '$Path'."
             }
-            return Publish-WinGetStoreApp -Manifest $manifest -ManifestDir $manifestDir
+            return Publish-WinGetStoreApp -Manifest $manifest -ManifestDir $manifestDir -ManifestFile $manifestFile
+        }
+        # One command for all of it: a package folder given without its .intunewin is built first,
+        # by Build-IntuneWinApp.ps1 beside this script, and what that built is published. Built
+        # under -WhatIf too: that writes the .intunewin and nothing else, and what an update would
+        # change is read out of it.
+        if (-not $Path -and -not $MetadataOnly -and $SourceFolder) {
+            $buildScript = Join-Path -Path $PSScriptRoot -ChildPath 'Build-IntuneWinApp.ps1'
+            if (-not (Test-Path -LiteralPath $buildScript)) {
+                throw "No .intunewin was given (-Path), and Build-IntuneWinApp.ps1 is not next to this script to build $SourceFolder with."
+            }
+            Write-Host "Building $SourceFolder first..."
+            $built = @(& $buildScript -SourceFolder $SourceFolder -PassThru -WhatIf:$false -Confirm:$false) |
+                     Where-Object { $_.IntuneWinFile } | Select-Object -Last 1
+            if (-not $built) { throw "Building $SourceFolder gave no .intunewin to publish. Nothing was created." }
+            $Path = $built.IntuneWinFile
         }
         if (-not $Path -and -not $MetadataOnly) {
-            throw ('Path is required: the .intunewin file to publish. Only an app.json for an Intune Store app is published without one, ' +
-                   'and -MetadataOnly needs none.')
+            throw ('Path is required: the .intunewin file to publish, or -SourceFolder to build it first. Only an app.json for an ' +
+                   'Intune Store app is published without one, and -MetadataOnly needs none.')
         }
         if (-not $Path -and -not $manifest) {
             throw '-MetadataOnly without the .intunewin takes the settings from app.json: pass -SourceFolder (the package folder) or -ManifestPath.'
@@ -1270,16 +1380,16 @@ function Publish-IntuneWinApp {
             runAsAccount          = (Get-FirstValue $manifest.runAsAccount 'system')
             deviceRestartBehavior = (Get-FirstValue $manifest.restartBehavior 'suppress')
         }
+        # How long Intune lets the install run (its own default is 60 minutes), and whether the
+        # Company Portal offers to uninstall it: each left as Intune has it unless app.json says
+        if ($null -ne $manifest.maxRunTimeInMinutes) { $appBody.installExperience.maxRunTimeInMinutes = [int]"$($manifest.maxRunTimeInMinutes)" }
+        if ($manifest.allowAvailableUninstall -is [bool]) { $appBody.allowAvailableUninstall = $manifest.allowAvailableUninstall }
         $appBody.allowedArchitectures           = ConvertTo-AllowedArchitecture (Get-FirstValue $manifest.architecture 'x64')
         $appBody.minimumSupportedWindowsRelease = $minOsRelease
         if ($detectionRule) { $appBody.detectionRules = @($detectionRule) }
-        $appBody.returnCodes = @(
-            @{ returnCode = 0;    type = 'success' }
-            @{ returnCode = 1707; type = 'success' }
-            @{ returnCode = 3010; type = 'softReboot' }
-            @{ returnCode = 1641; type = 'hardReboot' }
-            @{ returnCode = 1618; type = 'retry' }
-        )
+        # Intune's own five, and whatever app.json adds or changes (Get-PackageReturnCode) — the
+        # codes Test-IntuneWinApp judges a test install by as well
+        $appBody.returnCodes = @(Get-PackageReturnCode -Manifest $manifest)
         if ($version) { $appBody.displayVersion = "$version" }
         Add-CommonAppProperty -Body $appBody -Manifest $manifest -ManifestDir $manifestDir
 
@@ -1342,7 +1452,8 @@ function Publish-IntuneWinApp {
         # version to the existing app and re-assert its metadata. Without -Update an
         # existing app is left alone and publishing stops, so nobody creates a
         # duplicate by re-running a publish.
-        $targetApp = Find-PublishTarget -DisplayName $displayName -ODataType 'win32LobApp' -TypeLabel 'a Win32 app'
+        $record = Get-PublishedRecord -Manifest $manifest -Tenant $tenant
+        $targetApp = Find-PublishTarget -DisplayName $displayName -ODataType 'win32LobApp' -TypeLabel 'a Win32 app' -Record $record
         $isUpdate = [bool]$targetApp
         if ($MetadataOnly -and -not $isUpdate) {
             throw ("Intune has no Win32 app named '$displayName' to change. -MetadataOnly changes the settings of an app that is there; " +
@@ -1505,6 +1616,7 @@ function Publish-IntuneWinApp {
         foreach ($key in $appBody.Keys) { $sent[$key] = $appBody[$key] }
         if (-not $MetadataOnly) { $sent.committedContentVersion = "$cvId" }
         $check = Confirm-AppState -Id $publishedAppId -Sent $sent
+        Save-PublishedRecord -ManifestFile $manifestFile -Tenant $tenant -Id $publishedAppId -DisplayName $displayName -Current $record
 
         [pscustomobject]@{
             Action         = if ($MetadataOnly) { 'MetadataUpdated' } elseif ($isUpdate) { 'Updated' } else { 'Created' }

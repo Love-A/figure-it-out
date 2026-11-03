@@ -25,6 +25,15 @@ if ($MyInvocation.InvocationName -ne '.') {
     throw 'Packwright.Package.ps1 is part of Packwright, and the other scripts read it. Start Packwright.ps1 or one of the other scripts instead.'
 }
 
+# Every key app.json may have. One that is not here is pointed out: a misspelt key is otherwise
+# read by nobody, and its setting quietly left at the default. Keys starting with _ are comments.
+$script:PackageManifestKeys = @(
+    '$schema', 'displayName', 'description', 'publisher', 'version', 'owner', 'notes', 'informationUrl',
+    'privacyInformationUrl', 'developer', 'installCommandLine', 'uninstallCommandLine', 'runAsAccount',
+    'restartBehavior', 'maxRunTimeInMinutes', 'returnCodes', 'allowAvailableUninstall', 'isFeatured',
+    'architecture', 'minimumWindowsRelease', 'icon', 'detection', 'requirements', 'dependencies',
+    'roleScopeTagIds', 'winget', 'wingetRuntime', 'intune')
+
 # On the machine, not in the package: these are commands, not payload
 $script:PackageSystemExe = @(
     'msiexec.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe', 'cscript.exe', 'wscript.exe',
@@ -419,6 +428,58 @@ function Get-SetupDefault {
         }
     }
     $result
+}
+#endregion
+
+#region ---- What app.json says -------------------------------------------------
+# The return codes a package is judged by: Intune's own five, with app.json's returnCodes on
+# top — a code it names gets the type it gives there, and a code it adds is added. Publish sends
+# these to Intune, and Test-IntuneWinApp judges a test install by them.
+# @(@{ returnCode; type }), Intune's five first.
+function Get-PackageReturnCode {
+    param($Manifest)
+    $codes = [ordered]@{ '0' = 'success'; '1707' = 'success'; '3010' = 'softReboot'; '1641' = 'hardReboot'; '1618' = 'retry' }
+    foreach ($entry in @($Manifest.returnCodes)) {
+        if ($null -eq $entry -or "$($entry.returnCode)" -notmatch '^-?\d+$') { continue }
+        $codes["$([int]$entry.returnCode)"] = "$($entry.type)"
+    }
+    @(foreach ($code in $codes.Keys) { @{ returnCode = [int]$code; type = $codes[$code] } })
+}
+
+# What app.json says that cannot be right, before anything is built or published: a key nobody
+# reads — a misspelling, most likely — is a warning, and a value Intune would refuse or take to
+# mean something else stops the run. @{ Severity; Field; Message } each, as Get-PackageCheck.
+function Get-ManifestProblem {
+    param($Manifest)
+    if ($null -eq $Manifest) { return }
+    function New-ManifestIssue { param([string]$Severity, [string]$Field, [string]$Message)
+        [pscustomobject]@{ Severity = $Severity; Field = $Field; Message = $Message } }
+    $names = if ($Manifest -is [System.Collections.IDictionary]) { @($Manifest.Keys) } else { @($Manifest.PSObject.Properties.Name) }
+    foreach ($name in $names) {
+        if ("$name".StartsWith('_') -or $script:PackageManifestKeys -contains $name) { continue }
+        New-ManifestIssue 'Warn' $name "app.json has '$name', which Packwright does not read - a misspelling? It is left out of what is published."
+    }
+    $runTime = $Manifest.maxRunTimeInMinutes
+    if ($null -ne $runTime -and ("$runTime" -notmatch '^\d+$' -or [int64]"$runTime" -lt 1 -or [int64]"$runTime" -gt 1440)) {
+        New-ManifestIssue 'Block' 'maxRunTimeInMinutes' "maxRunTimeInMinutes in app.json is '$runTime'; Intune takes a whole number of minutes from 1 to 1440."
+    }
+    foreach ($flag in 'allowAvailableUninstall', 'isFeatured') {
+        $value = $Manifest.$flag
+        if ($null -ne $value -and $value -isnot [bool]) {
+            New-ManifestIssue 'Block' $flag "$flag in app.json is '$value'; it is true or false, without quotes."
+        }
+    }
+    $types = 'success', 'softReboot', 'hardReboot', 'retry', 'failed'
+    foreach ($entry in @($Manifest.returnCodes)) {
+        if ($null -eq $entry) { continue }
+        $code = "$($entry.returnCode)"
+        if ($code -notmatch '^-?\d+$' -or [int64]$code -lt [int]::MinValue -or [int64]$code -gt [int]::MaxValue) {
+            New-ManifestIssue 'Block' 'returnCodes' "A return code in app.json is '$code'; Intune takes a whole number that fits in 32 bits (a negative one for an error such as 0x8A150011)."
+        }
+        elseif ("$($entry.type)" -cnotin $types) {
+            New-ManifestIssue 'Block' 'returnCodes' "Return code $code in app.json has the type '$($entry.type)'; Intune knows $($types -join ', ')."
+        }
+    }
 }
 #endregion
 

@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Packwright app.json",
+  "description": "What a package folder publishes as: the Win32 app (or Intune Store app) in Intune. Read by Packwright.ps1, Build-IntuneWinApp.ps1, Publish-IntuneWinApp.ps1 and Test-IntuneWinApp.ps1. Everything left out has a default, and a PSADT or MSI package can do without app.json altogether. Keys starting with _ are comments.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string", "description": "This schema, for the editor. Packwright does not read it." },
+    "displayName": { "type": "string", "minLength": 1, "description": "The app's name in Intune and the Company Portal. Left out: PSADT's AppName, the MSI's ProductName, or the .intunewin's file name." },
+    "description": { "type": "string", "description": "Shown in the Company Portal. Left out: the display name." },
+    "publisher": { "type": "string", "description": "Left out: PSADT's AppVendor or the MSI's Manufacturer, else 'Unknown'." },
+    "version": { "type": "string", "description": "The version the app is shown with (Intune's displayVersion). Left out: PSADT's AppVersion or the MSI's ProductVersion." },
+    "owner": { "type": "string" },
+    "notes": { "type": "string", "description": "Shown to administrators only." },
+    "developer": { "type": "string" },
+    "informationUrl": { "type": "string", "format": "uri" },
+    "privacyInformationUrl": { "type": "string", "format": "uri" },
+    "installCommandLine": { "type": "string", "description": "Run from the extracted package folder, from a 32-bit process. Left out: the standard PSADT command, msiexec /i for an MSI, or powershell.exe/cmd.exe for an Install script. A vendor .exe always needs one." },
+    "uninstallCommandLine": { "type": "string", "description": "Left out: as the install command, with msiexec /x <product code> for an MSI and the Uninstall script beside an Install script." },
+    "runAsAccount": { "enum": ["system", "user"], "default": "system", "description": "user: the app installs per user, as the person signed in." },
+    "restartBehavior": { "enum": ["suppress", "allow", "basedOnReturnCode", "force"], "default": "suppress" },
+    "maxRunTimeInMinutes": { "type": "integer", "minimum": 1, "maximum": 1440, "description": "How long Intune lets the install run before it calls it failed. Intune's default is 60; Test-IntuneWinApp gives a test install the same time." },
+    "returnCodes": {
+      "type": "array",
+      "description": "Added to Intune's own five (0 and 1707 success, 3010 softReboot, 1641 hardReboot, 1618 retry); a code listed here takes the type given. Test-IntuneWinApp judges a test install by the same list.",
+      "items": {
+        "type": "object",
+        "required": ["returnCode", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "returnCode": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "description": "An error such as 0x8A150011 is written as the negative number it is in 32 bits: -1978335215." },
+          "type": { "enum": ["success", "softReboot", "hardReboot", "retry", "failed"] }
+        }
+      }
+    },
+    "allowAvailableUninstall": { "type": "boolean", "description": "Whether the Company Portal offers to uninstall the app when it is assigned as available. Left out: as Intune has it (off for a new app)." },
+    "isFeatured": { "type": "boolean", "description": "Whether the Company Portal shows the app among its featured apps. Left out: as Intune has it (off for a new app)." },
+    "architecture": {
+      "type": "string",
+      "pattern": "^\\s*(x86|x64|x64only|arm64|neutral)(\\s*[,\\s]\\s*(x86|x64|x64only|arm64|neutral))*\\s*$",
+      "default": "x64",
+      "description": "x64 includes ARM64 devices, as Intune has always had it; x64only leaves them out. x86, arm64, a comma list of them, or neutral for all three."
+    },
+    "minimumWindowsRelease": {
+      "type": "string",
+      "pattern": "^(\\d{4}|Windows1[01]_\\d{2}H\\d)$",
+      "default": "1607",
+      "description": "Intune's own ids: 1607, 1809 and the like, or Windows10_22H2, Windows11_21H2, Windows11_22H2 for newer releases. A bare 22H2 is refused."
+    },
+    "icon": { "type": "string", "description": "A png or jpg, beside app.json or by its full path. 256x256 shows sharply in the Company Portal." },
+    "detection": {
+      "description": "How Intune tells the app is installed. Left out: the MSI's product code, for an MSI package; anything else needs one.",
+      "oneOf": [
+        { "$ref": "#/definitions/msiDetection" },
+        { "$ref": "#/definitions/fileDetection" },
+        { "$ref": "#/definitions/registryDetection" },
+        { "$ref": "#/definitions/scriptDetection" }
+      ]
+    },
+    "requirements": {
+      "type": "array",
+      "description": "Script requirement rules: a device that does not meet one reports the app as not applicable, not failed.",
+      "items": { "$ref": "#/definitions/scriptRequirement" }
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Win32 apps Intune installs first. Set after the upload, without dropping what the app already supersedes.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "displayName": { "type": "string" },
+          "appId": { "type": "string" },
+          "autoInstall": { "type": "boolean", "default": true }
+        },
+        "anyOf": [ { "required": ["displayName"] }, { "required": ["appId"] } ]
+      }
+    },
+    "roleScopeTagIds": {
+      "type": "array",
+      "description": "The ids of the scope tags the app carries, for an account whose Intune role is limited to some (Tenant administration > Roles > Scope tags).",
+      "items": { "type": "string", "pattern": "^\\d+$" }
+    },
+    "winget": { "type": "object", "description": "Written by Packwright for a package that installs with WinGet; the commands and scripts are written from it. Leave it to Packwright." },
+    "wingetRuntime": { "type": "object", "description": "Written by Packwright for the WinGet runtime package. Leave it to Packwright." },
+    "intune": {
+      "type": "object",
+      "description": "Written by Publish-IntuneWinApp: the app each tenant has this package as, which the next update goes to. Take it out to publish the folder as a new app.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "appId": { "type": "string" },
+          "displayName": { "type": "string", "description": "The name it was published under." }
+        }
+      }
+    }
+  },
+  "patternProperties": { "^_": {} },
+  "additionalProperties": false,
+  "definitions": {
+    "operator": { "enum": ["notConfigured", "equal", "notEqual", "greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual"] },
+    "msiDetection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "msi" },
+        "productCode": { "type": "string", "pattern": "^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$", "description": "Left out: the product code of the MSI the package holds." }
+      }
+    },
+    "fileDetection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "fileOrFolderName"],
+      "properties": {
+        "type": { "const": "file" },
+        "path": { "type": "string" },
+        "fileOrFolderName": { "type": "string" },
+        "detectionType": { "enum": ["exists", "doesNotExist", "modifiedDate", "createdDate", "version", "sizeInMB"], "default": "exists" },
+        "operator": { "$ref": "#/definitions/operator" },
+        "detectionValue": { "type": ["string", "number"] },
+        "check32BitOn64System": { "type": "boolean", "default": false }
+      }
+    },
+    "registryDetection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "keyPath"],
+      "properties": {
+        "type": { "const": "registry" },
+        "keyPath": { "type": "string", "description": "The app's own key, such as HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{app}; WOW6432Node is left out and check32BitOn64System set instead." },
+        "valueName": { "type": "string" },
+        "detectionType": { "enum": ["exists", "doesNotExist", "string", "integer", "version"], "default": "exists" },
+        "operator": { "$ref": "#/definitions/operator" },
+        "detectionValue": { "type": ["string", "number"] },
+        "check32BitOn64System": { "type": "boolean", "default": false }
+      }
+    },
+    "scriptDetection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "scriptFile"],
+      "properties": {
+        "type": { "const": "script" },
+        "scriptFile": { "type": "string", "description": "Beside app.json, or a path relative to it. Uploaded as script content, so it need not be in the .intunewin." },
+        "runAs32Bit": { "type": "boolean", "default": false },
+        "enforceSignatureCheck": { "type": "boolean", "default": false }
+      }
+    },
+    "scriptRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "scriptFile"],
+      "properties": {
+        "type": { "const": "script" },
+        "scriptFile": { "type": "string" },
+        "displayName": { "type": "string" },
+        "runAsAccount": { "enum": ["system", "user"], "default": "system" },
+        "runAs32Bit": { "type": "boolean", "default": false },
+        "enforceSignatureCheck": { "type": "boolean", "default": false },
+        "detectionType": { "enum": ["string", "dateTime", "integer", "float", "version", "boolean"], "default": "boolean" },
+        "operator": { "$ref": "#/definitions/operator" },
+        "detectionValue": { "type": "string", "default": "true" }
+      }
+    }
+  }
+}

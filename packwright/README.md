@@ -180,9 +180,13 @@ On the command line:
 .\New-WinGetPackage.ps1 -Id 7zip.7zip -Source winget -Version 26.04         # pinned
 .\New-WinGetPackage.ps1 -Id 9MSPC6MP8FM4 -Source msstore -Delivery store    # as Intune's Store app type
 .\New-WinGetPackage.ps1 -Runtime                                            # the WinGet runtime package
+.\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04"            # its scripts up to date
+.\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04" -Version 26.05   # another version
 ```
 
 The folder it writes builds and publishes like any other — or, for Intune's Store app type, publishes with `Publish-IntuneWinApp -ManifestPath <folder>\app.json` alone.
+
+**`-Refresh`** does from the command line what the WinGet card does in the studio. Alone, it writes a package's scripts again from this Packwright's templates — what a package made before a newer runner needs, and what **Refresh the scripts** does. With `-Version` (or `-Latest`), a community package moves to that version first: the `winget` block, the commands, the detection rule and the version label follow that version's manifest, and everything else in `app.json` — name, description, icon, the app it was published as — stays. Either way the devices get it when it is published as an update: `.\Publish-IntuneWinApp.ps1 -SourceFolder <folder> -Update`.
 
 ## Test on this computer
 
@@ -193,7 +197,7 @@ The folder it writes builds and publishes like any other — or, for Intune's St
 - started from a **32-bit** `cmd.exe`, so `powershell.exe` in a command is the 32-bit PowerShell, as on a device;
 - with the **requirement rules** checked first (an app that is not applicable is not run) and the **detection rule** checked before and after, in that same account and as 32-bit PowerShell where a rule says `runAs32Bit` — an app already detected is not installed again, as Intune would not;
 - with what `app.json` leaves out filled in as [publishing](#app-settings--appjson) fills it in, by the same functions — a PSADT, MSI or script package's commands, an MSI's product code — so a package that publishes without them tests without them;
-- judged as Intune judges it: by the **exit code** first (0, 1707, 3010 and 1641 succeed, 1618 is tried again, anything else failed, whatever the detection then finds), and only after a success by the detection rule — waiting for the command itself, not for anything it leaves running.
+- judged as Intune judges it: by the **exit code** first (0, 1707, 3010 and 1641 succeed, 1618 is tried again, anything else failed, whatever the detection then finds — with the package's own `returnCodes` on top, as published), and only after a success by the detection rule — waiting for the command itself, not for anything it leaves running, and for as long as `maxRunTimeInMinutes` gives it (60 minutes when `app.json` does not say).
 
 It reports the exit code and what it means, the detection result, the Apps and features entries the install added, and the WinGet log for a WinGet package. When the detection rule did not find the app, Packwright offers to write the rule from the entry the install added. The app really is installed; the same button's **Uninstall** removes it, which tests the uninstall command too.
 
@@ -257,7 +261,10 @@ Paths are resolved with `.ProviderPath`, never `PathInfo.Path`: for a UNC path t
 # One-off build (setup file is auto-detected for PSADT, MSI and single-install-script packages)
 .\Build-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip"
 
-# Build AND publish to Intune in one pipeline
+# Build AND publish to Intune in one command (-Update: a new version of the app it was published as)
+.\Publish-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip" -Update
+
+# ...or as a pipeline, with the functions loaded
 . .\Build-IntuneWinApp.ps1
 . .\Publish-IntuneWinApp.ps1
 Build-IntuneWinApp -SourceFolder "C:\psadt\7-zip" -PassThru | Publish-IntuneWinApp
@@ -312,16 +319,23 @@ Apps are created **without assignments** — assign to groups in the portal afte
 
 ### Idempotent publishing (`-Update`)
 
-`app.json` is the desired state, so the same spec can be applied over and over:
+`app.json` is the desired state, so the same spec can be applied over and over. Given the package folder alone, Publish builds it first, so one command does both:
 
 ```powershell
-Build-IntuneWinApp -SourceFolder "C:\psadt\7-zip" -PassThru |
-    Publish-IntuneWinApp -Update -Confirm:$false
+.\Publish-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip" -Update -Confirm:$false
 ```
 
 - **App missing** → created, exactly as before.
 - **App exists** → a new content version is uploaded to that same app and its metadata is re-asserted from `app.json`. **Assignments are kept**, and an existing icon survives unless the manifest names one.
 - **Several apps share the name** → the run stops and lists them; pass `-AppId` to say which one.
+
+**Which app is "the app"?** After a publish, `app.json` remembers the app it became, per tenant:
+
+```json
+"intune": { "<tenant id>": { "appId": "a882dae4-…", "displayName": "Mapped drives" } }
+```
+
+The next run goes to that app, not to whatever Intune has under the name — so an app renamed in the portal is still found, where a lookup by name would find nothing and `-Update` would create a second one beside it (`-WhatIf` lists the rename the update would undo). A folder copied for the next release takes the record along and keeps finding the same app. One copied to start another app takes it along too; so once `app.json` says another `displayName` than the one it was published as, the run stops and asks for `-AppId` (that app under a new name) or for the `intune` block to be taken out (a new app). An app that has since been deleted in Intune is looked up by name again. Packages published before Publish 1.12 have no record until their next publish, and are found by name until then.
 
 Because the app is only switched over to the new content in the very last call, a failed or cancelled upload leaves it serving the **previous** version — retrying is safe.
 
@@ -347,7 +361,7 @@ A new icon, a better description, a corrected detection rule: none of them needs
 
 No `.intunewin` is needed — the package folder (`-SourceFolder`) or `-ManifestPath` is enough. The file name and setup file of the content stay as they are, and so does anything only the package could tell, such as the commands of an MSI that `app.json` does not name. It implies `-Update`, never creates an app, and takes `-AppId` and `-WhatIf` like any update.
 
-For automation, prefer `-AppId` as the key — a display name is only unique by convention.
+For automation, `-AppId` is the explicit key, and the `intune` block in `app.json` the remembered one — a display name is only unique by convention.
 
 ### Auth — Entra app registration (`.secret`)
 Authenticates app-only via an Entra app registration, configured in a gitignored `.secret` JSON file next to the script — copy [.secret.template](.secret.template) to `.secret` and fill in:
@@ -419,7 +433,7 @@ An .exe installer has no MSI product code, so detection is the one thing you mus
 
 Find the key name under `HKLM\...\Uninstall\` (or `WOW6432Node\...\Uninstall\` for 32-bit installers — then set `check32BitOn64System: true`) on a machine with the app installed. File-version detection on the main .exe (`"detectionType": "version"` on e.g. `C:\Program Files\App\app.exe`) is a good alternative when the installer writes no uninstall key; plain `"exists"` only for version-less apps, since it can't tell an old install from a new one. Note that `app.json` in the source folder is compressed into the `.intunewin` along with everything else — harmless, and it keeps the manifest versioned with the package.
 
-See [app.example.json](app.example.json) for the full schema. Detection block variants:
+See [app.example.json](app.example.json) for an example, and [app.schema.json](app.schema.json) for every key `app.json` may have, with what each takes. Detection block variants:
 
 ```jsonc
 // MSI product code (productCode optional — taken from the package)
@@ -450,9 +464,26 @@ Beyond the detection rule, `app.json` may carry:
 
 // Shown in the Company Portal / to administrators
 "privacyInformationUrl": "https://example.com/privacy", "developer": "Contoso", "informationUrl": "...", "owner": "...", "notes": "..."
+
+// Exit codes on top of Intune's own five (0 and 1707 success, 3010 softReboot, 1641 hardReboot,
+// 1618 retry): one named here takes the type given. Types: success, softReboot, hardReboot,
+// retry, failed. An error such as 0x8A150011 is written as its 32-bit negative, -1978335215.
+"returnCodes": [ { "returnCode": 1, "type": "retry" } ],
+
+// How long Intune lets the install run, 1-1440 minutes (Intune's default is 60); whether the
+// Company Portal offers to uninstall an available app; whether it is among the featured apps.
+// Each is left as Intune has it when app.json does not say.
+"maxRunTimeInMinutes": 120, "allowAvailableUninstall": true, "isFeatured": false
 ```
 
-A WinGet package also has a `winget` block, which is what its commands and scripts are written from — leave it to Packwright.
+A WinGet package also has a `winget` block, which is what its commands and scripts are written from — leave it to Packwright. After a publish there is an `intune` block as well — see [Which app is "the app"?](#idempotent-publishing--update).
+
+**Mistakes in `app.json` are said before anything is published.** A key Packwright does not read — `"insallCommandLine"` — is a warning, since its setting would be left out unnoticed; keys starting with `_` are comments and are left alone. A value Intune would refuse or misread — a run time of 2000 minutes, `"true"` in quotes, a return code type of `Success` — stops the publish before anything is created. In VS Code, the schema gives completion and the same checks while you type:
+
+```jsonc
+// settings.json
+"json.schemas": [ { "fileMatch": ["**/IntunePackages/*/app.json"], "url": "file:///C:/path/to/packwright/app.schema.json" } ]
+```
 
 `minimumWindowsRelease` must use the exact ids the Intune service knows: build-number style for older releases (`1607`, `1809`, ...) and `Windows10_21H2` / `Windows10_22H2` / `Windows11_21H2` / `Windows11_22H2` for newer ones. Bare `22H2` is rejected with `400 Unknown MinimumSupportedWindowsRelease`.
 
@@ -494,7 +525,7 @@ On the command line the same package needs nothing special: the build takes the 
 | Parameter | Description |
 |---|---|
 | `-Path` | The `.intunewin` file (pipeline from `Build-IntuneWinApp -PassThru`). Left out for an Intune Store app, published from `-ManifestPath` alone, and with `-MetadataOnly`. |
-| `-SourceFolder` | Used to locate `app.json`; set automatically when piping. With `-MetadataOnly`, the package folder is all it needs. |
+| `-SourceFolder` | The package folder: where `app.json` is found and what the checks look in; set automatically when piping. Given without `-Path`, the folder is built first. With `-MetadataOnly`, nothing is built and the folder is all it needs. |
 | `-ManifestPath` | Explicit path to `app.json`. |
 | `-TenantId` / `-ClientId` / `-CertificateThumbprint` / `-ClientSecret` | App-only auth overrides; normally read from `.secret`. |
 | `-Update` | Create when missing, otherwise upload a new content version to the existing app. Use this from automation. |
