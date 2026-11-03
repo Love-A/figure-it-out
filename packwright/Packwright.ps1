@@ -52,8 +52,11 @@
 
 .NOTES
     Author   : Love A
-    Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the two engine scripts.
+    Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the engine scripts beside it.
 .VERSION
+    2026-11-03 - 2.14 - The package logic in Packwright.Package.ps1, shared with Build, Publish and Test
+    2026-11-02 - 2.13 - The WinGet dialog shows a licence's name, not its whole text
+    2026-10-28 - 2.12 - A search that finds one program no longer closes the app
     2026-10-20 - 2.11 - The WinGet part is a file of its own, read when it is needed
     2026-10-12 - 2.10 - WinGet packages get the app's icon; the header says who publishing signs in as
     2026-10-08 - 2.9 - Apps from WinGet, and Test on this computer
@@ -125,9 +128,13 @@ $script:EngineTest    = Join-Path $PSScriptRoot 'Test-IntuneWinApp.ps1'
 # beside the scripts
 $script:StudioWinGet  = Join-Path $PSScriptRoot 'Packwright.WinGet.ps1'
 $script:PolicyFile    = Join-Path $PSScriptRoot 'Packwright.policy.json'
-foreach ($engine in $EngineBuild, $EnginePublish, $EngineWinGet, $EngineTest, $StudioWinGet) {
+# What all of them know about a package folder: the setup file, the commands, the checks. Read
+# into this scope at once, and Read-PackageMsi below puts the studio's own MSI reader in it.
+$script:EnginePackage = Join-Path $PSScriptRoot 'Packwright.Package.ps1'
+foreach ($engine in $EngineBuild, $EnginePublish, $EngineWinGet, $EngineTest, $StudioWinGet, $EnginePackage) {
     if (-not (Test-Path -LiteralPath $engine)) { throw "Engine script missing: $engine" }
 }
+. $script:EnginePackage
 # Test-IntuneWinApp.ps1 is never loaded into this scope: its -SourceFolder would wipe ours. It
 # runs in its own window.
 
@@ -1214,62 +1221,26 @@ function Add-RecentPackage {
 #endregion
 
 #region ---- Package metadata readers --------------------------------------------
-# AppVendor/AppName/AppVersion from the $adtSession block of a PSADT package —
-# the same values Publish-IntuneWinApp reads, so the preview matches what gets published.
-function Get-PsadtMetadata {
-    param([Parameter(Mandatory)][string]$Folder)
-    $result = @{}
-    $deployScript = Join-Path $Folder 'Invoke-AppDeployToolkit.ps1'
-    if (Test-Path -LiteralPath $deployScript) {
-        $content = Get-Content -LiteralPath $deployScript -Raw
-        foreach ($key in 'AppVendor', 'AppName', 'AppVersion') {
-            $pattern = '(?m)^\s*' + $key + '\s*=\s*([''"])(.*?)\1'
-            if ($content -match $pattern -and $Matches[2].Trim()) { $result[$key] = $Matches[2].Trim() }
-        }
-    }
-    $result
-}
+# Get-PsadtMetadata, the commands and the checks are Packwright.Package.ps1's, read at the
+# top. What is the studio's own is keeping what it has read about the folder that is open:
+# the editor asks the same questions of it on every keystroke.
 
-# MSI Property table via COM. Results are cached and every COM handle is released —
-# the GUI may read the same MSI repeatedly while the user edits fields.
+# MSI properties, kept per MSI — the editor may read the same MSI repeatedly while the user
+# edits fields — and an MSI that cannot be read said in the log
 function Get-MsiProperty {
     param([Parameter(Mandatory)][string]$MsiPath)
     $cacheKey = $MsiPath.ToLowerInvariant()
     if ($script:MsiPropCache.ContainsKey($cacheKey)) { return $script:MsiPropCache[$cacheKey] }
-
-    $result = @{}
-    $installer = $null; $database = $null
-    try {
-        $installer = New-Object -ComObject WindowsInstaller.Installer
-        $database = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($MsiPath, 0))
-        foreach ($property in 'ProductName', 'Manufacturer', 'ProductVersion', 'ProductCode') {
-            $view = $null; $record = $null
-            try {
-                $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database,
-                            "SELECT Value FROM Property WHERE Property='$property'")
-                $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
-                $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
-                if ($record) {
-                    $value = "$($record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1))".Trim()
-                    if ($value) { $result[$property] = $value }
-                }
-                $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
-            }
-            finally {
-                foreach ($comObject in $record, $view) {
-                    if ($comObject) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject) }
-                }
-            }
-        }
-    }
-    catch { Write-GuiLog "WARNING: Could not read MSI properties from $([IO.Path]::GetFileName($MsiPath)): $($_.Exception.Message)" }
-    finally {
-        foreach ($comObject in $database, $installer) {
-            if ($comObject) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject) }
-        }
-    }
+    $result = Get-PackageMsiProperty -MsiPath $MsiPath -WarningVariable msiWarnings -WarningAction SilentlyContinue
+    foreach ($msiWarning in $msiWarnings) { Write-GuiLog "WARNING: $msiWarning" }
     $script:MsiPropCache[$cacheKey] = $result
     $result
+}
+
+# Every MSI Packwright.Package.ps1 reads in this window is read through the cache above
+function Read-PackageMsi {
+    param([Parameter(Mandatory)][string]$MsiPath)
+    Get-MsiProperty -MsiPath $MsiPath
 }
 
 # Every .msi in the open package (PSADT keeps the payload under Files\); cached per folder
@@ -1326,204 +1297,18 @@ function Get-PackageFileName {
     $script:PkgFileCache[$cacheKey]
 }
 
-# Split a command line into its arguments, honouring double quotes
-function Split-CommandToken {
-    param([string]$Command)
-    @([regex]::Matches("$Command", '"([^"]*)"|(\S+)') | ForEach-Object {
-        if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } })
-}
-
-# On the machine, not in the package: these are commands, not payload
-$script:SystemExe = @(
-    'msiexec.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe', 'cscript.exe', 'wscript.exe',
-    'rundll32.exe', 'regsvr32.exe', 'reg.exe', 'sc.exe', 'net.exe', 'dism.exe', 'wusa.exe',
-    'taskkill.exe', 'schtasks.exe', 'xcopy.exe', 'robocopy.exe', 'msdt.exe')
-
-# The name of a file the command runs that is not in the package, or $null when there is
-# none. This is the failure a copied package folder produces: the commands still name the
-# binary that was replaced ('msiexec /i "7z2408-x64.msi"' in a folder now holding
-# 7z2501-x64.msi). Nothing used to notice — the package builds, publishes, and fails on
-# every device instead. Only bare relative names are judged: those are what this tool
-# generates and what a copy gets wrong. An absolute or UNC path is somebody's own
-# decision about a file that need not exist here, and is left alone.
+# Find-MissingCommandFile for the folder that is open, with the file names kept for it
 function Get-CommandFileIssue {
     param([string]$Command)
     if (-not $script:LoadedFolder -or -not "$Command".Trim()) { return $null }
-    $packaged = Get-PackageFileName
-    foreach ($token in @(Split-CommandToken $Command | ForEach-Object { $_.Trim() })) {
-        if ([IO.Path]::GetExtension($token) -notin '.exe', '.msi', '.msp', '.msu', '.ps1', '.cmd', '.bat', '.vbs') { continue }
-        if ($token -match '[%$]') { continue }                    # expands to something we cannot know
-        if ($token.StartsWith('\\') -or [IO.Path]::IsPathRooted($token)) { continue }
-        if ($token -match '[\\/]') {
-            if (-not (Test-Path -LiteralPath (Join-Path $script:LoadedFolder $token) -PathType Leaf)) { return $token }
-            # What follows a script are its arguments, not files: '-Id Foo.Bar.exe' is a WinGet id
-            if ([IO.Path]::GetExtension($token) -in '.ps1', '.cmd', '.bat') { break }
-            continue
-        }
-        if ($token -in $script:SystemExe) { continue }
-        if ($packaged -notcontains $token) { return $token }
-        if ([IO.Path]::GetExtension($token) -in '.ps1', '.cmd', '.bat') { break }
-    }
-    $null
+    Find-MissingCommandFile -Command $Command -Folder $script:LoadedFolder -FileName (Get-PackageFileName)
 }
 
-# The file in the package root that a command line actually runs, or $null. A hand-written
-# app.json has already answered "what installs this package" — 'powershell.exe -File
-# .\Install-App.ps1' names the script, not the vendor .exe that happens to sit beside it in
-# the payload — so the setup file follows the command rather than the file list.
-function Get-SetupCommandFile {
-    param([string]$Command, [string[]]$Candidate)
-    if (-not "$Command".Trim() -or -not $Candidate) { return $null }
-    foreach ($token in @(Split-CommandToken $Command | ForEach-Object { $_.Trim() })) {
-        if ($token -match '[%$]') { continue }                    # expands to something we cannot know
-        $leaf = try { [IO.Path]::GetFileName($token) } catch { $null }
-        if (-not $leaf -or $leaf -in $script:SystemExe) { continue }
-        $match = @($Candidate | Where-Object { $_ -ieq $leaf })
-        if ($match.Count) { return $match[0] }
-    }
-    $null
-}
-
-# How Windows runs a script from the package root. Intune extracts the package and runs the
-# command with that folder as the working directory, so the leading .\ is what makes the
-# relative name resolve there — and what lets Get-CommandFileIssue check it is really here.
-function Get-ScriptRunCommand {
-    param([Parameter(Mandatory)][string]$Script)
-    if ([IO.Path]::GetExtension($Script) -ieq '.ps1') {
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `".\$Script`""
-    }
-    else { "cmd.exe /c `".\$Script`"" }
-}
-
-# The uninstall script belonging to an install script: the same name with Install swapped
-# for Uninstall, else a plain uninstall file of the same type next to it.
-function Find-UninstallScript {
-    param([Parameter(Mandatory)][string]$Folder, [Parameter(Mandatory)][string]$Script)
-    $extension = [IO.Path]::GetExtension($Script)
-    $guesses = @()
-    if ($Script -match 'install') { $guesses += ($Script -ireplace '(?<!un)install', 'Uninstall') }
-    $guesses += "Uninstall$extension"
-    foreach ($guess in $guesses) {
-        if ($guess -ieq $Script) { continue }
-        $path = Join-Path $Folder $guess
-        if (Test-Path -LiteralPath $path -PathType Leaf) { return (Get-Item -LiteralPath $path).Name }
-    }
-    $null
-}
-
-# The product code of the MSI this package actually holds, or $null when there is not
-# exactly one to be certain about. Both lookups behind it are cached.
+# The product code of the MSI the open package holds (Find-PackageProductCode), from the
+# MSIs kept for it
 function Get-PackageProductCode {
-    $found = @(Find-PackageMsi)
-    if ($found.Count -ne 1) { return $null }
-    $code = "$((Get-MsiProperty -MsiPath $found[0].FullName).ProductCode)".Trim()
-    if ($code) { $code } else { $null }
-}
-
-# '24.08' and '24.8.0.0' are one release written two ways — the MSI pads its ProductVersion
-# and the vendor does not. Compare component by component as numbers and let the shorter
-# one match as a prefix, so only a real difference is ever reported.
-#
-# Compared as digit strings with the padding removed, never cast to [int]. A component here
-# is whatever survives stripping the non-digits, and that is not bounded by anything: the
-# '+<commit sha>' the .NET SDK appends to ProductVersion collapses into a 29-digit run, and
-# casting it took the whole window down through ShowDialog the moment a folder was opened.
-# Two runs of digits are equal exactly when they are equal once the leading zeros are gone,
-# so the comparison that cannot overflow is also the comparison that was wanted.
-function Test-VersionMatch {
-    param([string]$Left, [string]$Right)
-    $leftParts  = @("$Left".Trim()  -split '[.,]' | ForEach-Object { $_ -replace '\D' })
-    $rightParts = @("$Right".Trim() -split '[.,]' | ForEach-Object { $_ -replace '\D' })
-    if (-not $leftParts[0] -or -not $rightParts[0]) { return "$Left".Trim() -ieq "$Right".Trim() }
-    for ($i = 0; $i -lt [Math]::Min($leftParts.Count, $rightParts.Count); $i++) {
-        if ("$($leftParts[$i])".TrimStart('0') -ne "$($rightParts[$i])".TrimStart('0')) { return $false }
-    }
-    $true
-}
-
-# Identify the installer engine of a vendor .exe/.msi and suggest silent commands.
-# Version-info strings give name/publisher/version; the engine is found by scanning the
-# first 8 MB for known signatures — a heuristic, so every suggested command stays editable.
-function Get-InstallerInfo {
-    param([Parameter(Mandatory)][string]$Path)
-    $file = Get-Item -LiteralPath $Path
-    $quoted = '"' + $file.Name + '"'
-    $info = [ordered]@{
-        FilePath = $file.FullName; FileName = $file.Name
-        Engine = 'unknown'; Name = $null; Publisher = $null; Version = $null; ProductCode = $null
-        InstallCommand = $quoted; UninstallCommand = ''
-        Hint = "Unknown installer type — look up the vendor's silent switches and complete the install command."
-    }
-    if ($file.Extension -ieq '.msi') {
-        $msi = Get-MsiProperty -MsiPath $file.FullName
-        $info.Engine = 'MSI'
-        $info.Name = $msi.ProductName; $info.Publisher = $msi.Manufacturer
-        $info.Version = $msi.ProductVersion; $info.ProductCode = $msi.ProductCode
-        $info.InstallCommand = "msiexec /i $quoted /qn /norestart"
-        if ($msi.ProductCode) { $info.UninstallCommand = "msiexec /x `"$($msi.ProductCode)`" /qn /norestart" }
-        $info.Hint = 'MSI package — installs silently with msiexec /qn; detection can use the MSI product code.'
-        return [pscustomobject]$info
-    }
-
-    try {
-        $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($file.FullName)
-        if ("$($versionInfo.ProductName)".Trim()) { $info.Name = "$($versionInfo.ProductName)".Trim() }
-        if ("$($versionInfo.CompanyName)".Trim()) { $info.Publisher = "$($versionInfo.CompanyName)".Trim() }
-        # ProductVersion is the assembly's InformationalVersion, which since .NET 8 carries
-        # the build's commit sha by default: '1.0.0+8851d91c4e27...'. SemVer says everything
-        # after '+' is build metadata that no comparison may consider, and Intune has no use
-        # for it either — a package labelled with the sha reads as a different release on
-        # every rebuild. Drop it and keep any '-beta.3', which is a real part of the version.
-        $rawVersion = "$($versionInfo.ProductVersion)".Trim()
-        if (-not $rawVersion) { $rawVersion = "$($versionInfo.FileVersion)".Trim() }
-        if ($rawVersion) { $info.Version = (($rawVersion -split '\s')[0] -split '\+')[0] }
-    } catch {}
-
-    # Read returns what it has to hand, not what it was asked for, and is allowed to come
-    # back short well before the end of the file — likeliest from a share, which is where
-    # these installers often sit. A single call left the rest of the buffer as zeros, so the
-    # engine signature was simply not there and a perfectly ordinary Inno installer came back
-    # as 'unknown' with no silent switches. Loop until the buffer is full or the file ends.
-    $length = [int][Math]::Min($file.Length, 8MB)
-    $bytes = [byte[]]::new($length)
-    $filled = 0
-    $stream = [IO.File]::OpenRead($file.FullName)
-    try {
-        while ($filled -lt $length) {
-            $got = $stream.Read($bytes, $filled, $length - $filled)
-            if ($got -le 0) { break }      # the file is shorter than it said it was
-            $filled += $got
-        }
-    }
-    finally { $stream.Dispose() }
-    $ascii = [Text.Encoding]::ASCII.GetString($bytes, 0, $filled)
-    $wide  = [Text.Encoding]::Unicode.GetString($bytes, 0, $filled - ($filled % 2))
-
-    $engines = @(
-        @{ Engine = 'Inno Setup'; Signature = 'Inno Setup'
-           Install = "$quoted /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
-           Hint = "Inno Setup installer — /VERYSILENT installs without UI. The uninstaller (unins000.exe) only exists after install, so use 'Find the app on this computer' to get the exact uninstall command." }
-        @{ Engine = 'NSIS'; Signature = 'Nullsoft'
-           Install = "$quoted /S"
-           Hint = 'NSIS installer — /S (capital S) installs silently. The uninstaller is usually uninstall.exe /S in the install folder.' }
-        @{ Engine = 'WiX Burn'; Signature = '.wixburn'
-           Install = "$quoted /quiet /norestart"; Uninstall = "$quoted /uninstall /quiet /norestart"
-           Hint = 'WiX Burn bundle — /quiet installs silently, /uninstall /quiet removes it.' }
-        @{ Engine = 'InstallShield'; Signature = 'InstallShield'
-           Install = "$quoted /s /v`"/qn /norestart`""
-           Hint = 'InstallShield installer — /s /v"/qn" works for MSI-based setups; suite installers may need /silent instead.' }
-    )
-    foreach ($engine in $engines) {
-        if ($ascii.IndexOf($engine.Signature, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-            $wide.IndexOf($engine.Signature, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            $info.Engine = $engine.Engine
-            $info.InstallCommand = $engine.Install
-            if ($engine.Uninstall) { $info.UninstallCommand = $engine.Uninstall }
-            $info.Hint = $engine.Hint
-            break
-        }
-    }
-    [pscustomobject]$info
+    if (-not $script:LoadedFolder) { return $null }
+    Find-PackageProductCode -Folder $script:LoadedFolder -SetupFile "$($ui.CmbSetup.SelectedItem)" -MsiFile @(Find-PackageMsi)
 }
 #endregion
 
@@ -1760,68 +1545,6 @@ function ConvertTo-MinOsValue {
     }
     $trimmed
 }
-
-function Get-SetupKind {
-    param([string]$Setup)
-    if (-not $Setup) { 'none' }
-    elseif ($Setup -ieq 'Invoke-AppDeployToolkit.exe') { 'psadt' }
-    elseif ($Setup -like '*.msi') { 'msi' }
-    elseif ([IO.Path]::GetExtension($Setup) -in '.ps1', '.cmd', '.bat') { 'script' }
-    else { 'exe' }
-}
-
-# What Intune should run for this setup file, plus any metadata the file itself carries
-function Get-SetupDefault {
-    param([Parameter(Mandatory)][string]$Folder, [string]$Setup)
-    $result = @{
-        Kind = Get-SetupKind $Setup; Install = ''; Uninstall = ''; Hint = ''
-        Name = $null; Publisher = $null; Version = $null; ProductCode = $null
-    }
-    switch ($result.Kind) {
-        'psadt' {
-            $result.Install   = 'Invoke-AppDeployToolkit.exe -DeploymentType Install -DeployMode Silent'
-            $result.Uninstall = 'Invoke-AppDeployToolkit.exe -DeploymentType Uninstall -DeployMode Silent'
-            $result.Hint      = 'PSADT package — the toolkit handles the silent install; these commands are the standard ones.'
-        }
-        'msi' {
-            $msi = Get-MsiProperty -MsiPath (Join-Path $Folder $Setup)
-            $result.Install     = "msiexec /i `"$Setup`" /qn /norestart"
-            $result.Name        = $msi.ProductName
-            $result.Publisher   = $msi.Manufacturer
-            $result.Version     = $msi.ProductVersion
-            $result.ProductCode = $msi.ProductCode
-            if ($msi.ProductCode) { $result.Uninstall = "msiexec /x `"$($msi.ProductCode)`" /qn /norestart" }
-            $result.Hint = 'MSI package — installs silently with msiexec /qn.'
-        }
-        'script' {
-            # Nothing to read out of a script: no version resource, and the engine
-            # signatures Get-InstallerInfo scans 8 MB for would only ever match the script's
-            # own text. What it is worth saying is how Windows has to be asked to run it.
-            $result.Install = Get-ScriptRunCommand -Script $Setup
-            $uninstallScript = Find-UninstallScript -Folder $Folder -Script $Setup
-            if ($uninstallScript) { $result.Uninstall = Get-ScriptRunCommand -Script $uninstallScript }
-            $result.Hint = if ([IO.Path]::GetExtension($Setup) -ieq '.ps1') {
-                'Script package — Intune extracts the folder and runs this script from it, so paths inside it are relative to the package.' +
-                $(if ($uninstallScript) { " $uninstallScript is used to uninstall." } else { ' Nothing here uninstalls it — add an uninstall command if the app needs one.' })
-            } else {
-                'Script package — Intune extracts the folder and runs this file from it with cmd.exe.'
-            }
-        }
-        'exe' {
-            try {
-                $info = Get-InstallerInfo -Path (Join-Path $Folder $Setup)
-                $result.Install   = $info.InstallCommand
-                $result.Uninstall = $info.UninstallCommand
-                $result.Hint      = $info.Hint
-                $result.Name      = $info.Name
-                $result.Publisher = $info.Publisher
-                $result.Version   = $info.Version
-            }
-            catch { $result.Install = '"' + $Setup + '"' }
-        }
-    }
-    $result
-}
 #endregion
 
 #region ---- Detection UI --------------------------------------------------------
@@ -1837,8 +1560,9 @@ function Update-DetectionUi {
     $ui.LblDetValue.Visibility = if ($showValue) { 'Visible' } else { 'Collapsed' }
     $ui.TxtDetValue.Visibility = $ui.LblDetValue.Visibility
     $ui.CmbDetOperator.Visibility = if ($showValue) { 'Visible' } else { 'Hidden' }
-    # The "find the app" shortcut only produces registry rules
+    # The "find the app" shortcut only produces registry rules, and the hint below it is about it
     $ui.BtnRegPick.Visibility = if ($type -eq 'registry') { 'Visible' } else { 'Collapsed' }
+    $ui.TxtDetHint.Visibility = $ui.BtnRegPick.Visibility
 }
 
 # Plain-language description of the rule, so nobody has to read Intune jargon
@@ -1854,6 +1578,10 @@ function Get-DetectionSummary {
         'lessThanOrEqual'    { 'is at most' }
         default              { 'is' }
     }
+    # Whether the rule can work is Test-DetectionRule's to say, as it is for a publish from the
+    # command line; what to do about it is said here, in the words of the controls on screen
+    $packageCode = Get-PackageProductCode
+    $rule = Test-DetectionRule -Detection (Get-StudioDetection) -BaseFolder "$script:LoadedFolder" -PackageProductCode "$packageCode"
     switch ($type) {
         'msi' {
             $code = $ui.TxtProductCode.Text.Trim()
@@ -1861,18 +1589,17 @@ function Get-DetectionSummary {
             # complete, and then never matches anything this package installs. The package's
             # own MSI is the only right answer for an 'msi' rule, so say so rather than
             # letting it through as a finished rule.
-            $packageCode = Get-PackageProductCode
-            if (-not $code) {
+            if ($rule.Problem -eq 'msi-no-code') {
                 @{ Ok = $false; Text = 'No MSI product code yet. Open "Change detection method" and click "From MSI...".' }
             }
-            elseif ($packageCode -and $code -ine $packageCode) {
+            elseif ($rule.Problem -eq 'msi-other') {
                 @{ Ok = $false; Text = "The rule looks for $code, but the MSI in this package is $packageCode. Click ""From MSI..."" to read the code from the package." }
             }
             else { @{ Ok = $true; Text = "Intune checks that the MSI product $code is installed." } }
         }
         'registry' {
             $key = $ui.TxtKeyPath.Text.Trim()
-            if (-not $key -or $key -match '\\Uninstall\\?$') {
+            if (-not $rule.Ok) {
                 @{ Ok = $false; Text = 'No detection rule yet. Click "Find the app on this computer..." and pick the app — the rule is written for you.' }
             }
             else {
@@ -1888,7 +1615,7 @@ function Get-DetectionSummary {
         }
         'file' {
             $path = $ui.TxtDetPath.Text.Trim(); $name = $ui.TxtDetFile.Text.Trim()
-            if (-not $path -or -not $name) { @{ Ok = $false; Text = 'Fill in the folder path and the file or folder name to look for.' } }
+            if (-not $rule.Ok) { @{ Ok = $false; Text = 'Fill in the folder path and the file or folder name to look for.' } }
             elseif ($check -eq 'exists') { @{ Ok = $true; Text = "Intune checks that $path\$name exists." } }
             else { @{ Ok = $true; Text = "Intune checks that $path\$name $operatorWord $($ui.TxtDetValue.Text.Trim())." } }
         }
@@ -1899,8 +1626,8 @@ function Get-DetectionSummary {
             # and a bare name is looked for in the package folder — which is not where the
             # script is when the manifest was written for a folder next to this one.
             $file = $ui.TxtScript.Text.Trim()
-            if (-not $file) { @{ Ok = $false; Text = 'Pick the PowerShell script that checks whether the app is installed.' } }
-            elseif (-not (Resolve-DetectionScript)) {
+            if ($rule.Problem -eq 'script-none') { @{ Ok = $false; Text = 'Pick the PowerShell script that checks whether the app is installed.' } }
+            elseif ($rule.Problem -eq 'script-missing') {
                 @{ Ok = $false; Text = "The detection script $file was not found. A name without a path is looked for in the package folder — copy the script in beside app.json, or pick it with the button." }
             }
             else { @{ Ok = $true; Text = "A PowerShell script ($([IO.Path]::GetFileName($file))) decides whether the app is installed." } }
@@ -2091,24 +1818,17 @@ function Open-PackageFolder {
         # Setup file candidates. A script counts as one: a package whose entry point is
         # 'Install-App.ps1' is as ordinary as one built around a vendor .exe, and the
         # extension only ever decided what IntuneWinAppUtil records and what commands this
-        # tool suggests. What the package installs with is the install command, so an
-        # app.json that carries one already names the setup file — a payload folder holding
-        # both the script and the application's own .exe used to be read as the .exe, which
-        # is the one file in there nobody meant Intune to run.
+        # tool suggests. Which one it is, is chosen the way Build chooses it (Select-SetupFile):
+        # the file app.json's install command runs, PSADT, the one .msi, the one install
+        # script - and where nothing is certain, the studio's guess, shown here for checking.
         $ui.CmbSetup.Items.Clear()
         $candidates = @(Get-ChildItem -LiteralPath $Folder -File |
                         Where-Object { $_.Extension -in '.exe', '.msi', '.ps1', '.cmd', '.bat' } |
                         Select-Object -ExpandProperty Name)
         foreach ($candidate in $candidates) { [void]$ui.CmbSetup.Items.Add($candidate) }
-        $msiCandidates  = @($candidates | Where-Object { $_ -like '*.msi' })
-        $exeCandidates  = @($candidates | Where-Object { $_ -like '*.exe' })
-        $manifestSetup  = Get-SetupCommandFile -Command $manifest.installCommandLine -Candidate $candidates
-        if ($PreferSetup -and $candidates -contains $PreferSetup)          { $ui.CmbSetup.SelectedItem = $PreferSetup }
-        elseif ($manifestSetup)                                            { $ui.CmbSetup.SelectedItem = $manifestSetup }
-        elseif ($candidates -contains 'Invoke-AppDeployToolkit.exe')       { $ui.CmbSetup.SelectedItem = 'Invoke-AppDeployToolkit.exe' }
-        elseif ($msiCandidates.Count -eq 1)                                { $ui.CmbSetup.SelectedItem = $msiCandidates[0] }
-        elseif ($exeCandidates.Count -gt 0)                                { $ui.CmbSetup.SelectedItem = $exeCandidates[0] }
-        elseif ($candidates.Count -gt 0)                                   { $ui.CmbSetup.SelectedIndex = 0 }
+        $chosenSetup = if ($PreferSetup -and $candidates -contains $PreferSetup) { $PreferSetup }
+                       else { (Select-SetupFile -Folder $Folder -InstallCommand "$($manifest.installCommandLine)" -Guess).SetupFile }
+        if ($chosenSetup) { $ui.CmbSetup.SelectedItem = $chosenSetup }
 
         $setup = "$($ui.CmbSetup.SelectedItem)"
         $defaults = if ($setup) { Get-SetupDefault -Folder $Folder -Setup $setup } else { @{ Kind = 'none' } }
@@ -2307,14 +2027,9 @@ function Resolve-DetectionScript {
     if (Test-Path -LiteralPath $full -PathType Leaf) { $full } else { $null }
 }
 
-function Save-AppManifest {
-    if (-not $script:LoadedFolder) { throw 'No package folder is open.' }
-    $manifestPath = Join-Path $script:LoadedFolder 'app.json'
-    $existing = @{}
-    if (Test-Path -LiteralPath $manifestPath) {
-        try { $existing = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable } catch { $existing = @{} }
-    }
-
+# The detection rule on screen, as app.json writes it — for saving, and for the checks in
+# Packwright.Package.ps1, which take a rule in that form from the studio and the scripts alike
+function Get-StudioDetection {
     $type = Get-DetTypeValue
     $detection = [ordered]@{ type = $type }
     switch ($type) {
@@ -2343,6 +2058,19 @@ function Save-AppManifest {
             } else { $ui.TxtScript.Text.Trim() }
         }
     }
+    $detection
+}
+
+function Save-AppManifest {
+    if (-not $script:LoadedFolder) { throw 'No package folder is open.' }
+    $manifestPath = Join-Path $script:LoadedFolder 'app.json'
+    $existing = @{}
+    if (Test-Path -LiteralPath $manifestPath) {
+        try { $existing = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable } catch { $existing = @{} }
+    }
+
+    $type = Get-DetTypeValue
+    $detection = Get-StudioDetection
 
     # Logo: copy into the package folder when picked from elsewhere, store the file name
     $iconReference = $null
@@ -2400,42 +2128,26 @@ function Set-CheckLine {
     $Block.Foreground = Get-ThemeBrush $(if ($Ok) { 'Ok' } else { 'Warn' })
 }
 
+# The checks in Packwright.Package.ps1 on the package as it stands on screen: the same checks a
+# publish from the command line makes, so a mistake caught here is caught there too
+function Get-StudioPackageCheck {
+    @(Get-PackageCheck -Folder "$script:LoadedFolder" -FileName (Get-PackageFileName) `
+        -InstallCommand $ui.TxtInstall.Text -UninstallCommand $ui.TxtUninstall.Text -Version $ui.TxtVersion.Text `
+        -Detection (Get-StudioDetection) -DetectionBase "$script:LoadedFolder" `
+        -SetupFile "$($ui.CmbSetup.SelectedItem)" -SetupVersion "$script:DerivedVersion" -PackageProductCode "$(Get-PackageProductCode)")
+}
+
 # Anything that is provably wrong about the commands: an empty install command, or one
 # naming a file the package does not contain. Both used to publish without a word.
 function Get-CommandIssue {
-    if (-not $ui.TxtInstall.Text.Trim()) { return 'Install command is missing' }
-    foreach ($pair in @(
-        @{ Label = 'install';   Text = $ui.TxtInstall.Text }
-        @{ Label = 'uninstall'; Text = $ui.TxtUninstall.Text })) {
-        $missingFile = Get-CommandFileIssue $pair.Text
-        if ($missingFile) { return "The $($pair.Label) command runs $missingFile, which is not in this package" }
-    }
-    $null
+    $issue = @(Get-StudioPackageCheck | Where-Object { $_.Severity -eq 'Block' -and $_.Field -in 'install', 'uninstall' }) | Select-Object -First 1
+    if ($issue) { $issue.Message } else { $null }
 }
 
 # Things that are probably wrong but cannot be proven wrong, so they are stated and never
 # block: the values that a package copied from the previous release carries over silently.
 function Get-PackageWarning {
-    $warnings = @()
-    $version = $ui.TxtVersion.Text.Trim()
-    if ((Get-DetTypeValue) -in 'file', 'registry' -and (Get-ComboValue $ui.CmbDetCheck) -eq 'version') {
-        $detValue = $ui.TxtDetValue.Text.Trim()
-        if ($version -and $detValue -and -not (Test-VersionMatch $detValue $version)) {
-            $warnings += "The detection rule compares against $detValue, but this package is version $version. A rule left on the previous version makes Intune treat the old release as installed."
-        }
-    }
-    $setupVersion = "$script:DerivedVersion".Trim()
-    if ($version -and $setupVersion -and -not (Test-VersionMatch $setupVersion $version)) {
-        $warnings += "$($ui.CmbSetup.SelectedItem) says it is version $setupVersion, but this package is labelled $version."
-    }
-    # 'msiexec /x {code}' left over from the MSI that was replaced uninstalls nothing
-    $packageCode = Get-PackageProductCode
-    if ($packageCode) {
-        $uninstallCode = ([regex]::Match($ui.TxtUninstall.Text, '\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}')).Value
-        if ($uninstallCode -and $uninstallCode -ine $packageCode) {
-            $warnings += "The uninstall command removes $uninstallCode, which is not the MSI in this package ($packageCode)."
-        }
-    }
+    $warnings = @(Get-StudioPackageCheck | Where-Object { $_.Severity -eq 'Warn' } | ForEach-Object { $_.Message })
     if ($script:WinGetLoaded) { $warnings += @(Get-WinGetWarning) }
     $warnings
 }
@@ -2601,7 +2313,7 @@ function Show-InstalledAppPicker {
     $dialog.C.PLstApps.ItemsSource = $script:Pick.All
     $dialog.C.PTxtCount.Text = "$($script:Pick.All.Count) programs installed"
     $dialog.C.PTxtFilter.Add_TextChanged({
-        $shown = Select-InstalledApp -All $script:Pick.All -Filter $script:Pick.C.PTxtFilter.Text
+        $shown = @(Select-InstalledApp -All $script:Pick.All -Filter $script:Pick.C.PTxtFilter.Text)
         $script:Pick.C.PLstApps.ItemsSource = $shown
         $script:Pick.C.PTxtCount.Text = "$(@($shown).Count) of $($script:Pick.All.Count) programs"
     })
@@ -4417,7 +4129,7 @@ if ($TestLoad) {
     # The PowerShell 7 guard at the top of each script is only reachable if 5.1 can read the
     # file. Saved without a BOM, 5.1 decodes the em dashes as ANSI, the stray quote byte ends
     # the string it sits in, and the run dies in 41 parse errors before any guard is reached.
-    $noBom = @(foreach ($engine in $PSCommandPath, $script:StudioWinGet, $script:EngineBuild, $script:EnginePublish, $script:EngineWinGet, $script:EngineTest) {
+    $noBom = @(foreach ($engine in $PSCommandPath, $script:StudioWinGet, $script:EngineBuild, $script:EnginePublish, $script:EngineWinGet, $script:EngineTest, $script:EnginePackage) {
         $head = [byte[]]::new(3)
         $reader = [IO.File]::OpenRead($engine)
         try { [void]$reader.Read($head, 0, 3) } finally { $reader.Dispose() }
@@ -4425,11 +4137,11 @@ if ($TestLoad) {
     })
     Assert-Test 'Scripts are saved UTF-8 with BOM' ($noBom.Count -eq 0) $(
         if ($noBom.Count) { "no BOM: $($noBom -join ', ') — PowerShell 5.1 cannot parse these, so the version guard never runs" }
-        else { 'all six readable by PowerShell 5.1' })
+        else { 'all seven readable by PowerShell 5.1' })
 
     # PathInfo.Path is provider-qualified on a UNC path; only .ProviderPath is something
     # IntuneWinAppUtil.exe or the WindowsInstaller COM object can open.
-    $providerQualified = @(foreach ($engine in $PSCommandPath, $script:StudioWinGet, $script:EngineBuild, $script:EnginePublish, $script:EngineWinGet, $script:EngineTest) {
+    $providerQualified = @(foreach ($engine in $PSCommandPath, $script:StudioWinGet, $script:EngineBuild, $script:EnginePublish, $script:EngineWinGet, $script:EngineTest, $script:EnginePackage) {
         if ((Get-Content -LiteralPath $engine -Raw) -match 'Resolve-Path[^\r\n]*\)\.Path\b') { Split-Path -Leaf $engine }
     })
     # The detail strings deliberately avoid spelling out the pattern being searched for —
@@ -4442,10 +4154,12 @@ if ($TestLoad) {
     # defined in this file are not in scope when the script is started as '.\Packwright.ps1'.
     # It fails at click time rather than at load time, and not at all under 'pwsh -File', so
     # no amount of running the suite catches it — it has to be read out of the source.
-    # Packwright.WinGet.ps1 runs in this script's scope too, and is read the same way.
+    # Packwright.WinGet.ps1 runs in this script's scope too, and is read the same way; so do the
+    # functions of Packwright.Package.ps1, which is read into it at startup.
     $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
     $studioAsts = @($scriptAst, [System.Management.Automation.Language.Parser]::ParseFile($script:StudioWinGet, [ref]$null, [ref]$null))
-    $definedHere = @($studioAsts | ForEach-Object { $_.FindAll({ param($node)
+    $packageAst = [System.Management.Automation.Language.Parser]::ParseFile($script:EnginePackage, [ref]$null, [ref]$null)
+    $definedHere = @(@($studioAsts) + $packageAst | ForEach-Object { $_.FindAll({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) } | ForEach-Object { $_.Name })
     $closureLeaks = @($studioAsts | ForEach-Object { $_.FindAll({ param($node)
         $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
@@ -4460,6 +4174,37 @@ if ($TestLoad) {
     Assert-Test 'No closure calls a function defined in the studio' ($closureLeaks.Count -eq 0) $(
         if ($closureLeaks.Count) { "$($closureLeaks -join '; ') — use a plain scriptblock over `$script: state" }
         else { 'closures call only cmdlets and methods' })
+
+    # A command's output is unrolled: a list of one comes back as that one item, and ItemsSource
+    # will not take an item. In the picker's TextChanged handler that ended the process as soon as
+    # the search matched exactly one program. So a list filled from a command - directly, or through
+    # the variable it was last given - gets it wrapped in @().
+    $unrolledFills = @($studioAsts | ForEach-Object { $_.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and
+        "$($node.Left.Member)" -eq 'ItemsSource' }, $true) } |
+        ForEach-Object {
+            $fill = $_
+            $source = $fill.Right
+            if ($source -is [System.Management.Automation.Language.CommandExpressionAst] -and
+                $source.Expression -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                $name = $source.Expression.VariablePath.UserPath
+                $scope = $fill.Parent
+                while ($scope -isnot [System.Management.Automation.Language.ScriptBlockAst]) { $scope = $scope.Parent }
+                $source = @($scope.FindAll({ param($node)
+                    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                    $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    $node.Left.VariablePath.UserPath -eq $name -and
+                    $node.Extent.EndOffset -le $fill.Extent.StartOffset }, $true))[-1].Right
+            }
+            if ($source -is [System.Management.Automation.Language.PipelineAst] -and
+                $source.PipelineElements[0] -is [System.Management.Automation.Language.CommandAst]) {
+                "line $($fill.Extent.StartLineNumber) of $(Split-Path -Leaf $fill.Extent.File)"
+            }
+        })
+    Assert-Test 'Lists are filled with lists' ($unrolledFills.Count -eq 0) $(
+        if ($unrolledFills.Count) { "ItemsSource takes a command's output as it comes on $($unrolledFills -join '; ') — wrap the command in @()" }
+        else { 'every list filled from a command gets @()' })
 
     # Dot-sourcing an engine script runs its own param() block in the caller's scope, so a run
     # parameter that shares a name with one of theirs is overwritten by their empty default.
@@ -4800,9 +4545,10 @@ if ($TestLoad) {
     Assert-Test 'A script package suggests a command that can run' ($scriptDefaults.Install -match 'powershell\.exe .*Install-App\.ps1') $scriptDefaults.Install
     Assert-Test 'The uninstall script beside it is found' ($scriptDefaults.Uninstall -match 'Uninstall-App\.ps1') $scriptDefaults.Uninstall
     Assert-Test 'A script has no version to disagree with the package' (-not $scriptDefaults.Version)
-    # No app.json to say otherwise, and the .exe is still the guess it always was
-    Assert-Test 'Without a manifest the payload .exe is still picked' (
-        (Open-PackageFolder -Folder $scriptPkg) -and "$($ui.CmbSetup.SelectedItem)" -eq 'App.exe') "$($ui.CmbSetup.SelectedItem)"
+    # No app.json to say otherwise: the one install script is the setup file, as Build has taken
+    # it since 2.4. The first .exe is the studio's guess for when nothing is certain.
+    Assert-Test 'Without a manifest the one install script is picked, as Build picks it' (
+        (Open-PackageFolder -Folder $scriptPkg) -and "$($ui.CmbSetup.SelectedItem)" -eq 'Install-App.ps1') "$($ui.CmbSetup.SelectedItem)"
     # The .\ the suggestion carries is what makes it resolve where Intune runs it, and it is
     # also what lets the checklist confirm the file is really in the package
     Assert-Test 'The suggested command runs a file the package holds' ($null -eq (Get-CommandFileIssue $scriptDefaults.Install)) $scriptDefaults.Install
@@ -4836,6 +4582,39 @@ if ($TestLoad) {
     Assert-Test 'A folder with only scripts has a setup file' (
         (Open-PackageFolder -Folder $onlyScripts) -and "$($ui.CmbSetup.SelectedItem)" -eq 'Install-Thing.ps1') "$($ui.CmbSetup.SelectedItem)"
     Assert-Test 'Building it is not turned away for want of an .exe' (Test-ReadyToRun)
+
+    # --- What Packwright.Package.ps1 decides for Build, Publish and Test as well ------------
+    # The setup file: only a certain answer for Build, the studio's guess besides
+    $choicePkg = Join-Path $testRoot 'pkg\Choice'
+    [void](New-Item -ItemType Directory -Path $choicePkg -Force)
+    foreach ($leaf in 'vendor-setup.exe', 'helper.exe', 'Install-A.ps1', 'Install-B.ps1') { [IO.File]::WriteAllText((Join-Path $choicePkg $leaf), 'x') }
+    $certainSetup = Select-SetupFile -Folder $choicePkg
+    $guessedSetup = Select-SetupFile -Folder $choicePkg -Guess
+    $namedSetup   = Select-SetupFile -Folder $choicePkg -InstallCommand '"vendor-setup.exe" /S'
+    Assert-Test 'Two install scripts and no app.json: no setup file is certain, and the reason says what was found' (
+        -not $certainSetup.SetupFile -and $certainSetup.Reason -match '2 install scripts') $certainSetup.Reason
+    Assert-Test "The studio's guess is the first .exe" ($guessedSetup.SetupFile -eq 'helper.exe') "$($guessedSetup.SetupFile)"
+    Assert-Test "The file app.json's install command runs is the setup file, for Build as well" ($namedSetup.SetupFile -eq 'vendor-setup.exe') "$($namedSetup.SetupFile)"
+    # The commands filled in where app.json names none - never a vendor .exe's guessed switches
+    $msiCommands = Get-SetupCommand -Setup 'app.msi' -ProductCode '{11111111-2222-3333-4444-555555555555}'
+    Assert-Test 'An MSI and a PSADT package get their commands filled in, a vendor .exe never' (
+        $msiCommands.Install -eq 'msiexec /i "app.msi" /qn /norestart' -and $msiCommands.Uninstall -match '/x "\{11111111' -and
+        (Get-SetupCommand -Setup 'Invoke-AppDeployToolkit.exe').Install -match 'DeploymentType Install' -and
+        -not (Get-SetupCommand -Setup 'vendor-setup.exe').Install) "$($msiCommands.Install) / $($msiCommands.Uninstall)"
+    # The checks: a command running a file the folder does not hold blocks, a rule left on an
+    # earlier version is said and does not
+    $folderIssues = @(Get-PackageCheck -Folder $choicePkg -InstallCommand '"gone-setup.exe" /S' -UninstallCommand '' -Version '2.0' `
+        -Detection @{ type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Choice'
+                      detectionType = 'version'; detectionValue = '1.0' })
+    Assert-Test 'A command running a file the package does not hold blocks the publish' (
+        @($folderIssues | Where-Object { $_.Severity -eq 'Block' -and $_.Field -eq 'install' -and $_.Message -match 'gone-setup\.exe' }).Count -eq 1) ($folderIssues.Message -join ' | ')
+    Assert-Test 'A version rule left on an earlier version is said, and does not block' (
+        @($folderIssues | Where-Object { $_.Severity -eq 'Warn' -and $_.Message -match 'compares against 1\.0' }).Count -eq 1 -and
+        @($folderIssues | Where-Object { $_.Severity -eq 'Block' }).Count -eq 1) ($folderIssues.Message -join ' | ')
+    $parentKey = @(Get-PackageCheck -Folder $choicePkg -InstallCommand '"vendor-setup.exe" /S' `
+        -Detection @{ type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' })
+    Assert-Test 'A registry rule stopping at the Uninstall key itself blocks the publish' (
+        $parentKey.Count -eq 1 -and $parentKey[0].Severity -eq 'Block' -and $parentKey[0].Field -eq 'detection') ($parentKey.Message -join ' | ')
 
     [void](Open-PackageFolder -Folder $scaffolded -PreferSetup 'nsis.exe')
 
@@ -5052,6 +4831,8 @@ if ($TestLoad) {
     $stubEngine = Join-Path $stubDir 'Build-IntuneWinApp.ps1'
     $engineText.Replace($stubCall, '$toolOutput = @(); $global:LASTEXITCODE = 0') |
         Set-Content -LiteralPath $stubEngine -Encoding utf8BOM
+    # The package engine it reads from beside itself
+    Copy-Item -LiteralPath $script:EnginePackage -Destination $stubDir
     # Only Test-Path'd — the invocation above it is gone
     Set-Content -LiteralPath (Join-Path $stubDir 'IntuneWinAppUtil.exe') -Value 'stub'
     Set-Content -LiteralPath (Join-Path $stubSrc 'setup.msi') -Value 'x'
@@ -5117,13 +4898,24 @@ if ($TestLoad) {
         param([string]$stubPublishScript, [string]$stubPackagePath, [hashtable]$stubArgs,
               [bool]$stubThrottleLookup, [int]$stubBlobFailures, [hashtable]$stubExistingApp,
               [bool]$stubNoPath, [hashtable]$stubDependencyApp, [object[]]$stubRelationships, [bool]$stubPipeline,
-              [bool]$stubForbidden, [string[]]$stubRoles)
+              [bool]$stubForbidden, [string[]]$stubRoles, [hashtable]$stubHeldOverrides)
         # Get-Command finds these instead of the real module, so no tenant is ever touched,
         # and the whole create-upload-commit chain runs against them.
         $script:StubCalls     = @()
         $script:StubAppBodies = @()
         $script:StubCommitted = $false
         $script:StubBlobLeft  = $stubBlobFailures
+        $script:StubChecked   = ''
+        # The app as Intune holds it: what it was created with and every PATCH since, and then
+        # whatever this run says Intune keeps otherwise, so a read-back has something to find
+        $script:StubApp = if ($stubExistingApp) { $stubExistingApp.Clone() } else { $null }
+        function Save-StubApp {
+            param([string]$Json, [switch]$Created)
+            $sent = $Json | ConvertFrom-Json -AsHashtable
+            if ($Created -or -not $script:StubApp) { $script:StubApp = @{ id = 'stub-app-0001' } }
+            foreach ($key in $sent.Keys) { $script:StubApp[$key] = $sent[$key] }
+            foreach ($key in @($stubHeldOverrides.Keys)) { $script:StubApp[$key] = $stubHeldOverrides[$key] }
+        }
         function Connect-MgGraph { }
         function Set-MgGraphOption { }
         function Get-MgContext {
@@ -5179,13 +4971,19 @@ if ($TestLoad) {
             }
             if ($Method -eq 'POST' -and $Uri -like '*/contentVersions') { return @{ id = '1' } }
             if ($Method -eq 'POST' -and $Uri -like '*/files')           { $script:StubCommitted = $false; return @{ id = 'stub-file-1' } }
-            if ($Method -eq 'POST' -and $Uri -like '*/mobileApps')      { return @{ id = 'stub-app-0001' } }
+            if ($Method -eq 'POST' -and $Uri -like '*/mobileApps')      { Save-StubApp -Json $Body -Created; return @{ id = 'stub-app-0001' } }
             if ($Method -eq 'PATCH') {
                 # Intune's answer since allowedArchitectures replaced applicableArchitectures
                 if ($Body -match '"applicableArchitectures"') {
                     throw 'The ApplicableArchitectures property can only be set via ODataAction: enableApplicableArchitectures.'
                 }
+                Save-StubApp -Json $Body
                 return @{}
+            }
+            # One app read by its id: before an update, and after every publish
+            if ($Method -eq 'GET' -and $Uri -match '/mobileApps/[^/?]+$') {
+                if (-not $script:StubApp) { throw "404 Not Found: $Uri" }
+                return $script:StubApp.Clone()
             }
             throw "the stub was asked for something this test does not model: $Method $Uri"
         }
@@ -5211,14 +5009,18 @@ if ($TestLoad) {
                                  Publish-IntuneWinApp -Confirm:$false @stubArgs
                          }
                          else { Publish-IntuneWinApp -Path $stubPackagePath -Confirm:$false @stubArgs }
+            # What the read-back after publishing found: Verified per app, and the settings that differed
+            $script:StubChecked = "VERIFIED:$(@($published | ForEach-Object { $_.Verified }) -join ' ')" +
+                                  "|DIFFERENT:$(@($published | ForEach-Object { $_.Differences } | ForEach-Object { $_.Property }) -join ',')"
             "RETURNED:$($published.Action):$($published.AppId)"
         } catch { "THREW:$($_.Exception.Message)" }
-        "$outcome@@$($script:StubCalls -join ' | ')@@$($script:StubAppBodies -join "`n")"
+        "$outcome@@$($script:StubCalls -join ' | ')@@$($script:StubAppBodies -join "`n")@@$script:StubChecked"
     }
     function Invoke-PublishProbe {
         param([hashtable]$Arguments = @{}, [bool]$ThrottleLookup = $false, [int]$BlobFailures = 0,
               [hashtable]$ExistingApp, [switch]$NoPath, [hashtable]$DependencyApp, [object[]]$Relationships,
-              [string]$PublishScript = $script:EnginePublish, [switch]$Pipeline, [switch]$Forbidden, [string[]]$Roles)
+              [string]$PublishScript = $script:EnginePublish, [switch]$Pipeline, [switch]$Forbidden, [string[]]$Roles,
+              [hashtable]$HeldOverrides = @{})
         $probeRunspace = [runspacefactory]::CreateRunspace()
         $probeRunspace.Open()
         $probeShell = [powershell]::Create()
@@ -5227,11 +5029,16 @@ if ($TestLoad) {
             stubPublishScript = $PublishScript; stubPackagePath = $probePackage
             stubArgs = $Arguments; stubThrottleLookup = $ThrottleLookup; stubBlobFailures = $BlobFailures
             stubExistingApp = $ExistingApp; stubNoPath = [bool]$NoPath; stubDependencyApp = $DependencyApp
-            stubRelationships = $Relationships; stubPipeline = [bool]$Pipeline; stubForbidden = [bool]$Forbidden; stubRoles = $Roles })
+            stubRelationships = $Relationships; stubPipeline = [bool]$Pipeline; stubForbidden = [bool]$Forbidden; stubRoles = $Roles
+            stubHeldOverrides = $HeldOverrides })
         $answer = "$(@($probeShell.Invoke()) | Select-Object -Last 1)"
+        # What it said along the way: Write-Host lands in the information stream here
+        $said = @($probeShell.Streams.Information | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+        $warned = @($probeShell.Streams.Warning | ForEach-Object { "$_" }) -join "`n"
         $probeShell.Dispose(); $probeRunspace.Dispose()
         $parts = $answer -split '@@'
-        @{ Outcome = $parts[0]; Calls = "$($parts[1])"; Bodies = @("$($parts[2])" -split "`n" | Where-Object { $_ }) }
+        @{ Outcome = $parts[0]; Calls = "$($parts[1])"; Bodies = @("$($parts[2])" -split "`n" | Where-Object { $_ })
+           Checked = "$($parts[3])"; Said = $said; Warned = $warned }
     }
 
     $throttled = Invoke-PublishProbe -Arguments @{ Update = $true } -ThrottleLookup $true
@@ -5338,6 +5145,86 @@ if ($TestLoad) {
     Assert-Test "Scope tags in app.json go with the app; a tag given by its name is refused before anything is created" (
         $taggedPost.Count -eq 1 -and $taggedPost[0] -match '"roleScopeTagIds":\["3"\]' -and
         $namedTag.Outcome -match "the tags' ids" -and $namedTag.Calls -notmatch 'POST|PATCH') "$($tagged.Outcome) / $($namedTag.Outcome)"
+
+    # x64 without ARM64, for a driver or anything else with no ARM64 build: x64 in the sense
+    # allowedArchitectures gives it
+    $probeManifest.PSObject.Properties.Remove('roleScopeTagIds')
+    $probeManifest.architecture = 'x64only'
+    $x64OnlyManifest = Join-Path $testRoot 'app-x64only.json'
+    $probeManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $x64OnlyManifest -Encoding UTF8
+    $x64Only = Invoke-PublishProbe -Arguments @{ ManifestPath = $x64OnlyManifest }
+    $x64OnlyPost = @($x64Only.Bodies | Where-Object { $_ -like 'POST *' })
+    Assert-Test "Architecture 'x64only' is sent as x64 alone, without ARM64" (
+        $x64OnlyPost.Count -eq 1 -and $x64OnlyPost[0] -match '"allowedArchitectures":"x64"') "$($x64Only.Outcome) — $(Get-ProbeArchitecture "$x64OnlyPost")"
+    $probeManifest.architecture = 'x64,x64only'
+    $x64BothManifest = Join-Path $testRoot 'app-x64both.json'
+    $probeManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $x64BothManifest -Encoding UTF8
+    $x64Both = Invoke-PublishProbe -Arguments @{ ManifestPath = $x64BothManifest }
+    Assert-Test 'x64 and x64only together are refused before anything is created' (
+        $x64Both.Outcome -like 'THREW:*Pick one*' -and $x64Both.Calls -notmatch 'POST|PATCH') $x64Both.Outcome
+
+    # After publishing, the app is read back: it holds what was sent - and a setting Intune keeps
+    # otherwise is said, by the name app.json gives it
+    Assert-Test 'A published app is read back, and holds every setting that was sent' (
+        $retried.Checked -eq 'VERIFIED:True|DIFFERENT:' -and $retried.Said -match 'it holds every setting that was sent') $retried.Checked
+    $heldOtherwise = Invoke-PublishProbe -Arguments @{ ManifestPath = $x64OnlyManifest } -HeldOverrides @{ allowedArchitectures = 'x64,arm64' }
+    Assert-Test 'A setting Intune holds otherwise than sent is reported' (
+        $heldOtherwise.Outcome -like 'RETURNED:Created:*' -and $heldOtherwise.Checked -eq 'VERIFIED:False|DIFFERENT:architecture' -and
+        $heldOtherwise.Warned -match "another architecture than was sent: 'x64,arm64' in Intune, 'x64' sent") "$($heldOtherwise.Checked) / $($heldOtherwise.Warned)"
+
+    # An update says which settings it changes before it changes any, and under -WhatIf that is
+    # all it does. What Intune adds of its own - a run time, its order of the return codes, Int64
+    # for Int32 - is not a change.
+    $heldApp = @{
+        id = 'stub-app-0001'; '@odata.type' = '#microsoft.graph.win32LobApp'; displayName = 'Publish Probe'; description = 'Publish Probe'
+        publisher = 'IT'; displayVersion = '0.9'; committedContentVersion = '1'; fileName = 'Publish Probe.intunewin'; setupFilePath = 'setup.msi'
+        installCommandLine = 'msiexec /i "setup.msi" /qn'; uninstallCommandLine = 'msiexec /x "setup.msi" /qn'
+        installExperience = @{ runAsAccount = 'system'; deviceRestartBehavior = 'suppress'; maxRunTimeInMinutes = [int64]60 }
+        allowedArchitectures = 'arm64,x64'; applicableArchitectures = 'none'; minimumSupportedWindowsRelease = '1607'
+        detectionRules = @(@{ '@odata.type' = '#microsoft.graph.win32LobAppRegistryDetection'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\PublishProbe'
+                              valueName = $null; check32BitOn64System = $false; detectionType = 'exists'; operator = 'notConfigured'; detectionValue = $null })
+        returnCodes = @(@{ type = 'retry'; returnCode = [int64]1618 }, @{ type = 'success'; returnCode = [int64]0 }, @{ type = 'success'; returnCode = [int64]1707 },
+                        @{ type = 'softReboot'; returnCode = [int64]3010 }, @{ type = 'hardReboot'; returnCode = [int64]1641 })
+    }
+    $planned = Invoke-PublishProbe -Arguments @{ Update = $true; WhatIf = $true } -ExistingApp $heldApp
+    $plannedChanges = @($planned.Said -split "`n" | Where-Object { $_ -match '^    \S.* -> ' })
+    Assert-Test '-WhatIf on an update lists the settings it would change - here the version alone - and changes nothing' (
+        $planned.Said -match 'Settings this changes in Intune' -and $plannedChanges.Count -eq 1 -and $plannedChanges[0] -match "version: '0\.9' -> '1\.0'" -and
+        $planned.Calls -notmatch 'POST|PATCH|PUT-BLOB') $planned.Said
+
+    # -MetadataOnly: the settings of the app that is there, from app.json alone, and nothing uploaded
+    $settingsOnly = Invoke-PublishProbe -NoPath -Arguments @{ ManifestPath = (Join-Path $testRoot 'app.json'); MetadataOnly = $true } -ExistingApp $heldApp
+    $settingsPatch = @($settingsOnly.Bodies | Where-Object { $_ -like 'PATCH *' })
+    Assert-Test '-MetadataOnly changes the settings of the app that is there, and uploads nothing' (
+        $settingsOnly.Outcome -eq 'RETURNED:MetadataUpdated:stub-app-0001' -and $settingsPatch.Count -eq 1 -and
+        $settingsOnly.Calls -notmatch 'contentVersions|PUT-BLOB|/commit|POST') "$($settingsOnly.Outcome) — calls: $($settingsOnly.Calls)"
+    Assert-Test 'It leaves the content as it is - no file name, setup file or content version is sent - and checks what it sent' (
+        $settingsPatch.Count -eq 1 -and $settingsPatch[0] -notmatch '"fileName"|"setupFilePath"|"committedContentVersion"' -and
+        $settingsPatch[0] -match '"displayVersion":"1\.0"' -and $settingsOnly.Checked -eq 'VERIFIED:True|DIFFERENT:') "$settingsPatch"
+    $nothingThere = Invoke-PublishProbe -NoPath -Arguments @{ ManifestPath = (Join-Path $testRoot 'app.json'); MetadataOnly = $true }
+    Assert-Test '-MetadataOnly never creates an app' (
+        $nothingThere.Outcome -like "THREW:*has no Win32 app named 'Publish Probe' to change*" -and $nothingThere.Calls -notmatch 'POST|PATCH') $nothingThere.Outcome
+    $contradictory = Invoke-PublishProbe -Arguments @{ MetadataOnly = $true; AllowDuplicateName = $true }
+    Assert-Test '-MetadataOnly and -AllowDuplicateName are refused together, before anyone signs in' (
+        $contradictory.Outcome -like 'THREW:*-MetadataOnly and -AllowDuplicateName contradict*' -and -not $contradictory.Calls) $contradictory.Outcome
+
+    # The studio's checks, made by Publish as well: given the package folder, a command running a
+    # file it does not hold stops the publish before anything is created, and a rule left on an
+    # earlier version is said as a warning
+    $checkedFolder = Join-Path $testRoot 'checked'
+    $null = New-Item -ItemType Directory -Path $checkedFolder -Force
+    Set-Content -LiteralPath (Join-Path $checkedFolder 'setup.msi') -Value 'x'
+    $staleManifest = Join-Path $testRoot 'app-stale.json'
+    ([ordered]@{
+        displayName = 'Publish Probe'; publisher = 'IT'; version = '2.0'
+        installCommandLine = 'msiexec /i "setup-1.0.msi" /qn'; uninstallCommandLine = 'msiexec /x "setup.msi" /qn'
+        detection = [ordered]@{ type = 'registry'; keyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\PublishProbe'; valueName = 'Version'
+                                detectionType = 'version'; operator = 'greaterThanOrEqual'; detectionValue = '1.0' }
+    } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $staleManifest -Encoding UTF8
+    $staleCopy = Invoke-PublishProbe -Arguments @{ ManifestPath = $staleManifest; SourceFolder = $checkedFolder }
+    Assert-Test 'Publish stops at a command running a file the package does not hold, before anything is created' (
+        $staleCopy.Outcome -like 'THREW:Not published:*setup-1.0.msi*Nothing was created*' -and $staleCopy.Calls -notmatch 'POST|PATCH') $staleCopy.Outcome
+    Assert-Test 'It warns, too, that the detection rule is left on an earlier version' ($staleCopy.Warned -match 'compares against 1\.0') $staleCopy.Warned
 
     # --- End to end: the real run body, in a real runspace -------------------------
     # Everything above tests the studio with the engines stubbed out by never reaching them.
@@ -5453,6 +5340,64 @@ if ($TestLoad) {
             -not $runResult.Error) $(if ($runResult) { $runResult | ConvertTo-Json -Compress } else { 'no result.json' })
     }
 
+    # -Elevate from a PowerShell that is not elevated, with Windows' UAC prompt answered by stand-ins:
+    # a no is an answer and not an error, a yes leaves its result in a file that is read and removed,
+    # and the command line splits back into exactly the paths that went in. In a runspace of its own,
+    # since the engine's -SourceFolder would wipe the studio's.
+    $elevateProbe = {
+        param([string]$enginePath, [string]$folder, [string]$answer)
+        . $enginePath
+        if ($answer -eq 'quote') {
+            # A real process, given a command line made the way the elevated one is
+            $echoScript = Join-Path $folder 'echo.ps1'
+            $echoed = Join-Path $folder 'echoed.txt'
+            Set-Content -LiteralPath $echoScript -Value '$args[1..($args.Count - 1)] | Set-Content -LiteralPath $args[0] -Encoding UTF8' -Encoding UTF8
+            $values = @($folder, 'C:\Two\\', "C:\L$([char]0xE4)rm [x64]\")
+            $line = '-NoProfile -File ' + ((@($echoScript, $echoed) + $values | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ')
+            $null = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $line -NoNewWindow -Wait -PassThru
+            return "$(((Get-Content -LiteralPath $echoed -Encoding UTF8) -join '|') -ceq ($values -join '|'))"
+        }
+        $script:startedWith = ''
+        if ($answer -eq 'no') {
+            function Start-ElevatedProcess { param($FilePath, $Arguments) throw [ComponentModel.Win32Exception]::new(1223) }
+        }
+        else {
+            function Start-ElevatedProcess {
+                param($FilePath, $Arguments)
+                $script:startedWith = $Arguments
+                $handOver = [regex]::Match($Arguments, '-ResultPath "([^"]+)"').Groups[1].Value
+                @{ Action = 'Install'; Verdict = 'Installed and detected'; Succeeded = $true; Ran = $true; ExitCode = 0 } |
+                    ConvertTo-Json | Set-Content -LiteralPath $handOver -Encoding UTF8
+                [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { } -PassThru
+            }
+        }
+        $outcome = Invoke-ElevatedTest -SourceFolder $folder
+        $handOver = [regex]::Match($script:startedWith, '-ResultPath "([^"]+)"').Groups[1].Value
+        '{0}|{1}|{2}|{3}' -f $outcome.Verdict, $outcome.Succeeded, [bool]($handOver -and (Test-Path -LiteralPath $handOver)), $script:startedWith
+    }
+    function Invoke-ElevateProbe {
+        param([string]$Answer)
+        $elevateRunspace = [runspacefactory]::CreateRunspace()
+        $elevateRunspace.Open()
+        $elevateShell = [powershell]::Create()
+        $elevateShell.Runspace = $elevateRunspace
+        [void]$elevateShell.AddScript($elevateProbe.ToString()).AddParameters(@{ enginePath = $script:EngineTest; folder = $elevateFolder; answer = $Answer })
+        $answered = try { "$(@($elevateShell.Invoke()) | Select-Object -Last 1)" } catch { "THREW:$($_.Exception.Message)" }
+        $elevateShell.Dispose(); $elevateRunspace.Dispose()
+        $answered
+    }
+    $elevateFolder = Join-Path $testRoot 'elevate probe\'
+    $null = New-Item -ItemType Directory -Path $elevateFolder -Force
+    $declinedTest = Invoke-ElevateProbe -Answer 'no'
+    Assert-Test '-Elevate: a no to the UAC prompt is an answer - the package is not tested, and nothing fails' (
+        $declinedTest -like 'Not tested|False|False|*') $declinedTest
+    $elevatedTest = Invoke-ElevateProbe -Answer 'yes'
+    Assert-Test '-Elevate: a yes runs the test in a window of its own, whose result is read back and its file removed' (
+        $elevatedTest -like 'Installed and detected|True|False|*' -and $elevatedTest.Contains("-File `"$script:EngineTest`"") -and
+        $elevatedTest.Contains("-SourceFolder `"$elevateFolder\`"")) $elevatedTest
+    $quotedTest = Invoke-ElevateProbe -Answer 'quote'
+    Assert-Test '-Elevate: its command line splits back into exactly the paths that went in, a trailing backslash included' ($quotedTest -eq 'True') $quotedTest
+
     # What a test install found, offered as the detection rule only when it beats the one there is
     $oneEntry = [pscustomobject]@{ Action = 'Install'; Ran = $true; ExitCode = 0; DetectedAfter = $false
                                    ArpAdded = @([pscustomobject]@{ Change = 'added'; KeyPath = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\X'; DisplayName = 'X'; DisplayVersion = '1.0'; Is32Bit = $false }) }
@@ -5539,7 +5484,6 @@ if ($TestLoad) {
 #endregion
 
 [void]$window.ShowDialog()
-
 
 
 

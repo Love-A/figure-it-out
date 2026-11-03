@@ -6,17 +6,22 @@
     Publishes a .intunewin package to Intune as a Win32 app using Microsoft Graph
     (Microsoft.Graph.Authentication module only — no other dependencies):
       1. Reads package metadata (Detection.xml) straight out of the .intunewin file
-      2. Decides whether this is a new app or an existing one (by display name, or -AppId)
-      3. Creates the win32LobApp with display name, install/uninstall commands and detection rules
-      4. Uploads the encrypted payload to Azure Storage in chunks (with SAS renewal for large files)
-      5. Commits the content and points the app at the new content version
+      2. Stops at what can be shown to be wrong, as the studio's checklist does: a command that
+         runs a file the package does not hold (with -SourceFolder), a detection rule that
+         cannot match; and warns about what a copied package folder carries over unnoticed
+      3. Decides whether this is a new app or an existing one (by display name, or -AppId)
+      4. Creates the win32LobApp with display name, install/uninstall commands and detection rules
+      5. Uploads the encrypted payload to Azure Storage in chunks (with SAS renewal for large files)
+      6. Commits the content and points the app at the new content version
+      7. Reads the app back and says which settings, if any, Intune holds otherwise than sent
 
     With -Update the run is idempotent — the same spec can be applied over and over: the app
     is created the first time and gets a new content version (plus refreshed metadata) after
     that. Assignments and an existing icon are never touched, and because the app is only
     switched over in the last step, a failed upload leaves it serving the previous version.
     Without -Update an existing app of the same name stops the run, so a re-publish cannot
-    silently create a duplicate.
+    silently create a duplicate. An update lists the settings it changes before it changes
+    them, and with -WhatIf that list is all it does.
 
     App settings come from an app.json manifest (see app.example.json) placed next to the
     installation source (or given via -ManifestPath). Sensible defaults are derived when
@@ -25,8 +30,10 @@
                           and name/publisher/version from AppVendor/AppName/AppVersion in the
                           $adtSession block of Invoke-AppDeployToolkit.ps1
       - MSI packages    : msiexec install/uninstall + product code detection rule
+      - Script packages : the install script, and the Uninstall script beside it (with -SourceFolder)
       - Name/publisher/version fall back to MSI metadata when available
-    Non-MSI packages always need a detection rule in the manifest (file/registry/script).
+    Non-MSI packages always need a detection rule in the manifest (file/registry/script). These
+    defaults are Packwright.Package.ps1's, which the studio and Test-IntuneWinApp use as well.
 
     Can be run directly:  .\Publish-IntuneWinApp.ps1 -Path ".\Output\7-zip\Invoke-AppDeployToolkit.intunewin"
     or dot-sourced and used in a pipeline:  Build-IntuneWinApp -SourceFolder X -PassThru | Publish-IntuneWinApp
@@ -38,7 +45,7 @@
 
 .PARAMETER SourceFolder
     Optional. Used to locate app.json next to the installation source. Populated automatically
-    when piping from Build-IntuneWinApp.
+    when piping from Build-IntuneWinApp; with -MetadataOnly, the package folder alone is enough.
 
 .PARAMETER ManifestPath
     Optional explicit path to an app.json manifest. If omitted, app.json is searched for in
@@ -109,6 +116,13 @@
     it, publishing stops before anything is created — the usual cause is publishing the
     same package twice.
 
+.PARAMETER MetadataOnly
+    Change the settings of an app Intune already has — icon, description, detection and
+    requirement rules, commands — from app.json, and upload nothing: the app keeps the
+    content version it has. The .intunewin is not needed; -SourceFolder or -ManifestPath is
+    enough, and what only the package could tell (the commands of an MSI without app.json,
+    say) is left as Intune has it. Implies -Update, and never creates an app.
+
 .EXAMPLE
     Build-IntuneWinApp -SourceFolder "C:\psadt\7-zip" -PassThru |
         Publish-IntuneWinApp -Update -Confirm:$false
@@ -116,7 +130,15 @@
     Applies the package as desired state: created the first time, a new content version
     on every later run. Safe to run from a scheduled task or a pipeline.
 
+.EXAMPLE
+    .\Publish-IntuneWinApp.ps1 -SourceFolder "C:\IntunePackages\7-Zip 26.04" -MetadataOnly -WhatIf
+
+    Lists the settings Intune holds otherwise than app.json says, without changing them.
+    Without -WhatIf it changes them, and the app keeps running the content it has.
+
 .VERSION
+    2026-11-03 - 1.11 - Stops where the studio's checklist stops, and warns where it warns
+    2026-11-02 - 1.10 - x64 without ARM64, -MetadataOnly, and changes listed before and checked after
     2026-10-12 - 1.9 - Says who it signed in as and explains a 403; roleScopeTagIds
     2026-10-08 - 1.8 - WinGet packages: requirement rules, dependencies, Store apps, source policy
     2026-09-24 - 1.7 - -Update works on an app Intune already has
@@ -138,6 +160,8 @@ param(
     [Parameter(Position = 1)]
     [string]$ManifestPath,
 
+    [string]$SourceFolder,
+
     [string]$TenantId,
 
     [string]$ClientId,
@@ -152,6 +176,8 @@ param(
 
     [switch]$AllowDuplicateName,
 
+    [switch]$MetadataOnly,
+
     [ValidateSet('Auto', 'Browser', 'DeviceCode')]
     [string]$SignIn = 'Auto'
 )
@@ -162,6 +188,13 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw ("Publish-IntuneWinApp needs PowerShell 7 — this is Windows PowerShell $($PSVersionTable.PSVersion). " +
            'Start pwsh and run it from there (winget install Microsoft.PowerShell).')
 }
+
+# What app.json leaves out, and what can be shown to be wrong with a package, is
+# Packwright.Package.ps1's to say, for this script, the studio, Build and Test alike
+if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Packwright.Package.ps1'))) {
+    throw "Publish-IntuneWinApp needs Packwright.Package.ps1 next to it, in $PSScriptRoot. Keep the Packwright scripts together."
+}
+. (Join-Path $PSScriptRoot 'Packwright.Package.ps1')
 
 function Publish-IntuneWinApp {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -193,12 +226,22 @@ function Publish-IntuneWinApp {
 
         [switch]$AllowDuplicateName,
 
+        [switch]$MetadataOnly,
+
         [ValidateSet('Auto', 'Browser', 'DeviceCode')]
         [string]$SignIn = 'Auto'
     )
 
     begin {
         $graphBase = 'https://graph.microsoft.com/beta'
+
+        # Settings only: an app that is there, changed in place. Said before anyone signs in.
+        if ($MetadataOnly) {
+            if ($AllowDuplicateName) {
+                throw '-MetadataOnly and -AllowDuplicateName contradict each other: one changes the app that is already there, the other creates a second one. Pick one.'
+            }
+            $Update = $true
+        }
 
         # Auto-loading usually finds it; ask explicitly so a module that is present but not
         # auto-discovered still loads, and keep the reason when the load itself fails.
@@ -421,13 +464,20 @@ function Publish-IntuneWinApp {
         # The value goes out as allowedArchitectures instead, translated the way Intune moved
         # its own apps across — arm64 wherever there was x64 — so an app.json keeps reaching
         # the devices it always did, and a created app and an updated one end up the same.
+        # x64only is x64 in the new property's own sense, ARM64 left out: for a driver, or
+        # anything else that has no ARM64 build and does not run under emulation.
         function ConvertTo-AllowedArchitecture {
             param([string]$Architecture)
-            $expected = '(expected x64, x86, arm64, a comma list of them, or neutral for all three)'
-            $wanted = @(foreach ($token in ($Architecture -split '[,\s]+' | Where-Object { $_ })) {
+            $expected = '(expected x64, x64only, x86, arm64, a comma list of them, or neutral for all three)'
+            $tokens = @($Architecture -split '[,\s]+' | Where-Object { $_ })
+            if ($tokens -contains 'x64' -and $tokens -contains 'x64only') {
+                throw "Architecture '$Architecture' in manifest: x64 takes in ARM64 and x64only leaves it out. Pick one."
+            }
+            $wanted = @(foreach ($token in $tokens) {
                 switch ($token) {
                     'x86'     { 'x86' }
                     'x64'     { 'x64', 'arm64' }
+                    'x64only' { 'x64' }
                     'arm64'   { 'arm64' }
                     'neutral' { 'x86', 'x64', 'arm64' }
                     default   { throw "Architecture '$Architecture' in manifest: '$token' is not one Intune can target $expected." }
@@ -768,6 +818,202 @@ function Publish-IntuneWinApp {
             }
         }
 
+        # --- What Intune holds, next to what this run sends ------------------------------
+        # Before an update: the settings it is about to change, which under -WhatIf is all it
+        # does. After any publish: the app read back, so a setting Intune did not take is said
+        # now instead of found out on the devices. Only what the body names is compared, and in
+        # it only the fields it names: Intune adds its own (maxRunTimeInMinutes, dates, counts),
+        # and those are not changes. A field Intune does not return at all, such as the
+        # @odata.type of an icon, is not one it keeps. Lists compare in any order, line endings
+        # and trailing blanks are not text, and an empty value is no value.
+
+        # A field of an object or a dictionary. A list stays a list: returned bare, one with a
+        # single element would arrive as the element itself.
+        function Get-AppField {
+            param($Object, [string]$Name)
+            $value = $null
+            if ($Object -is [System.Collections.IDictionary]) { $value = $Object[$Name] }
+            elseif ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { $value = $Object.PSObject.Properties[$Name].Value }
+            if ($value -is [System.Collections.IList]) { return , $value }
+            $value
+        }
+
+        function Test-AppFieldPresent {
+            param($Object, [string]$Name)
+            if ($Object -is [System.Collections.IDictionary]) { return $Object.Contains($Name) }
+            $null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name]
+        }
+
+        function Get-AppFieldName {
+            param($Object)
+            if ($Object -is [System.Collections.IDictionary]) { return @($Object.Keys) }
+            @($Object.PSObject.Properties.Name)
+        }
+
+        function Test-AppRecord {
+            param($Value)
+            $Value -is [System.Collections.IDictionary] -or $Value -is [System.Management.Automation.PSCustomObject]
+        }
+
+        function Test-SameAppValue {
+            param($Sent, $Held)
+            if ($null -eq $Sent -or ($Sent -is [string] -and -not $Sent)) { return $null -eq $Held -or "$Held" -eq '' }
+            if ($Sent -is [string]) {
+                return $Held -is [string] -and
+                       (($Sent -replace '\r\n', "`n").TrimEnd() -ceq ($Held -replace '\r\n', "`n").TrimEnd())
+            }
+            if (Test-AppRecord $Sent) {
+                if (-not (Test-AppRecord $Held)) { return $false }
+                foreach ($name in Get-AppFieldName $Sent) {
+                    if (-not (Test-AppFieldPresent $Held $name)) { continue }
+                    if (-not (Test-SameAppValue (Get-AppField $Sent $name) (Get-AppField $Held $name))) { return $false }
+                }
+                return $true
+            }
+            if ($Sent -is [System.Collections.IEnumerable]) {
+                $unmatched = [System.Collections.ArrayList]::new(@($Held | Where-Object { $null -ne $_ }))
+                $wanted = @($Sent | Where-Object { $null -ne $_ })
+                if ($wanted.Count -ne $unmatched.Count) { return $false }
+                # Each element sent matched by one Intune holds, whatever the order
+                foreach ($element in $wanted) {
+                    $match = -1
+                    for ($i = 0; $i -lt $unmatched.Count; $i++) {
+                        if (Test-SameAppValue $element $unmatched[$i]) { $match = $i; break }
+                    }
+                    if ($match -lt 0) { return $false }
+                    $unmatched.RemoveAt($match)
+                }
+                return $true
+            }
+            # Numbers and true/false: 1707 sent as Int32 comes back as Int64
+            "$Sent" -eq "$Held"
+        }
+
+        # What Intune holds, cut to the fields that were sent, so a difference shows only them
+        function Select-AppShape {
+            param($Held, $Sent)
+            if ((Test-AppRecord $Held) -and (Test-AppRecord $Sent)) {
+                $shaped = [ordered]@{}
+                foreach ($name in Get-AppFieldName $Sent) {
+                    if (Test-AppFieldPresent $Held $name) { $shaped[$name] = Select-AppShape (Get-AppField $Held $name) (Get-AppField $Sent $name) }
+                }
+                return $shaped
+            }
+            if ($Held -is [System.Collections.IList] -and $Sent -is [System.Collections.IList]) {
+                $shape = @($Sent | Where-Object { Test-AppRecord $_ }) | Select-Object -First 1
+                return , @(foreach ($element in $Held) { Select-AppShape $element $shape })
+            }
+            $Held
+        }
+
+        # A value short enough for one line: a script or an icon by its size and a fingerprint,
+        # since base64 says nothing to whoever reads it, and the odata type by its last part
+        function ConvertTo-ShortAppValue {
+            param($Value)
+            if (Test-AppRecord $Value) {
+                $short = [ordered]@{}
+                foreach ($name in Get-AppFieldName $Value) {
+                    $field = Get-AppField $Value $name
+                    if ($name -in 'scriptContent', 'value' -and $field -is [string] -and $field.Length -gt 64) {
+                        $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($field)))
+                        $short[$name] = '{0:N1} KB #{1}' -f ($field.Length * 3 / 4 / 1KB), $hash.Substring(0, 8).ToLowerInvariant()
+                    }
+                    elseif ($name -eq '@odata.type') { $short[$name] = "$field" -replace '^#microsoft\.graph\.', '' }
+                    else { $short[$name] = ConvertTo-ShortAppValue $field }
+                }
+                return $short
+            }
+            if ($Value -is [System.Collections.IList]) { return , @(foreach ($element in $Value) { ConvertTo-ShortAppValue $element }) }
+            $Value
+        }
+
+        function Format-AppValue {
+            param($Value)
+            if ($null -eq $Value -or "$Value" -eq '') { return '(none)' }
+            $text = if ($Value -is [string]) { "'" + ($Value -replace '\s*\r?\n\s*', ' / ').Trim() + "'" }
+                    else { ConvertTo-Json -InputObject (ConvertTo-ShortAppValue $Value) -Compress -Depth 10 }
+            if ($text.Length -gt 110) { $text = $text.Substring(0, 107) + '...' }
+            $text
+        }
+
+        # app.json's words for Intune's, so a difference says what to change in app.json
+        $appJsonNames = @{
+            displayVersion = 'version'; largeIcon = 'icon'; detectionRules = 'detection'; requirementRules = 'requirements'
+            allowedArchitectures = 'architecture'; minimumSupportedWindowsRelease = 'minimumWindowsRelease'
+            installExperience = 'runAsAccount/restartBehavior'; returnCodes = 'return codes'
+            fileName = 'package file'; setupFilePath = 'setup file'; committedContentVersion = 'content version'
+        }
+
+        # The settings in $Sent that Intune holds otherwise: @{ Property; Intune; Sent } each
+        function Compare-AppState {
+            param($Sent, $Held)
+            foreach ($name in Get-AppFieldName $Sent) {
+                if ($name -eq '@odata.type' -or -not (Test-AppFieldPresent $Held $name)) { continue }
+                $sentValue = Get-AppField $Sent $name
+                $heldValue = Get-AppField $Held $name
+                $same = if ($name -eq 'allowedArchitectures') {
+                    # One set, in whatever order Intune lists it
+                    (@("$sentValue" -split '[,\s]+' | Where-Object { $_ } | Sort-Object) -join ',') -eq
+                    (@("$heldValue" -split '[,\s]+' | Where-Object { $_ } | Sort-Object) -join ',')
+                }
+                else { Test-SameAppValue $sentValue $heldValue }
+                if (-not $same) {
+                    [pscustomobject]@{
+                        Property = $(if ($appJsonNames.ContainsKey($name)) { $appJsonNames[$name] } else { $name })
+                        Intune   = Format-AppValue (Select-AppShape $heldValue $sentValue)
+                        Sent     = Format-AppValue $sentValue
+                    }
+                }
+            }
+        }
+
+        # The app as Intune has it now, or $null with a warning: not knowing what an update
+        # changes is no reason to stop it
+        function Get-IntuneAppState {
+            param([string]$Id)
+            try { Invoke-MgGraphRequest -Method GET -Uri "$graphBase/deviceAppManagement/mobileApps/$Id" -ErrorAction Stop }
+            catch {
+                Write-Warning "Could not read the app as Intune has it now, so the settings this changes are not listed: $($_.Exception.Message)"
+                $null
+            }
+        }
+
+        function Write-AppChange {
+            param([object[]]$Changes, [switch]$ContentToo)
+            if (-not $Changes) {
+                Write-Host $(if ($ContentToo) { '  Intune already has every setting app.json gives; the content is what is new.' }
+                             else { '  Intune already has every setting app.json gives.' })
+                return
+            }
+            Write-Host '  Settings this changes in Intune (now -> app.json):'
+            foreach ($change in $Changes) { Write-Host ("    {0}: {1} -> {2}" -f $change.Property, $change.Intune, $change.Sent) }
+        }
+
+        # After a publish: the app read back and held against what was sent. The app is
+        # published either way, so a read that fails is a warning. @{ Verified; Differences },
+        # Verified $null when the app could not be read.
+        function Confirm-AppState {
+            param([string]$Id, $Sent)
+            $differences = @()
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+                try { $held = Invoke-MgGraphRequest -Method GET -Uri "$graphBase/deviceAppManagement/mobileApps/$Id" -ErrorAction Stop }
+                catch {
+                    Write-Warning "The app is published, but reading it back to check it failed: $($_.Exception.Message)"
+                    return [pscustomobject]@{ Verified = $null; Differences = @() }
+                }
+                $differences = @(Compare-AppState -Sent $Sent -Held $held)
+                if (-not $differences -or $attempt -eq 2) { break }
+                Start-Sleep -Seconds 3   # one more look before calling it a difference
+            }
+            if ($differences) {
+                foreach ($difference in $differences) {
+                    Write-Warning "Intune holds another $($difference.Property) than was sent: $($difference.Intune) in Intune, $($difference.Sent) sent."
+                }
+            }
+            else { Write-Host '  Read back from Intune: it holds every setting that was sent.' }
+            [pscustomobject]@{ Verified = -not $differences; Differences = $differences }
+        }
+
         # An Intune Store app: nothing to build or upload. Intune itself installs the app through
         # its own copy of winget — which, unlike winget's command line, still works on devices
         # where the Microsoft Store app is blocked — detects it and keeps it current.
@@ -796,13 +1042,21 @@ function Publish-IntuneWinApp {
                 throw ("The Intune Store app '$displayName' ($($target.id)) installs $($target.packageIdentifier), not $($winget.id). " +
                        'Intune cannot change that on an existing app — publish this one under another name. Nothing was changed.')
             }
+            if ($MetadataOnly -and -not $target) {
+                throw ("Intune has no Store app named '$displayName' to change. -MetadataOnly changes an app that is there; " +
+                       'publish it without it first, or pass -AppId to name the app. Nothing was created.')
+            }
+            # Neither the package nor the install context can be changed on an existing app
+            $patch = [ordered]@{ '@odata.type' = '#microsoft.graph.winGetApp' }
+            foreach ($key in $body.Keys) { if ($key -notin '@odata.type', 'packageIdentifier', 'installExperience') { $patch[$key] = $body[$key] } }
+            if ($target) {
+                $current = Get-IntuneAppState -Id $target.id
+                if ($current) { Write-AppChange -Changes @(Compare-AppState -Sent $patch -Held $current) }
+            }
             $action = if ($target) { "Update Intune Store app $($target.id) in tenant $tenant" } else { "Create Intune Store app in tenant $tenant" }
             if (-not $PSCmdlet.ShouldProcess("$displayName ($($winget.id))", $action)) { return }
 
             if ($target) {
-                # Neither the package nor the install context can be changed on an existing app
-                $patch = [ordered]@{ '@odata.type' = '#microsoft.graph.winGetApp' }
-                foreach ($key in $body.Keys) { if ($key -notin '@odata.type', 'packageIdentifier', 'installExperience') { $patch[$key] = $body[$key] } }
                 Invoke-MgGraphRequest -Method PATCH -Uri "$graphBase/deviceAppManagement/mobileApps/$($target.id)" `
                     -Body ($patch | ConvertTo-Json -Depth 10) -ContentType 'application/json' | Out-Null
                 $storeAppId = $target.id
@@ -824,6 +1078,7 @@ function Publish-IntuneWinApp {
                 Write-Host ("  Done. '$displayName' is published as an Intune Store app (no assignments yet). Intune takes a few minutes " +
                             'to fetch it from the Store before it can be assigned.') -ForegroundColor Green
             }
+            $check = Confirm-AppState -Id $storeAppId -Sent $(if ($target) { $patch } else { $body })
             [pscustomobject]@{
                 Action         = if ($target) { 'Updated' } else { 'Created' }
                 AppId          = $storeAppId
@@ -833,6 +1088,8 @@ function Publish-IntuneWinApp {
                 TenantId       = $tenant
                 PortalUrl      = "https://intune.microsoft.com/#view/Microsoft_Intune_Apps/SettingsMenu/~/0/appId/$storeAppId"
                 AppType        = 'winGetApp'
+                Verified       = $check.Verified
+                Differences    = $check.Differences
             }
         }
     }
@@ -870,37 +1127,38 @@ function Publish-IntuneWinApp {
             }
             return Publish-WinGetStoreApp -Manifest $manifest -ManifestDir $manifestDir
         }
-        if (-not $Path) {
-            throw 'Path is required: the .intunewin file to publish. Only an app.json for an Intune Store app is published without one.'
+        if (-not $Path -and -not $MetadataOnly) {
+            throw ('Path is required: the .intunewin file to publish. Only an app.json for an Intune Store app is published without one, ' +
+                   'and -MetadataOnly needs none.')
         }
-        $meta = Get-IntuneWinMetadata -FilePath $Path
+        if (-not $Path -and -not $manifest) {
+            throw '-MetadataOnly without the .intunewin takes the settings from app.json: pass -SourceFolder (the package folder) or -ManifestPath.'
+        }
+        # -MetadataOnly needs no .intunewin. Without one, the folder app.json is in says which
+        # file the package installs from (Select-SetupFile, as Build chooses it), and what only
+        # the package could tell is left as Intune has it, since the content it belongs with stays.
+        $meta          = if ($Path) { Get-IntuneWinMetadata -FilePath $Path }
+        $packageFolder = if ($SourceFolder) { $SourceFolder } elseif (-not $Path) { $manifestDir }
 
-        $setupFile = $meta.SetupFile
+        $setupFile = if ($meta) { $meta.SetupFile }
+                     elseif ($packageFolder) { (Select-SetupFile -Folder $packageFolder -InstallCommand "$($manifest.installCommandLine)").SetupFile }
         $isPsadt   = ($setupFile -ieq 'Invoke-AppDeployToolkit.exe')
         $msiInfo   = $meta.MsiInfo
+        # The MSI the package holds: the setup file's, as the .intunewin recorded it, or else the
+        # one MSI in the package folder — PSADT keeps it under Files\ (Find-PackageProductCode)
+        $packageCode = Get-FirstValue $msiInfo.MsiProductCode $(if ($packageFolder) { Find-PackageProductCode -Folder $packageFolder -SetupFile $setupFile })
 
         # PSADT packages: read AppVendor/AppName/AppVersion from the $adtSession block in
         # Invoke-AppDeployToolkit.ps1 (requires SourceFolder, i.e. piping from the build or
         # passing it explicitly). Empty values in the template are ignored.
-        $psadtMeta = @{}
-        if ($isPsadt -and $SourceFolder) {
-            $deployScript = Join-Path -Path $SourceFolder -ChildPath 'Invoke-AppDeployToolkit.ps1'
-            if (Test-Path -LiteralPath $deployScript) {
-                $deployContent = Get-Content -LiteralPath $deployScript -Raw
-                foreach ($key in 'AppVendor', 'AppName', 'AppVersion') {
-                    $pattern = '(?m)^\s*' + $key + '\s*=\s*([''"])(.*?)\1'
-                    if ($deployContent -match $pattern -and $Matches[2].Trim()) {
-                        $psadtMeta[$key] = $Matches[2].Trim()
-                    }
-                }
-                if ($psadtMeta.Count -gt 0) {
-                    Write-Host ("PSADT metadata: " + (($psadtMeta.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)='$($_.Value)'" }) -join ', '))
-                }
-            }
+        $psadtMeta = if ($isPsadt -and $packageFolder) { Get-PsadtMetadata -Folder $packageFolder } else { @{} }
+        if ($psadtMeta.Count -gt 0) {
+            Write-Host ("PSADT metadata: " + (($psadtMeta.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)='$($_.Value)'" }) -join ', '))
         }
 
         # --- Resolve app properties (manifest > PSADT > MSI metadata > defaults) ---
         $displayName = Get-FirstValue $manifest.displayName $psadtMeta.AppName $meta.Name ([IO.Path]::GetFileNameWithoutExtension($Path))
+        if (-not $displayName) { throw "app.json in $manifestDir has no displayName, and without the .intunewin there is nothing else to name the app by." }
         $publisher   = Get-FirstValue $manifest.publisher $psadtMeta.AppVendor $msiInfo.MsiPublisher
         if (-not $publisher) {
             $publisher = 'Unknown'
@@ -908,15 +1166,13 @@ function Publish-IntuneWinApp {
         }
         $version     = Get-FirstValue $manifest.version $psadtMeta.AppVersion $msiInfo.MsiProductVersion
 
-        $installCmd = Get-FirstValue $manifest.installCommandLine $(
-            if ($isPsadt)      { 'Invoke-AppDeployToolkit.exe -DeploymentType Install -DeployMode Silent' }
-            elseif ($msiInfo)  { "msiexec /i `"$setupFile`" /qn /norestart" }
-        )
-        $uninstallCmd = Get-FirstValue $manifest.uninstallCommandLine $(
-            if ($isPsadt)      { 'Invoke-AppDeployToolkit.exe -DeploymentType Uninstall -DeployMode Silent' }
-            elseif ($msiInfo)  { "msiexec /x `"$($msiInfo.MsiProductCode)`" /qn /norestart" }
-        )
-        if (-not $installCmd -or -not $uninstallCmd) {
+        # What app.json leaves out is filled in as the studio and Test-IntuneWinApp fill it in
+        # (Get-SetupCommand): the standard PSADT commands, msiexec for an MSI, a script and the
+        # Uninstall script beside it. Never a vendor .exe's switches — those are a guess.
+        $derived      = Get-SetupCommand -Setup $setupFile -Folder $packageFolder -ProductCode $packageCode
+        $installCmd   = Get-FirstValue $manifest.installCommandLine $derived.Install
+        $uninstallCmd = Get-FirstValue $manifest.uninstallCommandLine $derived.Uninstall
+        if ($Path -and (-not $installCmd -or -not $uninstallCmd)) {
             throw "Cannot derive install/uninstall command lines for '$displayName'. Add installCommandLine/uninstallCommandLine to app.json."
         }
 
@@ -926,11 +1182,15 @@ function Publish-IntuneWinApp {
         if ($detection) {
             switch ($detection.type) {
                 'msi' {
-                    $detectionRule = @{
-                        '@odata.type'          = '#microsoft.graph.win32LobAppProductCodeDetection'
-                        productCode            = (Get-FirstValue $detection.productCode $msiInfo.MsiProductCode)
-                        productVersionOperator = 'notConfigured'
-                        productVersion         = $null
+                    $productCode = Get-FirstValue $detection.productCode $packageCode
+                    # Without the package there is no product code to take; the rule stays as it is
+                    if ($productCode -or $Path) {
+                        $detectionRule = @{
+                            '@odata.type'          = '#microsoft.graph.win32LobAppProductCodeDetection'
+                            productCode            = $productCode
+                            productVersionOperator = 'notConfigured'
+                            productVersion         = $null
+                        }
                     }
                 }
                 'file' {
@@ -979,7 +1239,7 @@ function Publish-IntuneWinApp {
                 productVersion         = $null
             }
         }
-        else {
+        elseif ($Path) {
             throw "No detection rule for '$displayName'. Non-MSI packages need a 'detection' block in app.json (type: file/registry/script) — a registry rule on the app's uninstall key (DisplayVersion, operator greaterThanOrEqual) is usually the most robust for .exe installers."
         }
 
@@ -991,30 +1251,35 @@ function Publish-IntuneWinApp {
         }
 
         # --- Build the win32LobApp body ---
+        # Without new content (-MetadataOnly) the file name and setup file stay those of the
+        # content the app has, and what could not be told without the package is left out, so
+        # Intune keeps what it has for it.
         $appBody = [ordered]@{
             '@odata.type'                  = '#microsoft.graph.win32LobApp'
             displayName                    = $displayName
             description                    = (Get-FirstValue $manifest.description $displayName)
             publisher                      = $publisher
-            fileName                       = [IO.Path]::GetFileName($Path)
-            setupFilePath                  = $setupFile
-            installCommandLine             = $installCmd
-            uninstallCommandLine           = $uninstallCmd
-            installExperience              = @{
-                runAsAccount          = (Get-FirstValue $manifest.runAsAccount 'system')
-                deviceRestartBehavior = (Get-FirstValue $manifest.restartBehavior 'suppress')
-            }
-            allowedArchitectures           = (ConvertTo-AllowedArchitecture (Get-FirstValue $manifest.architecture 'x64'))
-            minimumSupportedWindowsRelease = $minOsRelease
-            detectionRules                 = @($detectionRule)
-            returnCodes                    = @(
-                @{ returnCode = 0;    type = 'success' }
-                @{ returnCode = 1707; type = 'success' }
-                @{ returnCode = 3010; type = 'softReboot' }
-                @{ returnCode = 1641; type = 'hardReboot' }
-                @{ returnCode = 1618; type = 'retry' }
-            )
         }
+        if (-not $MetadataOnly) {
+            $appBody.fileName      = [IO.Path]::GetFileName($Path)
+            $appBody.setupFilePath = $setupFile
+        }
+        if ($installCmd)   { $appBody.installCommandLine   = $installCmd }
+        if ($uninstallCmd) { $appBody.uninstallCommandLine = $uninstallCmd }
+        $appBody.installExperience = @{
+            runAsAccount          = (Get-FirstValue $manifest.runAsAccount 'system')
+            deviceRestartBehavior = (Get-FirstValue $manifest.restartBehavior 'suppress')
+        }
+        $appBody.allowedArchitectures           = ConvertTo-AllowedArchitecture (Get-FirstValue $manifest.architecture 'x64')
+        $appBody.minimumSupportedWindowsRelease = $minOsRelease
+        if ($detectionRule) { $appBody.detectionRules = @($detectionRule) }
+        $appBody.returnCodes = @(
+            @{ returnCode = 0;    type = 'success' }
+            @{ returnCode = 1707; type = 'success' }
+            @{ returnCode = 3010; type = 'softReboot' }
+            @{ returnCode = 1641; type = 'hardReboot' }
+            @{ returnCode = 1618; type = 'retry' }
+        )
         if ($version) { $appBody.displayVersion = "$version" }
         Add-CommonAppProperty -Body $appBody -Manifest $manifest -ManifestDir $manifestDir
 
@@ -1045,6 +1310,30 @@ function Publish-IntuneWinApp {
         })
         if ($requirementRules) { $appBody.requirementRules = $requirementRules }
 
+        # --- What can be shown to be wrong ---------------------------------------------
+        # The checks the studio's checklist makes (Get-PackageCheck), so a package published from
+        # here stops where one published from the studio stops — a command running a file the
+        # package does not hold, a detection rule that cannot match — and is warned about what
+        # a folder copied from the previous release carries over. What the folder holds is only
+        # judged when it is known for certain: -SourceFolder, which the build's output carries.
+        $checks = @{ Version = "$version"; SetupFile = "$setupFile"; PackageProductCode = "$packageCode"; DetectionBase = "$manifestDir" }
+        if ($SourceFolder) { $checks.Folder = $SourceFolder }
+        if ($installCmd)   { $checks.InstallCommand = $installCmd }
+        if ($uninstallCmd) { $checks.UninstallCommand = $uninstallCmd }
+        if ($detectionRule) {
+            # The rule as it goes out: an MSI rule with the product code it was given
+            $checks.Detection = if ("$($detection.type)" -eq 'msi' -or -not $detection) { @{ type = 'msi'; productCode = $detectionRule.productCode } } else { $detection }
+        }
+        $setupVersion = if ($msiInfo) { $msiInfo.MsiProductVersion }
+                        elseif ($SourceFolder -and (Get-SetupKind $setupFile) -eq 'exe') { (Get-SetupFileInfo -Path (Join-Path $SourceFolder $setupFile)).Version }
+        if ($setupVersion) { $checks.SetupVersion = "$setupVersion" }
+        $issues = @(Get-PackageCheck @checks)
+        foreach ($issue in @($issues | Where-Object { $_.Severity -eq 'Warn' })) { Write-Warning $issue.Message }
+        $blocking = @($issues | Where-Object { $_.Severity -eq 'Block' })
+        if ($blocking) {
+            throw ('Not published: ' + (($blocking | ForEach-Object { $_.Message.TrimEnd('.') + '.' }) -join ' ') + ' Nothing was created or changed.')
+        }
+
         $tenant = (Get-MgContext).TenantId
 
         # --- Create or update? -----------------------------------------------------
@@ -1055,146 +1344,184 @@ function Publish-IntuneWinApp {
         # duplicate by re-running a publish.
         $targetApp = Find-PublishTarget -DisplayName $displayName -ODataType 'win32LobApp' -TypeLabel 'a Win32 app'
         $isUpdate = [bool]$targetApp
+        if ($MetadataOnly -and -not $isUpdate) {
+            throw ("Intune has no Win32 app named '$displayName' to change. -MetadataOnly changes the settings of an app that is there; " +
+                   'publish it with its content first, or pass -AppId to name the app. Nothing was created.')
+        }
         $dependencies = @(Resolve-AppDependency -Manifest $manifest)
 
-        $processAction = if ($isUpdate) {
+        # On an update, the settings it changes, said before anything is changed
+        $current = $null
+        if ($isUpdate) {
+            $current = Get-IntuneAppState -Id $targetApp.id
+            if ($current) { Write-AppChange -Changes @(Compare-AppState -Sent $appBody -Held $current) -ContentToo:(-not $MetadataOnly) }
+        }
+
+        $processAction = if ($MetadataOnly) {
+            "Change the settings of Win32 app $($targetApp.id) in tenant $tenant (v$($targetApp.displayVersion) -> v$version; nothing is uploaded)"
+        } elseif ($isUpdate) {
             "Update Win32 app $($targetApp.id) in tenant $tenant (v$($targetApp.displayVersion) -> v$version, new content version)"
         } else {
             "Create Win32 app in Intune tenant $tenant"
         }
-        if (-not $PSCmdlet.ShouldProcess("$displayName ($([IO.Path]::GetFileName($Path)))", $processAction)) {
+        $processTarget = if ($Path) { "$displayName ($([IO.Path]::GetFileName($Path)))" } else { $displayName }
+        if (-not $PSCmdlet.ShouldProcess($processTarget, $processAction)) {
             return
         }
 
-        # --- 1. Create the app, or take over the existing one ----------------------
         # Not $appId: PowerShell names are case-blind, so that would be the -AppId parameter, and
         # the next package down the pipeline would update this one's app instead of its own
         $publishedAppId = $null
-        if ($isUpdate) {
+        $cvId = $null
+        if ($MetadataOnly) {
+            # --- Settings only: the app keeps the content it has ------------------------
             $publishedAppId = $targetApp.id
-            Write-Host "Updating Win32 app '$displayName' ($publishedAppId) — uploading a new content version..."
+            $cvId = Get-FirstValue $current.committedContentVersion $targetApp.committedContentVersion
+            Write-Host "Changing the settings of Win32 app '$displayName' ($publishedAppId) — nothing is uploaded..."
+            try {
+                Invoke-MgGraphRequest -Method PATCH -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId" `
+                    -Body ($appBody | ConvertTo-Json -Depth 20) -ContentType 'application/json' -ErrorAction Stop | Out-Null
+            }
+            catch { if (Test-GraphForbidden $_) { throw (Get-GraphForbiddenMessage -Action "change '$displayName'") }; throw }
         }
         else {
-            Write-Host "Creating Win32 app '$displayName' in Intune..."
-            $app = $null; $createError = $null
-            try {
-                $app = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps" `
-                           -Body ($appBody | ConvertTo-Json -Depth 20) -ContentType 'application/json' -ErrorAction Stop -ErrorVariable createError
-            }
-            catch { if (Test-GraphForbidden $_) { throw (Get-GraphForbiddenMessage -Action "create '$displayName'") }; throw }
-            $publishedAppId = $app.id
-            # No id means the POST reported an error instead of creating anything; going on
-            # would upload content to a nonexistent app and blame the user for the leftovers.
-            if ([string]::IsNullOrWhiteSpace($publishedAppId)) {
-                if (Test-GraphForbidden $createError) { throw (Get-GraphForbiddenMessage -Action "create '$displayName'") }
-                throw "Intune returned no app id for '$displayName' — the app was not created."
-            }
-            Write-Host "  App created: $publishedAppId"
-        }
-
-        $tempPayload = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ("IntunePackage_{0}.bin" -f [guid]::NewGuid())
-        try {
-            # --- 2. Content version + file entry ---
-            $cv = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId/microsoft.graph.win32LobApp/contentVersions" `
-                      -Body '{}' -ContentType 'application/json'
-            $cvId = $cv.id
-
-            $payload  = Export-IntuneWinPayload -FilePath $Path -Destination $tempPayload
-            $fileBody = @{
-                '@odata.type' = '#microsoft.graph.mobileAppContentFile'
-                name          = [IO.Path]::GetFileName($Path)
-                size          = [int64]$meta.UnencryptedContentSize
-                sizeEncrypted = [int64]$payload.Length
-                manifest      = $null
-                isDependency  = $false
-            }
-            $contentFile = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId/microsoft.graph.win32LobApp/contentVersions/$cvId/files" `
-                               -Body ($fileBody | ConvertTo-Json) -ContentType 'application/json'
-            $fileUri = "$graphBase/deviceAppManagement/mobileApps/$publishedAppId/microsoft.graph.win32LobApp/contentVersions/$cvId/files/$($contentFile.id)"
-
-            # --- 3. Upload payload to Azure Storage ---
-            $contentFile = Wait-IntuneFileState -Uri $fileUri -State 'azureStorageUriRequestSuccess'
-            Write-Host ("  Uploading content ({0:N1} MB)..." -f ($payload.Length / 1MB))
-            Send-IntuneAzureBlob -FilePath $tempPayload -SasUri $contentFile.azureStorageUri -FileUri $fileUri
-
-            # --- 4. Commit with encryption info from the package ---
-            $enc = $meta.EncryptionInfo
-            $commitBody = @{
-                fileEncryptionInfo = @{
-                    encryptionKey        = $enc.EncryptionKey
-                    macKey               = $enc.MacKey
-                    initializationVector = $enc.InitializationVector
-                    mac                  = $enc.Mac
-                    profileIdentifier    = $enc.ProfileIdentifier
-                    fileDigest           = $enc.FileDigest
-                    fileDigestAlgorithm  = $enc.FileDigestAlgorithm
-                }
-            }
-            Invoke-MgGraphRequest -Method POST -Uri "$fileUri/commit" -Body ($commitBody | ConvertTo-Json -Depth 5) -ContentType 'application/json' | Out-Null
-            Wait-IntuneFileState -Uri $fileUri -State 'commitFileSuccess' | Out-Null
-
-            # --- 5. Point the app at the new content ----------------------------
-            # On an update the whole desired state rides along, so app.json stays the
-            # source of truth for metadata too. largeIcon is only part of the body when
-            # the manifest names an icon, so an existing icon is never wiped by accident,
-            # and assignments are not touched at all.
-            $patchBody = [ordered]@{}
-            if ($isUpdate) { foreach ($key in $appBody.Keys) { $patchBody[$key] = $appBody[$key] } }
-            else           { $patchBody['@odata.type'] = '#microsoft.graph.win32LobApp' }
-            $patchBody.committedContentVersion = "$cvId"
-            Invoke-MgGraphRequest -Method PATCH -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId" `
-                -Body ($patchBody | ConvertTo-Json -Depth 20) -ContentType 'application/json' | Out-Null
-
-            # Last, once the app is complete: a dependency that cannot be set leaves a working
-            # app that installs once its dependency is there, not a half-made one
-            if ($dependencies) {
-                try {
-                    Set-AppDependency -TargetAppId $publishedAppId -Dependencies $dependencies
-                    Write-Host ("  Depends on: " + (($dependencies | ForEach-Object { $_.Name }) -join ', '))
-                }
-                catch {
-                    Write-Warning ("'$displayName' is published, but its dependency on $(($dependencies | ForEach-Object { $_.Name }) -join ', ') " +
-                                   "could not be set: $($_.Exception.Message) Set it in the portal, or publish again with -Update.")
-                }
-            }
-
-            Write-Host $(if ($isUpdate) {
-                "  Done. '$displayName' now runs content version $cvId; assignments were left as they were."
-            } else {
-                "  Done. '$displayName' is published (no assignments yet)."
-            }) -ForegroundColor Green
-
-            [pscustomobject]@{
-                Action         = if ($isUpdate) { 'Updated' } else { 'Created' }
-                AppId          = $publishedAppId
-                DisplayName    = $displayName
-                Version        = $version
-                ContentVersion = "$cvId"
-                TenantId       = $tenant
-                PortalUrl      = "https://intune.microsoft.com/#view/Microsoft_Intune_Apps/SettingsMenu/~/0/appId/$publishedAppId"
-            }
-        }
-        catch {
+            # --- 1. Create the app, or take over the existing one ----------------------
             if ($isUpdate) {
-                # The app is only switched over in the final PATCH, so a failure here leaves
-                # it serving the previous content version — retrying is safe.
-                Write-Warning "App '$displayName' ($publishedAppId) still runs its previous content version; nothing was changed over. Safe to retry."
+                $publishedAppId = $targetApp.id
+                Write-Host "Updating Win32 app '$displayName' ($publishedAppId) — uploading a new content version..."
             }
-            elseif ($publishedAppId) {
-                # Only send anyone hunting through the portal when there is really something there.
-                Write-Warning "App '$displayName' ($publishedAppId) was created but content upload did not complete — delete it in the portal before retrying."
+            else {
+                Write-Host "Creating Win32 app '$displayName' in Intune..."
+                $app = $null; $createError = $null
+                try {
+                    $app = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps" `
+                               -Body ($appBody | ConvertTo-Json -Depth 20) -ContentType 'application/json' -ErrorAction Stop -ErrorVariable createError
+                }
+                catch { if (Test-GraphForbidden $_) { throw (Get-GraphForbiddenMessage -Action "create '$displayName'") }; throw }
+                $publishedAppId = $app.id
+                # No id means the POST reported an error instead of creating anything; going on
+                # would upload content to a nonexistent app and blame the user for the leftovers.
+                if ([string]::IsNullOrWhiteSpace($publishedAppId)) {
+                    if (Test-GraphForbidden $createError) { throw (Get-GraphForbiddenMessage -Action "create '$displayName'") }
+                    throw "Intune returned no app id for '$displayName' — the app was not created."
+                }
+                Write-Host "  App created: $publishedAppId"
             }
-            if (Test-GraphForbidden $_) { throw (Get-GraphForbiddenMessage -Action "change '$displayName'") }
-            throw
+
+            $tempPayload = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ("IntunePackage_{0}.bin" -f [guid]::NewGuid())
+            try {
+                # --- 2. Content version + file entry ---
+                $cv = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId/microsoft.graph.win32LobApp/contentVersions" `
+                          -Body '{}' -ContentType 'application/json'
+                $cvId = $cv.id
+
+                $payload  = Export-IntuneWinPayload -FilePath $Path -Destination $tempPayload
+                $fileBody = @{
+                    '@odata.type' = '#microsoft.graph.mobileAppContentFile'
+                    name          = [IO.Path]::GetFileName($Path)
+                    size          = [int64]$meta.UnencryptedContentSize
+                    sizeEncrypted = [int64]$payload.Length
+                    manifest      = $null
+                    isDependency  = $false
+                }
+                $contentFile = Invoke-MgGraphRequest -Method POST -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId/microsoft.graph.win32LobApp/contentVersions/$cvId/files" `
+                                   -Body ($fileBody | ConvertTo-Json) -ContentType 'application/json'
+                $fileUri = "$graphBase/deviceAppManagement/mobileApps/$publishedAppId/microsoft.graph.win32LobApp/contentVersions/$cvId/files/$($contentFile.id)"
+
+                # --- 3. Upload payload to Azure Storage ---
+                $contentFile = Wait-IntuneFileState -Uri $fileUri -State 'azureStorageUriRequestSuccess'
+                Write-Host ("  Uploading content ({0:N1} MB)..." -f ($payload.Length / 1MB))
+                Send-IntuneAzureBlob -FilePath $tempPayload -SasUri $contentFile.azureStorageUri -FileUri $fileUri
+
+                # --- 4. Commit with encryption info from the package ---
+                $enc = $meta.EncryptionInfo
+                $commitBody = @{
+                    fileEncryptionInfo = @{
+                        encryptionKey        = $enc.EncryptionKey
+                        macKey               = $enc.MacKey
+                        initializationVector = $enc.InitializationVector
+                        mac                  = $enc.Mac
+                        profileIdentifier    = $enc.ProfileIdentifier
+                        fileDigest           = $enc.FileDigest
+                        fileDigestAlgorithm  = $enc.FileDigestAlgorithm
+                    }
+                }
+                Invoke-MgGraphRequest -Method POST -Uri "$fileUri/commit" -Body ($commitBody | ConvertTo-Json -Depth 5) -ContentType 'application/json' | Out-Null
+                Wait-IntuneFileState -Uri $fileUri -State 'commitFileSuccess' | Out-Null
+
+                # --- 5. Point the app at the new content ----------------------------
+                # On an update the whole desired state rides along, so app.json stays the
+                # source of truth for metadata too. largeIcon is only part of the body when
+                # the manifest names an icon, so an existing icon is never wiped by accident,
+                # and assignments are not touched at all.
+                $patchBody = [ordered]@{}
+                if ($isUpdate) { foreach ($key in $appBody.Keys) { $patchBody[$key] = $appBody[$key] } }
+                else           { $patchBody['@odata.type'] = '#microsoft.graph.win32LobApp' }
+                $patchBody.committedContentVersion = "$cvId"
+                Invoke-MgGraphRequest -Method PATCH -Uri "$graphBase/deviceAppManagement/mobileApps/$publishedAppId" `
+                    -Body ($patchBody | ConvertTo-Json -Depth 20) -ContentType 'application/json' | Out-Null
+            }
+            catch {
+                if ($isUpdate) {
+                    # The app is only switched over in the final PATCH, so a failure here leaves
+                    # it serving the previous content version — retrying is safe.
+                    Write-Warning "App '$displayName' ($publishedAppId) still runs its previous content version; nothing was changed over. Safe to retry."
+                }
+                elseif ($publishedAppId) {
+                    # Only send anyone hunting through the portal when there is really something there.
+                    Write-Warning "App '$displayName' ($publishedAppId) was created but content upload did not complete — delete it in the portal before retrying."
+                }
+                if (Test-GraphForbidden $_) { throw (Get-GraphForbiddenMessage -Action "change '$displayName'") }
+                throw
+            }
+            finally {
+                if (Test-Path -LiteralPath $tempPayload) { Remove-Item -LiteralPath $tempPayload -Force -ErrorAction SilentlyContinue }
+            }
         }
-        finally {
-            if (Test-Path -LiteralPath $tempPayload) { Remove-Item -LiteralPath $tempPayload -Force -ErrorAction SilentlyContinue }
+
+        # Last, once the app is complete: a dependency that cannot be set leaves a working
+        # app that installs once its dependency is there, not a half-made one
+        if ($dependencies) {
+            try {
+                Set-AppDependency -TargetAppId $publishedAppId -Dependencies $dependencies
+                Write-Host ("  Depends on: " + (($dependencies | ForEach-Object { $_.Name }) -join ', '))
+            }
+            catch {
+                Write-Warning ("'$displayName' is published, but its dependency on $(($dependencies | ForEach-Object { $_.Name }) -join ', ') " +
+                               "could not be set: $($_.Exception.Message) Set it in the portal, or publish again with -Update.")
+            }
+        }
+
+        Write-Host $(if ($MetadataOnly) {
+            "  Done. '$displayName' has the settings from app.json and still runs content version $cvId; assignments were left as they were."
+        } elseif ($isUpdate) {
+            "  Done. '$displayName' now runs content version $cvId; assignments were left as they were."
+        } else {
+            "  Done. '$displayName' is published (no assignments yet)."
+        }) -ForegroundColor Green
+
+        # The app read back, against everything this run sent
+        $sent = [ordered]@{}
+        foreach ($key in $appBody.Keys) { $sent[$key] = $appBody[$key] }
+        if (-not $MetadataOnly) { $sent.committedContentVersion = "$cvId" }
+        $check = Confirm-AppState -Id $publishedAppId -Sent $sent
+
+        [pscustomobject]@{
+            Action         = if ($MetadataOnly) { 'MetadataUpdated' } elseif ($isUpdate) { 'Updated' } else { 'Created' }
+            AppId          = $publishedAppId
+            DisplayName    = $displayName
+            Version        = $version
+            ContentVersion = "$cvId"
+            TenantId       = $tenant
+            PortalUrl      = "https://intune.microsoft.com/#view/Microsoft_Intune_Apps/SettingsMenu/~/0/appId/$publishedAppId"
+            Verified       = $check.Verified
+            Differences    = $check.Differences
         }
     }
 }
 
-# Run directly when invoked with -Path (or -ManifestPath alone, for an Intune Store app);
-# dot-source the file to only load the function.
-if ($PSBoundParameters.ContainsKey('Path') -or $PSBoundParameters.ContainsKey('ManifestPath')) {
+# Run directly when invoked with -Path (or -ManifestPath or -SourceFolder alone, for an Intune
+# Store app or -MetadataOnly); dot-source the file to only load the function.
+if ($PSBoundParameters.ContainsKey('Path') -or $PSBoundParameters.ContainsKey('ManifestPath') -or $PSBoundParameters.ContainsKey('SourceFolder')) {
     Publish-IntuneWinApp @PSBoundParameters
 }

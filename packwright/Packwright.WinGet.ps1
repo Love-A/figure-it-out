@@ -235,6 +235,22 @@ function Get-WinGetSourceLabel {
     switch ($Source) { 'msstore' { 'Microsoft Store' } 'winget' { 'WinGet community repository' } default { $Source } }
 }
 
+# A licence as the line under the app's name shows it: a name, not a text. The Store passes on
+# whatever the publisher filled in - for VLC, the whole GPL - so its first line stands for it, cut
+# short if it is long, with an ellipsis whenever something is left out. A link says nothing there.
+function Get-WinGetLicenseLabel {
+    param([string]$License, [int]$Length = 40)
+    $lines = @("$License" -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if (-not $lines.Count -or $lines[0] -match '^https?://') { return '' }
+    $label = $lines[0]
+    if ($label.Length -le $Length -and $lines.Count -eq 1) { return $label }
+    if ($label.Length -gt $Length) {
+        # At a space, if one leaves at least half of it, so that no word is cut in two
+        $label = if ($label -match "^(.{$([int]($Length / 2)),$Length})\s") { $Matches[1] } else { $label.Substring(0, $Length) }
+    }
+    $label.TrimEnd(' ', ',', '.', ';', ':') + [char]0x2026
+}
+
 # What each source is, said where the choice is made. The Store's own description is a short
 # one on purpose: what an organisation that allows only the Store needs to know is that the
 # Store vets the app and serves the installer itself — Win32 apps from the Store included.
@@ -325,8 +341,9 @@ function Complete-WgDetail {
     $wg.Info = $info
     $c.GTxtName.Text = $info.Name
     $c.GTxtPublisher.Text = $info.Publisher
+    $license = Get-WinGetLicenseLabel $info.License
     $c.GTxtIdLine.Text = "$($info.Id) · $(Get-WinGetSourceLabel $info.Source)" +
-        $(if ($info.Pricing) { " · $($info.Pricing)" } else { '' }) + $(if ($info.License -and "$($info.License)" -notmatch '^https?://') { " · $($info.License)" } else { '' })
+        $(if ($info.Pricing) { " · $($info.Pricing)" } else { '' }) + $(if ($license) { " · $license" } else { '' })
     $c.GTxtDescription.Text = Format-WinGetDescription $info.Description
     $c.GImgIcon.Source = $null
     if ($info.IconUrl) {
@@ -1501,7 +1518,7 @@ ManifestType: merged
     # refuses the community package before anything reaches Intune
     $restrictedTools = Join-Path $wgRoot 'restricted'
     $null = New-Item -ItemType Directory -Path $restrictedTools -Force
-    Copy-Item -LiteralPath $script:EnginePublish, $script:EngineWinGet -Destination $restrictedTools
+    Copy-Item -LiteralPath $script:EnginePublish, $script:EngineWinGet, $script:EnginePackage -Destination $restrictedTools
     Copy-Item -LiteralPath $storeOnlyPath -Destination (Join-Path $restrictedTools 'Packwright.policy.json')
     $refused = Invoke-PublishProbe -PublishScript (Join-Path $restrictedTools 'Publish-IntuneWinApp.ps1') `
                    -Arguments @{ ManifestPath = $communityManifestPath; AllowDuplicateName = $true }
@@ -1557,6 +1574,17 @@ ManifestType: merged
     Assert-Test "A Store app can be delivered as Intune's Store app type" (
         $wingetDialog.C.GPnlDelivery.Visibility -eq 'Visible' -and $script:Wg.Plan.Delivery -eq 'store' -and
         $wingetDialog.C.GTxtPlan.Text -match "Intune's Microsoft Store app type installs") $wingetDialog.C.GTxtPlan.Text
+    # The Store passes on a licence as the publisher filled it in: VLC's is the whole GPL, which
+    # filled the pane and pushed the plan out of sight
+    $gplInfo = $storeInfo.PSObject.Copy()
+    $gplInfo.License = "GNU GENERAL PUBLIC LICENSE`n                       Version 2, June 1991`n`n Copyright (C) 1989, 1991 Free Software Foundation, Inc.,"
+    Complete-WgDetail -Result @($gplInfo) -Failure $null -Context @{ Source = 'msstore'; Id = $gplInfo.Id }
+    Assert-Test 'A licence that is a whole text shows as its first line' (
+        $wingetDialog.C.GTxtIdLine.Text -ceq "9NSELFTEST01 · Microsoft Store · Free · GNU GENERAL PUBLIC LICENSE$([char]0x2026)") $wingetDialog.C.GTxtIdLine.Text
+    $longLicense = Get-WinGetLicenseLabel 'Copyright (c) Contoso Corporation. All rights reserved worldwide.'
+    Assert-Test 'A long licence line is cut at a space, a short one is shown whole, and a link not at all' (
+        $longLicense -ceq "Copyright (c) Contoso Corporation. All$([char]0x2026)" -and (Get-WinGetLicenseLabel 'MIT') -ceq 'MIT' -and
+        -not (Get-WinGetLicenseLabel $storeInfo.License)) $longLicense
     $script:Wg = $null
 
     Assert-Test 'A WinGet package opens with its card' (

@@ -6,8 +6,9 @@
     Advanced function wrapper for IntuneWinAppUtil.exe that:
       - Can be run directly with parameters:  .\Build-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip"
         or dot-sourced to load the Build-IntuneWinApp function into the session
-      - Auto-detects the setup file when -SetupFile is omitted (Invoke-AppDeployToolkit.exe
-        for PSADT packages, otherwise a single .msi, otherwise a single Install*.ps1/.cmd/.bat)
+      - Auto-detects the setup file when -SetupFile is omitted, as the studio does: the file
+        app.json's installCommandLine runs, else Invoke-AppDeployToolkit.exe for PSADT packages,
+        else a single .msi, else a single Install*.ps1/.cmd/.bat (Packwright.Package.ps1)
       - Creates ".\Output\<PackageName>" (relative to the script) unless -OutputRoot is specified
       - Writes a per-build log into the output folder
       - Backs up an existing .intunewin as <name>-<timestamp>.bak.intunewin and prunes old
@@ -24,8 +25,9 @@
 
 .PARAMETER SetupFile
     Setup file located inside SourceFolder — any file the package is installed from, an
-    install script included. Optional: auto-detected if the folder contains
-    Invoke-AppDeployToolkit.exe, exactly one .msi, or exactly one Install*.ps1/.cmd/.bat.
+    install script included. Optional: auto-detected when app.json in the folder has an
+    installCommandLine that runs a file there, or the folder holds Invoke-AppDeployToolkit.exe,
+    exactly one .msi, or exactly one Install*.ps1/.cmd/.bat.
 
 .PARAMETER OutputRoot
     Optional base output folder. Defaults to ".\Output" relative to the script file.
@@ -66,8 +68,9 @@
 
 .NOTES
     Author    : Love A
-    File Name : Build-IntuneWinApp.ps1 (can be used as a module .psm1 as well)
+    File Name : Build-IntuneWinApp.ps1, with Packwright.Package.ps1 next to it
 .VERSION
+    2026-11-03 - 2.5 - The setup file chosen as the studio chooses it, app.json's install command first
     2026-09-22 - 2.4 - Auto-detects a single Install*.ps1/.cmd/.bat as the setup file
     2026-09-08 - 2.3 - A build that wrote no .intunewin no longer reports an older one
     2026-09-04 - 2.2 - Windows PowerShell 5.1 turned away; UNC source folders work
@@ -104,6 +107,13 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw ("Build-IntuneWinApp needs PowerShell 7 — this is Windows PowerShell $($PSVersionTable.PSVersion). " +
            'Start pwsh and run it from there (winget install Microsoft.PowerShell).')
 }
+
+# Which file a package installs from is Packwright.Package.ps1's to say, for this script, the
+# studio, Publish-IntuneWinApp and Test-IntuneWinApp alike
+if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Packwright.Package.ps1'))) {
+    throw "Build-IntuneWinApp needs Packwright.Package.ps1 next to it, in $PSScriptRoot. Keep the Packwright scripts together."
+}
+. (Join-Path $PSScriptRoot 'Packwright.Package.ps1')
 
 function Build-IntuneWinApp {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -198,28 +208,26 @@ function Build-IntuneWinApp {
 
         # Auto-detect setup file if not specified (kept in a local so pipeline items don't inherit it)
         $setup = $SetupFile
+        $setupReason = $null
         if (-not $setup) {
-            # A package built around an install script is as ordinary as one built around an
-            # MSI — IntuneWinAppUtil records whatever file it is given and only reads MSI
-            # properties out of an .msi. Only an unambiguous Install*.ps1/.cmd/.bat counts:
-            # guessing between several is how the wrong entry point gets recorded silently.
-            $installScripts = @(Get-ChildItem -LiteralPath $resolvedSource -File |
-                                Where-Object { $_.Extension -in '.ps1', '.cmd', '.bat' -and $_.BaseName -match '^install' })
-            if (Test-Path -LiteralPath (Join-Path -Path $resolvedSource -ChildPath 'Invoke-AppDeployToolkit.exe')) {
-                $setup = 'Invoke-AppDeployToolkit.exe'
+            # As the studio chooses it (Select-SetupFile): an app.json that carries an install
+            # command has already said which file installs the package — a vendor .exe beside
+            # it, or the application's own .exe in a payload folder, used to stop this with
+            # "could not auto-detect" or, worse, be taken for it. Then PSADT, the one .msi, the
+            # one Install*.ps1/.cmd/.bat. Only a certain answer counts: guessing between several
+            # is how the wrong entry point gets recorded silently.
+            $installCommand = $null
+            $manifestFile = Join-Path -Path $resolvedSource -ChildPath 'app.json'
+            if (Test-Path -LiteralPath $manifestFile) {
+                try { $installCommand = "$((Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json).installCommandLine)" }
+                catch { Write-Warning "app.json in $resolvedSource could not be read ($($_.Exception.Message)); the setup file is chosen from the files alone." }
             }
-            else {
-                $msiFiles = @(Get-ChildItem -LiteralPath $resolvedSource -Filter *.msi -File)
-                if ($msiFiles.Count -eq 1) {
-                    $setup = $msiFiles[0].Name
-                }
-                elseif ($msiFiles.Count -eq 0 -and $installScripts.Count -eq 1) {
-                    $setup = $installScripts[0].Name
-                }
-                else {
-                    throw "Could not auto-detect setup file in '$resolvedSource' (no Invoke-AppDeployToolkit.exe, found $($msiFiles.Count) .msi files and $($installScripts.Count) install scripts). Specify -SetupFile."
-                }
+            $choice = Select-SetupFile -Folder $resolvedSource -InstallCommand $installCommand
+            if (-not $choice.SetupFile) {
+                throw "Could not auto-detect setup file in '$resolvedSource' ($($choice.Reason)). Specify -SetupFile, or name it in app.json's installCommandLine."
             }
+            $setup = $choice.SetupFile
+            $setupReason = $choice.Reason
         }
         $setupFullPath = Join-Path -Path $resolvedSource -ChildPath $setup
         if (-not (Test-Path -LiteralPath $setupFullPath)) {
@@ -247,7 +255,7 @@ function Build-IntuneWinApp {
             Write-BuildLog -LogFile $logFile -Message "==== Build start: $packageName ===="
             Write-BuildLog -LogFile $logFile -Message "ToolPath : $toolPath"
             Write-BuildLog -LogFile $logFile -Message "Source   : $resolvedSource"
-            Write-BuildLog -LogFile $logFile -Message "Setup    : $setup"
+            Write-BuildLog -LogFile $logFile -Message "Setup    : $setup$(if ($setupReason) { " ($setupReason)" })"
             Write-BuildLog -LogFile $logFile -Message "Output   : $outputFolder"
 
             # IntuneWinAppUtil always names the output <SetupFileName>.intunewin

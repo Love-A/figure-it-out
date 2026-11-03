@@ -5,12 +5,47 @@ Packwright is five components, versioned separately:
 | Component | File |
 |---|---|
 | **Studio** | `Packwright.ps1` (the GUI) and `Packwright.WinGet.ps1` |
-| **Build** | `Build-IntuneWinApp.ps1` |
+| **Build** | `Build-IntuneWinApp.ps1`, and `Packwright.Package.ps1`, which all of them read |
 | **Publish** | `Publish-IntuneWinApp.ps1` |
 | **WinGet** | `New-WinGetPackage.ps1`, and the device scripts it writes (*runner*) |
 | **Test** | `Test-IntuneWinApp.ps1` |
 
 Newest first. A heading names every component the release changed; under a heading that names several, each bullet starts with its component. Why a change was made, and how it was tested, is in its commit message.
+
+## Studio 2.14 · Build 2.5 · Publish 1.11 · Test 1.3 — 2026-11-03
+
+**Action:** a script copied out on its own needs `Packwright.Package.ps1` beside it — keep the Packwright scripts together.
+
+### Added
+- Publish: stops before anything is created where the studio's checklist stops — a command running a file the package does not hold, a detection rule that cannot match. See [Reusing a package folder](README.md#reusing-a-package-folder-for-the-next-release).
+- Publish: the studio's ⚠ lines are printed as warnings, such as a detection rule left on the previous version.
+- Publish, Test: a script package's install and uninstall commands are filled in when `app.json` names none, as in the studio.
+
+### Changed
+- Build: the setup file is the one `app.json`'s install command runs, as in the studio, so a vendor `.exe` with an `app.json` builds without `-SetupFile`.
+- Studio: a folder without `app.json` whose one install script is `Install*.ps1`/`.cmd`/`.bat` opens with that script as the setup file, as Build chooses it.
+- Publish: with `-SourceFolder`, an MSI rule without a product code takes it from the one MSI in the package, under `Files\` too, as the studio does.
+
+## Studio 2.13 — 2026-11-02
+
+### Fixed
+- In *Install it with WinGet*, a licence that is a whole text, such as VLC's in the Microsoft Store, shows as its first line instead of filling the details.
+
+## Publish 1.10 · Test 1.2 — 2026-11-02
+
+### Added
+- Publish: `"architecture": "x64only"` targets x64 devices without ARM64. See [App settings](README.md#app-settings--appjson).
+- Publish: `-MetadataOnly` changes the settings of an app Intune has without uploading content. See [Changing settings only](README.md#changing-settings-only--metadataonly).
+- Publish: an update lists the settings it changes before changing them, also under `-WhatIf`.
+- Publish: the app is read back after publishing; a setting Intune holds otherwise is a warning and is returned in `Differences`.
+- Publish: `-SourceFolder` can be given when the script is run directly.
+- Test: `-Elevate` asks Windows for administrator rights from a `pwsh` that is not elevated; saying no reports *Not tested*. See [Test on this computer](README.md#test-on-this-computer).
+
+## Studio 2.12 — 2026-10-28
+
+### Fixed
+- A search in *Find the app on this computer* that matches exactly one program no longer closes Packwright.
+- The hint to install the app and pick it is no longer shown under an MSI, file or script rule, where there is nothing to pick.
 
 ## Test 1.1 — 2026-10-28
 

@@ -9,9 +9,9 @@
 
       - copies the package to a folder of its own, as Intune extracts it, and runs the command
         from there - a folder only SYSTEM and administrators can change, as Intune's IMECache
-      - fills in what app.json leaves out the way Publish-IntuneWinApp does: the commands of a
-        PSADT or MSI package and an MSI's product code, so a package that publishes without
-        app.json tests without one
+      - fills in what app.json leaves out the way Publish-IntuneWinApp does, with the same
+        functions (Packwright.Package.ps1): the commands of a PSADT, MSI or script package and
+        an MSI's product code, so a package that publishes without them tests without them
       - runs it as SYSTEM through a one-off scheduled task, or as the signed-in user for an app
         that installs per user — never as the administrator who started the test
       - starts it from a 32-bit cmd.exe, as Intune does: 'powershell.exe' in a command then means
@@ -23,7 +23,7 @@
         best written from
 
     Changes this computer: the app is really installed. Run it again with -Action Uninstall to
-    remove it. Needs to run elevated.
+    remove it. Needs to run elevated — or, with -Elevate, asks Windows for that itself.
 
 .PARAMETER SourceFolder
     The package folder (the one holding app.json - which an MSI or PSADT package may go without).
@@ -43,13 +43,26 @@
 .PARAMETER Pause
     Wait for Enter before the window closes, so the result can be read.
 
+.PARAMETER Elevate
+    From a PowerShell that is not elevated: ask Windows for administrator rights (UAC — an
+    administrator's sign-in where this account is not one), run the test in a window of its
+    own and show its result here. Saying no is not an error: nothing is run, and the result
+    says 'Not tested'. Building and publishing never need the test.
+
 .EXAMPLE
     .\Test-IntuneWinApp.ps1 -SourceFolder "C:\IntunePackages\7-Zip 26.04"
 
+.EXAMPLE
+    .\Test-IntuneWinApp.ps1 -SourceFolder "C:\IntunePackages\7-Zip 26.04" -Elevate
+
+    The same from a PowerShell that is not elevated: Windows asks for administrator rights first.
+
 .NOTES
     Author    : Love A
-    Requires  : PowerShell 7, administrator rights.
+    Requires  : PowerShell 7, administrator rights (or -Elevate), Packwright.Package.ps1 next to it.
 .VERSION
+    2026-11-03 - 1.3 - What app.json leaves out filled in by the same functions as Publish and the studio
+    2026-11-02 - 1.2 - -Elevate asks Windows for administrator rights
     2026-10-28 - 1.1 - A folder only administrators can change, and app.json read as Publish reads it
     2026-10-08 - 1.0 - Initial version
 
@@ -69,13 +82,24 @@ param(
     [ValidateRange(1, 1440)]
     [int]$TimeoutMinutes = 60,
 
-    [switch]$Pause
+    [switch]$Pause,
+
+    [switch]$Elevate
 )
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw ("Test-IntuneWinApp needs PowerShell 7 — this is Windows PowerShell $($PSVersionTable.PSVersion). " +
            'Start pwsh and run it from there (winget install Microsoft.PowerShell).')
 }
+
+# What -Elevate starts again in a window of its own
+$script:TestScriptPath = $PSCommandPath
+
+# What app.json leaves out is filled in by Packwright.Package.ps1, as for Publish and the studio
+if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Packwright.Package.ps1'))) {
+    throw "Test-IntuneWinApp needs Packwright.Package.ps1 next to it, in $PSScriptRoot. Keep the Packwright scripts together."
+}
+. (Join-Path $PSScriptRoot 'Packwright.Package.ps1')
 
 # What runs inside the scheduled task, as SYSTEM or as the signed-in user, under Windows
 # PowerShell 5.1 — so 5.1 syntax and plain ASCII. It reads its instructions from the work folder
@@ -329,49 +353,95 @@ function Protect-TestFolder {
     }
 }
 
-# An MSI's ProductCode, read from its Property table without installing anything
-function Get-MsiProductCode {
-    param([Parameter(Mandatory)][string]$Path)
-    $installer = $null; $database = $null; $view = $null; $record = $null
-    try {
-        $installer = New-Object -ComObject WindowsInstaller.Installer
-        $database = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($Path, 0))
-        $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database,
-                    "SELECT Value FROM Property WHERE Property='ProductCode'")
-        [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
-        $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
-        $code = if ($record) { "$($record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1))".Trim() } else { '' }
-        [void]$view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
-        $code
-    }
-    catch { '' }
-    finally {
-        foreach ($comObject in $record, $view, $database, $installer) {
-            if ($comObject) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject) }
-        }
-    }
+# What app.json leaves out, filled in as Publish-IntuneWinApp and the studio fill it in — by the
+# same functions, in Packwright.Package.ps1: the setup file chosen as Build chooses it, its
+# commands (PSADT's, msiexec for an MSI, a script and the Uninstall script beside it) and the
+# product code of the MSI the package holds. @{ Install; Uninstall; ProductCode; MsiSetup }
+function Get-PackageDefault {
+    param([Parameter(Mandatory)][string]$Folder, [string]$InstallCommand)
+    $setup = (Select-SetupFile -Folder $Folder -InstallCommand $InstallCommand).SetupFile
+    $productCode = Find-PackageProductCode -Folder $Folder -SetupFile $setup
+    $commands = Get-SetupCommand -Setup $setup -Folder $Folder -ProductCode $productCode
+    @{ Install = $commands.Install; Uninstall = $commands.Uninstall; ProductCode = "$productCode"; MsiSetup = (Get-SetupKind $setup) -eq 'msi' }
 }
 
-# What Publish-IntuneWinApp fills in when app.json leaves it out: the commands of a PSADT package
-# or of an MSI that is the package's setup file, and the product code of the MSI the package
-# holds. An MSI only when there is exactly one, so there is no guessing which; it is the setup
-# file when it lies in the package folder itself. @{ Install; Uninstall; ProductCode; MsiSetup }
-function Get-PackageDefault {
-    param([Parameter(Mandatory)][string]$Folder)
-    $defaults = @{ Install = ''; Uninstall = ''; ProductCode = ''; MsiSetup = $false }
-    # By extension too: with 8.3 names on, *.msi also matches the WinGet runtime's .msixbundle
-    $msi = @(Get-ChildItem -LiteralPath $Folder -Filter *.msi -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ieq '.msi' })
-    if ($msi.Count -eq 1) { $defaults.ProductCode = Get-MsiProductCode -Path $msi[0].FullName }
-    if (Test-Path -LiteralPath (Join-Path $Folder 'Invoke-AppDeployToolkit.exe') -PathType Leaf) {
-        $defaults.Install = 'Invoke-AppDeployToolkit.exe -DeploymentType Install -DeployMode Silent'
-        $defaults.Uninstall = 'Invoke-AppDeployToolkit.exe -DeploymentType Uninstall -DeployMode Silent'
+# What a test found, the same whether it ran here or elevated in a window of its own
+function Write-TestOutcome {
+    param([Parameter(Mandatory)]$Outcome)
+    $color = if ($Outcome.Succeeded) { 'Green' } elseif ($Outcome.Verdict -eq 'Not tested') { 'Yellow' } else { 'Red' }
+    Write-Host ''
+    Write-Host "  $($Outcome.Verdict)" -ForegroundColor $color
+    foreach ($requirement in $Outcome.Requirements) { Write-Host ("  requirement '{0}': {1}" -f $requirement.Name, $(if ($requirement.Met) { 'met' } else { "NOT met ($($requirement.Output) $($requirement.Error))".Trim() })) }
+    if ($Outcome.Ran) { Write-Host ("  exit code {0} - {1} ({2} s)" -f $Outcome.ExitCode, $Outcome.ExitMeaning, $Outcome.Seconds) }
+    elseif ($Outcome.Error) { Write-Host "  $($Outcome.Error)" }
+    else { Write-Host '  The detection rule already found the app, so nothing was run (as Intune would). Use -Force to run it anyway.' }
+    if ($null -ne $Outcome.DetectionDetail) { Write-Host "  detection: $($Outcome.DetectionDetail)" }
+    if ($Outcome.Dependencies) { Write-Host "  depends on: $($Outcome.Dependencies -join ', ') - Intune installs that first; this test did not" -ForegroundColor Yellow }
+    foreach ($entry in $Outcome.ArpAdded) { Write-Host ("  Apps and features, {0}: {1} {2}  [{3}]" -f $entry.Change, $entry.DisplayName, $entry.DisplayVersion, $entry.KeyPath) }
+    foreach ($entry in $Outcome.ArpRemoved) { Write-Host ("  Apps and features, removed: {0} {1}" -f $entry.DisplayName, $entry.DisplayVersion) }
+    if ($Outcome.LogTail) { Write-Host '  --- WinGet runner log (last lines) ---'; $Outcome.LogTail | ForEach-Object { Write-Host "  $_" } }
+}
+
+# One argument of a command line, quoted the way Windows splits it again: the backslashes before
+# the closing quote doubled, or "C:\Packages\" would end in an escaped quote and run on into the
+# arguments after it.
+function ConvertTo-ProcessArgument {
+    param([Parameter(Mandatory)][string]$Value)
+    '"' + ($Value -replace '(\\+)$', '$1$1') + '"'
+}
+
+# Windows' UAC prompt, in a function of its own so the self-test can answer it instead
+function Start-ElevatedProcess {
+    param([Parameter(Mandatory)][string]$FilePath, [Parameter(Mandatory)][string]$Arguments)
+    $start = [Diagnostics.ProcessStartInfo]::new($FilePath, $Arguments)
+    $start.UseShellExecute = $true
+    $start.Verb = 'runas'
+    [Diagnostics.Process]::Start($start)
+}
+
+# -Elevate, from a PowerShell that is not elevated: this script again, in a window of its own that
+# Windows asks administrator rights for, and its result read back from the file it leaves - as the
+# studio's Test button does. A no to Windows is an answer, not a failure: nothing was run, and
+# the outcome says the package was not tested.
+function Invoke-ElevatedTest {
+    param([Parameter(Mandatory)][string]$SourceFolder, [string]$Action = 'Install', [switch]$Force,
+          [int]$TimeoutMinutes = 60, [string]$ResultPath)
+    $SourceFolder = (Resolve-Path -LiteralPath $SourceFolder).ProviderPath
+    $handOver = Join-Path ([IO.Path]::GetTempPath()) ('Packwright-test-{0}.json' -f [guid]::NewGuid())
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (ConvertTo-ProcessArgument $script:TestScriptPath),
+                   '-SourceFolder', (ConvertTo-ProcessArgument $SourceFolder), '-Action', $Action,
+                   '-TimeoutMinutes', $TimeoutMinutes, '-ResultPath', (ConvertTo-ProcessArgument $handOver))
+    if ($Force) { $arguments += '-Force' }
+    Write-Host "$Action $SourceFolder the way Intune would, in a window of its own. Windows asks for administrator rights first." -ForegroundColor Cyan
+    try { $process = Start-ElevatedProcess -FilePath (Join-Path $PSHOME 'pwsh.exe') -Arguments ($arguments -join ' ') }
+    catch {
+        # 1223: the UAC prompt was answered no, or closed. Anything else is a real failure.
+        $declined = $false
+        for ($exception = $_.Exception; $exception; $exception = $exception.InnerException) {
+            if ($exception -is [ComponentModel.Win32Exception] -and $exception.NativeErrorCode -eq 1223) { $declined = $true }
+        }
+        if (-not $declined) { throw }
+        $outcome = [pscustomobject]@{
+            Action = $Action; Verdict = 'Not tested'; Succeeded = $false; Ran = $false
+            Error = 'Administrator rights were not given, so nothing was run or installed.'
+        }
+        if ($ResultPath) { ($outcome | ConvertTo-Json) | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
+        Write-TestOutcome -Outcome $outcome
+        return $outcome
     }
-    elseif ($msi.Count -eq 1 -and $msi[0].DirectoryName -ieq $Folder.TrimEnd('\')) {
-        $defaults.MsiSetup = $true
-        $defaults.Install = "msiexec /i `"$($msi[0].Name)`" /qn /norestart"
-        if ($defaults.ProductCode) { $defaults.Uninstall = "msiexec /x `"$($defaults.ProductCode)`" /qn /norestart" }
+    if ($process) { $process.WaitForExit() }
+    $outcome = $null
+    try { $outcome = Get-Content -LiteralPath $handOver -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+    Remove-Item -LiteralPath $handOver -Force -ErrorAction SilentlyContinue
+    if (-not $outcome) {
+        $outcome = [pscustomobject]@{
+            Action = $Action; Verdict = 'No result'; Succeeded = $false; Ran = $null
+            Error = 'The test window closed before the test had a result. Closed during the install, it may have left the app partly installed.'
+        }
     }
-    $defaults
+    if ($ResultPath) { ($outcome | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
+    Write-TestOutcome -Outcome $outcome
+    $outcome
 }
 
 function Test-IntuneWinApp {
@@ -381,11 +451,16 @@ function Test-IntuneWinApp {
         [ValidateSet('Install', 'Uninstall')][string]$Action = 'Install',
         [switch]$Force,
         [string]$ResultPath,
-        [int]$TimeoutMinutes = 60
+        [int]$TimeoutMinutes = 60,
+        [switch]$Elevate
     )
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'The test runs the package as SYSTEM through a scheduled task, which needs an elevated PowerShell. Start it as administrator.'
+        if ($Elevate) {
+            return Invoke-ElevatedTest -SourceFolder $SourceFolder -Action $Action -Force:$Force -TimeoutMinutes $TimeoutMinutes -ResultPath $ResultPath
+        }
+        throw ('The test runs the package as SYSTEM through a scheduled task, which needs an elevated PowerShell. Start it as administrator, ' +
+               'or add -Elevate to have Windows ask for administrator rights.')
     }
     $SourceFolder = (Resolve-Path -LiteralPath $SourceFolder).ProviderPath
     $manifestPath = Join-Path $SourceFolder 'app.json'
@@ -394,7 +469,7 @@ function Test-IntuneWinApp {
     if ("$($manifest.winget.delivery)" -eq 'store') {
         throw 'An Intune Store app is installed by Intune itself; there is no command here to test. Publish it and assign it to a test device.'
     }
-    $defaults = Get-PackageDefault -Folder $SourceFolder
+    $defaults = Get-PackageDefault -Folder $SourceFolder -InstallCommand "$($manifest.installCommandLine)"
     $command = if ($Action -eq 'Install') { "$($manifest.installCommandLine)".Trim() } else { "$($manifest.uninstallCommandLine)".Trim() }
     $derived = -not $command
     if ($derived) { $command = if ($Action -eq 'Install') { $defaults.Install } else { $defaults.Uninstall } }
@@ -535,18 +610,7 @@ function Test-IntuneWinApp {
     if ($ResultPath) { ($outcome | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
     Remove-Item -LiteralPath $package -Recurse -Force -ErrorAction SilentlyContinue
 
-    $color = if ($outcome.Succeeded) { 'Green' } else { 'Red' }
-    Write-Host ''
-    Write-Host "  $verdict" -ForegroundColor $color
-    foreach ($requirement in $outcome.Requirements) { Write-Host ("  requirement '{0}': {1}" -f $requirement.Name, $(if ($requirement.Met) { 'met' } else { "NOT met ($($requirement.Output) $($requirement.Error))".Trim() })) }
-    if ($outcome.Ran) { Write-Host ("  exit code {0} - {1} ({2} s)" -f $outcome.ExitCode, $outcome.ExitMeaning, $outcome.Seconds) }
-    elseif ($outcome.Error) { Write-Host "  $($outcome.Error)" }
-    else { Write-Host '  The detection rule already found the app, so nothing was run (as Intune would). Use -Force to run it anyway.' }
-    Write-Host "  detection: $($outcome.DetectionDetail)"
-    if ($dependencies) { Write-Host "  depends on: $($dependencies -join ', ') - Intune installs that first; this test did not" -ForegroundColor Yellow }
-    foreach ($entry in $added) { Write-Host ("  Apps and features, {0}: {1} {2}  [{3}]" -f $entry.Change, $entry.DisplayName, $entry.DisplayVersion, $entry.KeyPath) }
-    foreach ($entry in $removed) { Write-Host ("  Apps and features, removed: {0} {1}" -f $entry.DisplayName, $entry.DisplayVersion) }
-    if ($logTail) { Write-Host '  --- WinGet runner log (last lines) ---'; $logTail | ForEach-Object { Write-Host "  $_" } }
+    Write-TestOutcome -Outcome $outcome
     $outcome
 }
 
@@ -554,7 +618,7 @@ function Test-IntuneWinApp {
 if ($PSBoundParameters.ContainsKey('SourceFolder')) {
     $exitCode = 0
     try {
-        $outcome = Test-IntuneWinApp -SourceFolder $SourceFolder -Action $Action -Force:$Force -ResultPath $ResultPath -TimeoutMinutes $TimeoutMinutes
+        $outcome = Test-IntuneWinApp -SourceFolder $SourceFolder -Action $Action -Force:$Force -ResultPath $ResultPath -TimeoutMinutes $TimeoutMinutes -Elevate:$Elevate
         if (-not $outcome.Succeeded) { $exitCode = 1 }
     }
     catch {
