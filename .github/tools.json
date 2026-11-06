@@ -42,5 +42,9 @@
   {
     "slug": "Start-OSDForm",
     "scripts": 1
+  },
+  {
+    "slug": "System-Information",
+    "scripts": 0
   }
 ]
