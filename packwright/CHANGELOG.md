@@ -12,6 +12,43 @@ Packwright is five components, versioned separately:
 
 Newest first. A heading names every component the release changed; under a heading that names several, each bullet starts with its component. Why a change was made, and how it was tested, is in its commit message.
 
+## Studio 2.16 · WinGet 1.5 — 2026-11-11
+
+### Added
+- Studio: `x64only` can be picked as the architecture, for an app that must not reach ARM64 devices.
+
+### Fixed
+- Studio: an unexpected error in a click or a keystroke is written to the log and the window stays, instead of Packwright closing with what was not saved.
+- Studio: an `app.json` that cannot be read is said in the status line, and saving keeps it as `app.unreadable-<time>.json` instead of writing over it.
+- Studio: a package folder opened with a backslash on the end, as Tab completes it, no longer fails to save with `Cannot overwrite the item ... with itself`.
+- Studio: an app whose uninstall key has `[` or `]` in its name is no longer missing from *Find the app on this computer*.
+- Studio: a detection method misspelt in `app.json` is no longer shown, and saved, as the method the package opened before had.
+- Studio: a test window closed before the test had a result no longer blocks *Test on this computer* for three hours.
+- Studio: the link to the app published last goes when another package is opened.
+- Studio, WinGet: a WinGet package moved to a version that installs per user has its WinGet requirement rule run as the user too.
+- WinGet: `New-WinGetPackage.ps1` takes `-Force`, which its own message asked for when the folder already holds files.
+
+## Build 2.7 · Test 1.6 — 2026-11-10
+
+### Fixed
+- Build: a command such as `ServiceUI.exe -Process:explorer.exe Invoke-AppDeployToolkit.exe` no longer stops with `runs -Process:explorer.exe, which is not in this package`.
+- Build: a command that starts one of Windows' own tools, such as `regedit.exe` or `certutil.exe`, is no longer reported as running a file the package does not hold.
+- Build: a downloaded `IntuneWinAppUtil.exe` is kept only when it carries Microsoft's signature, so a broken download no longer fails every later build.
+- Test: a detection or requirement script kept outside the package folder is found, instead of the test reporting *Not detected after install*. A missing one stops the test first.
+
+## Studio 2.15 · Build 2.6 · Publish 1.15 · WinGet 1.4 · Test 1.5 — 2026-11-09
+
+### Fixed
+- Studio, Build, Publish, WinGet, Test: `Get-Help` shows each script's synopsis, parameters and examples, not only its syntax; `-Parameter` no longer answers `No parameter matches criteria`.
+
+## Publish 1.14 — 2026-11-09
+
+### Added
+- Several `-SourceFolder` folders are a batch: all planned first, reviewed one at a time, the approved ones published one after the other. See [Several packages in one run](README.md#several-packages-in-one-run--plan-review-publish).
+- A batch review offers to update an app with a similar name, such as one renamed in the portal, instead of creating a second app.
+- `-Batch <file>` publishes what a review approved and is not published yet, unless its files or its app in Intune have changed since.
+- `-SourceFolder` takes wildcards, and a name without a folder is looked for in the studio's package folder.
+
 ## Publish 1.13 · Test 1.4 · WinGet 1.3 — 2026-11-03
 
 ### Added

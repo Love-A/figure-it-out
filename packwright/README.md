@@ -8,7 +8,7 @@ Five PowerShell scripts — the GUI in two files — and no dependencies beyond 
 
 1. **`Packwright.ps1`** — the GUI: a guided wizard for occasional packagers and a full editor for everyone else. Start it with `.\Packwright.ps1` (optionally `-SourceFolder <path>`, `-Installer <file>`, or `-Wizard`). Its WinGet part — the WinGet dialog, the WinGet card in the editor and the runtime package — is **`Packwright.WinGet.ps1`**, which it reads, with `New-WinGetPackage.ps1`, the first time a session needs WinGet. Keep the two files together; it is not run on its own.
 2. **`Build-IntuneWinApp.ps1`** — packages a source folder into `.intunewin` using Microsoft's **IntuneWinAppUtil.exe** (downloaded automatically when missing), with logging, backups and safe overwrite handling.
-3. **`Publish-IntuneWinApp.ps1`** — creates or updates the Win32 app in Intune via Microsoft Graph: metadata, detection and requirement rules, dependencies, chunked content upload, commit. Idempotent with `-Update`, so the same spec can be applied from a scheduled task or a pipeline. Also publishes Intune's own Microsoft Store app type.
+3. **`Publish-IntuneWinApp.ps1`** — creates or updates the Win32 app in Intune via Microsoft Graph: metadata, detection and requirement rules, dependencies, chunked content upload, commit. Idempotent with `-Update`, so the same spec can be applied from a scheduled task or a pipeline. Several package folders at once are planned together and reviewed one at a time before any is published. Also publishes Intune's own Microsoft Store app type.
 4. **`New-WinGetPackage.ps1`** — writes a package folder that installs an app with WinGet, from the Microsoft Store or the community repository, with the detection rule taken from the app's manifest; and the *WinGet runtime* package every device needs once. See [Apps from WinGet](#apps-from-winget--the-microsoft-store-or-the-community-repository).
 5. **`Test-IntuneWinApp.ps1`** — installs or uninstalls any package on this computer the way Intune would (as SYSTEM, from a copy, started from a 32-bit process) and checks the requirement and detection rules. See [Test on this computer](#test-on-this-computer).
 
@@ -264,6 +264,9 @@ Paths are resolved with `.ProviderPath`, never `PathInfo.Path`: for a UNC path t
 # Build AND publish to Intune in one command (-Update: a new version of the app it was published as)
 .\Publish-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip" -Update
 
+# Several packages: planned together, reviewed one at a time, the approved ones published one after the other
+.\Publish-IntuneWinApp.ps1 -SourceFolder "C:\psadt\7-zip", "C:\psadt\vlc" -Update
+
 # ...or as a pipeline, with the functions loaded
 . .\Build-IntuneWinApp.ps1
 . .\Publish-IntuneWinApp.ps1
@@ -283,7 +286,7 @@ Build-IntuneWinApp -SourceFolder "C:\psadt\7-zip" -PassThru | Publish-IntuneWinA
 ### Features
 - Run directly with parameters (`.\Build-IntuneWinApp.ps1 -SourceFolder ...`) or dot-source to load the function — no more editing the bottom of the script.
 - Auto-detects the setup file as the studio does: the file `app.json`'s `installCommandLine` runs, else `Invoke-AppDeployToolkit.exe` (PSADT), a single `.msi`, or — in a folder with no `.msi` — a single `Install*.ps1` / `.cmd` / `.bat`. So a vendor `.exe` with an `app.json` beside it builds without `-SetupFile`, and the log says why each file was chosen. Override with `-SetupFile`, which has always taken any file: `IntuneWinAppUtil.exe` records whatever it is handed and only reads properties out of an `.msi`.
-- Runs `IntuneWinAppUtil.exe` from the script folder (fallback: `C:\IntuneWinAppUtil\`).
+- Runs `IntuneWinAppUtil.exe` from the script folder (fallback: `C:\IntuneWinAppUtil\`). In neither place, it is downloaded from Microsoft's repository and kept only if it carries Microsoft's signature.
 - Output goes to `.\Output\<PackageName>` with a per-build log file.
 - Existing `.intunewin` files are renamed to `*-<timestamp>.bak.intunewin`; old backups beyond `-KeepBackups` (default 3) are pruned automatically. `-OverwriteExisting` deletes instead.
 - `-PassThru` returns a result object (`IntuneWinFile`, `SourceFolder`, `SetupFile`, `SizeMB`, `Sha256`, `Duration`, `LogFile`) that pipes straight into `Publish-IntuneWinApp`.
@@ -362,6 +365,31 @@ A new icon, a better description, a corrected detection rule: none of them needs
 No `.intunewin` is needed — the package folder (`-SourceFolder`) or `-ManifestPath` is enough. The file name and setup file of the content stay as they are, and so does anything only the package could tell, such as the commands of an MSI that `app.json` does not name. It implies `-Update`, never creates an app, and takes `-AppId` and `-WhatIf` like any update.
 
 For automation, `-AppId` is the explicit key, and the `intune` block in `app.json` the remembered one — a display name is only unique by convention.
+
+### Several packages in one run — plan, review, publish
+
+Give `-SourceFolder` more than one package folder, and Publish plans them all before it asks about any of them, lets you review them one at a time, and then publishes the approved ones one after the other:
+
+```powershell
+.\Publish-IntuneWinApp.ps1 -Update -SourceFolder 'VLC*', 'Notepad++*', 'Visual Studio Code', 'DriveMapping*'
+```
+
+A name without a folder is looked for in the studio's package folder (*Settings*, `%USERPROFILE%\IntunePackages` unless changed) and then in the current folder; wildcards work, and a full path is taken as it is. A wildcard that finds several folders is a batch too.
+
+1. **Plan.** Each folder is checked and built, its app is found in Intune and what an update would change is worked out — what `-WhatIf` does for one package. One sign-in for all of them, and nothing is changed in Intune. A table shows what each package would do; one that cannot be published is listed with the reason and left out of the review.
+2. **Review.** One card per package: the app it goes to and how that app was found, the `.intunewin` and its SHA-256, what it installs, the detection rule, the settings it changes (now → `app.json`) and its warnings. **Approve**, **Skip**, or **Open in the studio** — close the studio and the package is planned and shown again. A package that would create a new app while Intune has one with a similar name — typically the app it was published as, renamed in the portal since — offers to update that app instead, and `app.json` remembers the choice.
+3. **Publish.** The approved packages, one at a time, with nobody needed at the keyboard. What was approved is what is published: the `.intunewin` that was reviewed, with the settings that were reviewed. A package whose `app.json` or `.intunewin` has changed since is left out, and says so. One that fails does not stop the next — a failed update still runs its previous content — but a failed sign-in or a `403` stops the rest, since it would stop every one of them.
+4. **Summary.** What became of each package, and a **batch file** in `Output\Batches` with the decisions and the results.
+
+The batch file is how to publish later. Answer **No, later** when asked whether to publish now — or let a run end with failures — and
+
+```powershell
+.\Publish-IntuneWinApp.ps1 -Batch '.\Output\Batches\Batch 2026-11-09 141203.json'
+```
+
+publishes what was approved and is not published yet, with the switches the batch was planned with. Each package's files are checked against the SHA-256 the review saw, and its plan is made again and held against the approved one: the same app, the same settings changed. Whatever differs is left for another review rather than published. `-Batch` asks nothing, so it can run from a scheduled task once someone has read the file.
+
+`-WhatIf` with several folders shows the plan and every package's card and stops there. `-Confirm:$false` skips the review and publishes every package that can be published — for automation, where nobody is there to answer.
 
 ### Auth — Entra app registration (`.secret`)
 Authenticates app-only via an Entra app registration, configured in a gitignored `.secret` JSON file next to the script — copy [.secret.template](.secret.template) to `.secret` and fill in:
@@ -478,7 +506,7 @@ Beyond the detection rule, `app.json` may carry:
 
 A WinGet package also has a `winget` block, which is what its commands and scripts are written from — leave it to Packwright. After a publish there is an `intune` block as well — see [Which app is "the app"?](#idempotent-publishing--update).
 
-**Mistakes in `app.json` are said before anything is published.** A key Packwright does not read — `"insallCommandLine"` — is a warning, since its setting would be left out unnoticed; keys starting with `_` are comments and are left alone. A value Intune would refuse or misread — a run time of 2000 minutes, `"true"` in quotes, a return code type of `Success` — stops the publish before anything is created. In VS Code, the schema gives completion and the same checks while you type:
+**Mistakes in `app.json` are said before anything is published.** A key Packwright does not read — `"insallCommandLine"` — is a warning, since its setting would be left out unnoticed; keys starting with `_` are comments and are left alone. A value Intune would refuse or misread — a run time of 2000 minutes, `"true"` in quotes, a return code type of `Success` — stops the publish before anything is created. An `app.json` that cannot be read at all — a missing comma, a path written with single backslashes — stops a publish from the command line; the studio says so when it opens the folder, and saving there keeps the unreadable file as `app.unreadable-<time>.json` beside the new one. In VS Code, the schema gives completion and the same checks while you type:
 
 ```jsonc
 // settings.json
@@ -511,7 +539,7 @@ Opening that folder picks `Install-App.ps1` as the setup file, because the manif
 
 Two things to keep in mind:
 
-- **The detection script has to be findable from `app.json`.** A bare `Detect-App.ps1` is looked for next to the manifest; a build that writes the manifest and the detection script into a folder *beside* the payload needs `"scriptFile": "..\\intune\\Detect-App.ps1"`, or the script copied in. It is uploaded to Intune as script content, so it does not have to be inside the `.intunewin`. A path that resolves to nothing is now a red checklist item instead of a rule that reads as finished.
+- **The detection script has to be findable from `app.json`.** A bare `Detect-App.ps1` is looked for next to the manifest; a build that writes the manifest and the detection script into a folder *beside* the payload needs `"scriptFile": "..\\intune\\Detect-App.ps1"`, or the script copied in. It is uploaded to Intune as script content, so it does not have to be inside the `.intunewin`. A path that resolves to nothing is now a red checklist item instead of a rule that reads as finished. [Test on this computer](#test-on-this-computer) finds the script the same way, wherever it is kept.
 - **Packwright writes `app.json` into the folder it has open.** If a build script generates the manifest somewhere else, the next build will not see the corrections you make here — generate it into the payload folder to begin with.
 
 On the command line the same package needs nothing special: the build takes the setup file from the install command in `app.json` too, and without one a single `Install*.ps1` is auto-detected. Anything else is named explicitly:
@@ -525,7 +553,8 @@ On the command line the same package needs nothing special: the build takes the 
 | Parameter | Description |
 |---|---|
 | `-Path` | The `.intunewin` file (pipeline from `Build-IntuneWinApp -PassThru`). Left out for an Intune Store app, published from `-ManifestPath` alone, and with `-MetadataOnly`. |
-| `-SourceFolder` | The package folder: where `app.json` is found and what the checks look in; set automatically when piping. Given without `-Path`, the folder is built first. With `-MetadataOnly`, nothing is built and the folder is all it needs. |
+| `-SourceFolder` | The package folder: where `app.json` is found and what the checks look in; set automatically when piping. Given without `-Path`, the folder is built first. With `-MetadataOnly`, nothing is built and the folder is all it needs. Several folders, or a wildcard that finds several, are a batch: see [Several packages in one run](#several-packages-in-one-run--plan-review-publish). |
+| `-Batch` | A batch file a review wrote: publishes what it approved and is not published yet, as it was approved. Given alone. |
 | `-ManifestPath` | Explicit path to `app.json`. |
 | `-TenantId` / `-ClientId` / `-CertificateThumbprint` / `-ClientSecret` | App-only auth overrides; normally read from `.secret`. |
 | `-Update` | Create when missing, otherwise upload a new content version to the existing app. Use this from automation. |

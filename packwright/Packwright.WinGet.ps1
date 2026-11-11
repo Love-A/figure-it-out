@@ -1205,6 +1205,17 @@ ManifestType: merged
         $movedManifest.installCommandLine -match '-Version 2\.0\.0' -and $movedManifest.intune.selftest.appId -eq 'stub-app-0001' -and
         $movedManifest.description -eq $communityManifest.description -and
         @(Get-WinGetScriptState -Folder $refreshPackage | Where-Object { $_.State -ne 'current' }).Count -eq 0) "$($movedManifest.version) — $($movedManifest.installCommandLine)"
+    # ...and to one whose installer installs per user: the app then installs as the signed-in
+    # user, and the rule that waits for WinGet has to ask in that account, not go on asking SYSTEM
+    $perUserInfo = $communityInfo.PSObject.Copy(); $perUserInfo.Version = '2.2.0'
+    $perUserInfo.Installers = @((& $newInstaller 'x64' 'inno' 'user' 'ContosoTool_is1' '' $null))
+    $null = Update-WinGetPackage -Folder $refreshPackage -Version '2.2.0' -Info $perUserInfo
+    $perUserManifest = Get-Content -LiteralPath $refreshManifestPath -Raw | ConvertFrom-Json
+    Assert-Test 'Moved to a version that installs per user, the rule that waits for WinGet asks as the user too' (
+        $perUserManifest.runAsAccount -eq 'user' -and $perUserManifest.requirements[0].runAsAccount -eq 'user') `
+        "$($perUserManifest.runAsAccount) / $($perUserManifest.requirements[0].runAsAccount)"
+    # "Pass -Force to write into it anyway" is what a folder left by a failed run is answered with
+    Assert-Test 'New-WinGetPackage.ps1 takes the -Force its own message asks for' ((Get-Command $script:EngineWinGet).Parameters.ContainsKey('Force'))
 
     # --- WinGet: the app's icon --------------------------------------------------------
     # All offline: pwsh.exe stands in for a program file, an MSI is made here, and the download
@@ -1660,6 +1671,13 @@ ManifestType: merged
         "$($ui.TxtVersion.Text) / $($moved.installCommandLine)"
     Assert-Test 'Another version is published as an update of the app, not beside it' (
         $ui.ChkUpdateExisting.IsChecked -and -not $ui.ChkAllowDuplicate.IsChecked)
+    # A version whose installer installs per user: the rule that waits for WinGet follows the account
+    $userInfo = $communityInfo.PSObject.Copy(); $userInfo.Version = '2.2.0'
+    $userInfo.Installers = @((& $newInstaller 'x64' 'inno' 'user' 'ContosoTool_is1' '' $null))
+    Set-WinGetPlan -Plan (New-WinGetInstallPlan -Info $userInfo -Policy $openPolicy) -Info $userInfo
+    $perUser = Get-Content -LiteralPath $communityManifestPath -Raw | ConvertFrom-Json
+    Assert-Test 'In the studio too, a version that installs per user has the rule that waits for WinGet ask as the user' (
+        $perUser.runAsAccount -eq 'user' -and $perUser.requirements[0].runAsAccount -eq 'user') "$($perUser.runAsAccount) / $($perUser.requirements[0].runAsAccount)"
 
     Assert-Test 'An Intune Store app opens without a setup file, command or detection rule' (
         (Open-PackageFolder -Folder $storePackage) -and (Test-WinGetStoreApp) -and $ui.PnlDetectionCard.Visibility -eq 'Collapsed' -and

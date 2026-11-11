@@ -26,14 +26,7 @@
         device: App Installer with its framework packages, and the Visual C++ runtime that
         winget.exe needs when it is started by its full path
 
-    Run it directly:
-      .\New-WinGetPackage.ps1 -Id 7zip.7zip -Source winget -Version 26.04
-      .\New-WinGetPackage.ps1 -Id 9MSPC6MP8FM4 -Source msstore
-      .\New-WinGetPackage.ps1 -Search whiteboard -Source msstore
-      .\New-WinGetPackage.ps1 -Runtime
-      .\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04"                  # current scripts
-      .\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04" -Version 26.05   # another version
-    or dot-source it to load the functions, as Packwright does.
+    Run it directly (see the examples), or dot-source it to load the functions, as Packwright does.
 
 .PARAMETER Id
     The package identifier: 9MSPC6MP8FM4 / XP89DCGQ3K6VLD in the Microsoft Store, 7zip.7zip in
@@ -45,6 +38,11 @@
 .PARAMETER Version
     Community packages only: the version to install. Without it the latest version is pinned;
     -Latest installs whatever is newest on the day each device installs it.
+
+.PARAMETER Latest
+    Community packages only: instead of pinning a version, install whatever is newest on the day
+    each device installs it — Intune does not upgrade it after that. With -Refresh, a pinned
+    package is switched to this.
 
 .PARAMETER Delivery
     msstore only: win32 (a Win32 app that runs these scripts, the default) or store (Intune's
@@ -64,6 +62,11 @@
     Do not download the installer to take the app's icon from it, when neither the catalog nor
     an installed copy on this computer has one.
 
+.PARAMETER Force
+    Write into a package folder that is already there and holds files. Without it that stops
+    the run - also when what the folder holds is what an earlier run left behind when it failed.
+    Files of the same names are written over, app.json among them.
+
 .PARAMETER Refresh
     A package folder this script wrote earlier: its scripts are written again from this
     Packwright's templates, as "Refresh the scripts" in the studio does — for a package made
@@ -72,11 +75,49 @@
     label follow. Everything else in app.json is left as it is. Publishing it as an update is a
     step of its own.
 
+.EXAMPLE
+    .\New-WinGetPackage.ps1 -Id 7zip.7zip -Source winget -Version 26.04
+
+    Creates a package folder for 7-Zip 26.04 from the community repository: its scripts, an
+    app.json and the app's icon. It builds and publishes like any other package folder.
+
+.EXAMPLE
+    .\New-WinGetPackage.ps1 -Id 9MSPC6MP8FM4 -Source msstore
+
+    Creates a package for an app in the Microsoft Store, by its Store id: by default a Win32 app
+    that installs it with WinGet (see -Delivery).
+
+.EXAMPLE
+    .\New-WinGetPackage.ps1 -Search whiteboard -Source msstore
+
+    Lists what the Microsoft Store has for "whiteboard", with the ids -Id takes. Creates nothing.
+
+.EXAMPLE
+    .\New-WinGetPackage.ps1 -Runtime
+
+    Creates the WinGet runtime package, which makes winget usable for SYSTEM on the devices.
+    Publish it once; the app packages rely on it.
+
+.EXAMPLE
+    .\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04"
+
+    Writes the package's scripts again from this Packwright's templates. The devices get them
+    when it is published as an update.
+
+.EXAMPLE
+    .\New-WinGetPackage.ps1 -Refresh "C:\IntunePackages\7-Zip 26.04" -Version 26.05
+
+    Moves the package to 7-Zip 26.05: the commands, the detection rule and the version label
+    follow that version's manifest, and the rest of app.json stays. Publish it as an update.
+
 .NOTES
     Author    : Love A
     Requires  : PowerShell 7 on the packaging computer; winget for community packages. The
                 scripts it writes run under Windows PowerShell 5.1 on the devices.
-.VERSION
+
+    Version history
+    2026-11-11 - 1.5 - -Force can be given, and a package moved to another version keeps its requirement rule in step
+    2026-11-09 - 1.4 - Get-Help shows this help, not only the syntax
     2026-11-03 - 1.3 - -Refresh brings a package's scripts up to date, or moves it to another version
     2026-10-27 - 1.2 - Runner 1.1: a time limit, and the install lock waited for
     2026-10-12 - 1.1 - A package gets the app's icon
@@ -105,6 +146,8 @@ param(
     [switch]$Runtime,
 
     [switch]$NoIconDownload,
+
+    [switch]$Force,
 
     [string]$Refresh
 )
@@ -2936,6 +2979,13 @@ function Update-WinGetPackage {
         $manifest['installCommandLine']   = $commands.Install
         $manifest['uninstallCommandLine'] = $commands.Uninstall
         $manifest['runAsAccount']         = $plan.RunAs
+        # The rule that waits for WinGet asks in the account the app installs as, which another
+        # version's installer can change: SYSTEM's winget and a user's are not ready together
+        foreach ($requirement in @($manifest['requirements'])) {
+            if ($requirement -is [Collections.IDictionary] -and "$($requirement['scriptFile'])" -eq 'Require-WinGetRuntime.ps1') {
+                $requirement['runAsAccount'] = $plan.RunAs
+            }
+        }
         $manifest['architecture']         = $plan.IntuneArchitecture
         if ($plan.Label) { $manifest['version'] = $plan.Label } else { [void]$manifest.Remove('version') }
         if ($plan.Detection) { $manifest['detection'] = $plan.Detection }
@@ -3166,7 +3216,7 @@ if ($MyInvocation.InvocationName -ne '.' -and ($Id -or $Search -or $Runtime -or 
         Write-Host "Publish it as an update to bring it to the devices: .\Publish-IntuneWinApp.ps1 -SourceFolder `"$($updated.Folder)`" -Update"
         $updated
     }
-    elseif ($Runtime) { New-WinGetRuntimePackage -PackageRoot $PackageRoot }
+    elseif ($Runtime) { New-WinGetRuntimePackage -PackageRoot $PackageRoot -Force:$Force }
     elseif ($Search) {
         $searchSource = if ($Source) { $Source } else { (Get-PackwrightPolicy).DefaultSource }
         Search-WinGetCatalog -Query $Search -Source $searchSource | Format-Table Id, Name, Version, Publisher, Kind -AutoSize
@@ -3174,7 +3224,7 @@ if ($MyInvocation.InvocationName -ne '.' -and ($Id -or $Search -or $Runtime -or 
     else {
         if (-not $Source) { throw 'Say which source the package comes from: -Source msstore or -Source winget.' }
         $created = New-WinGetPackage -Id $Id -Source $Source -Version $Version -Latest:$Latest -Delivery $Delivery -PackageRoot $PackageRoot `
-                                     -NoIconDownload:$NoIconDownload
+                                     -NoIconDownload:$NoIconDownload -Force:$Force
         foreach ($line in @($created.Plan.Notes) + @($created.Plan.Warnings | ForEach-Object { "WARNING: $_" })) { Write-Host $line }
         Write-Host $(if ($created.Icon.File) { "Icon taken from $($created.Icon.From) ($($created.Icon.Size)x$($created.Icon.Size))." }
                      else { "No icon found: $($created.Icon.From). Put an icon.png in the folder and name it in app.json." })

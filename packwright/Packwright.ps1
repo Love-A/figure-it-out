@@ -53,7 +53,10 @@
 .NOTES
     Author   : Love A
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the engine scripts beside it.
-.VERSION
+
+    Version history
+    2026-11-11 - 2.16 - An error nothing caught no longer closes the window; an unreadable app.json is kept, and smaller repairs
+    2026-11-09 - 2.15 - Get-Help shows this help, not only the syntax
     2026-11-03 - 2.14 - The package logic in Packwright.Package.ps1, shared with Build, Publish and Test
     2026-11-02 - 2.13 - The WinGet dialog shows a licence's name, not its whole text
     2026-10-28 - 2.12 - A search that finds one program no longer closes the app
@@ -939,8 +942,8 @@ $script:MainXaml = @'
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Margin="0,0,6,0">
                       <TextBlock Style="{StaticResource FieldLabel}" Text="ARCHITECTURE"/>
-                      <ComboBox x:Name="CmbArch">
-                        <ComboBoxItem Content="x64" IsSelected="True"/><ComboBoxItem Content="x86"/>
+                      <ComboBox x:Name="CmbArch" ToolTip="x64 reaches ARM64 devices too, as it always has in Intune; x64only leaves them out.">
+                        <ComboBoxItem Content="x64" IsSelected="True"/><ComboBoxItem Content="x64only"/><ComboBoxItem Content="x86"/>
                         <ComboBoxItem Content="x86,x64"/><ComboBoxItem Content="arm64"/><ComboBoxItem Content="neutral"/>
                       </ComboBox>
                     </StackPanel>
@@ -1120,6 +1123,43 @@ function Set-StatusText {
     param([string]$Text)
     $ui.TxtStatus.Text = $Text
 }
+
+# An error nothing else caught, on its way out of a click, a keystroke or a timer tick. WPF has
+# no handler above those, so it unwound through ShowDialog: PowerShell said "an error that was
+# not properly handled" and the process ended, with whatever had not been saved. Each one found
+# so far was fixed where it was; this is for the ones not found yet. The error is said in the
+# log, with the line it came from, and the window stays. Stopping the script itself - Ctrl+C in
+# its console - is not an error and ends the window as it did: $null for that.
+function Get-UnexpectedErrorText {
+    param([Parameter(Mandatory)][Exception]$Exception)
+    for ($inner = $Exception; $inner; $inner = $inner.InnerException) {
+        if ($inner -is [System.Management.Automation.PipelineStoppedException]) { return $null }
+    }
+    $record = if ($Exception -is [System.Management.Automation.IContainsErrorRecord]) { $Exception.ErrorRecord }
+    $message = if ($record -and $record.Exception -and -not [object]::ReferenceEquals($record.Exception, $Exception)) { $record.Exception.Message }
+               else { $Exception.Message }
+    $origin = if ($record -and $record.InvocationInfo -and $record.InvocationInfo.ScriptName) {
+        " ($(Split-Path -Leaf $record.InvocationInfo.ScriptName), line $($record.InvocationInfo.ScriptLineNumber))"
+    } else { '' }
+    "$message".TrimEnd('.') + $origin
+}
+
+$script:UnexpectedError = $null   # the last one said, so that a tick failing over and over is said once
+$window.Dispatcher.Add_UnhandledException({
+    param($sender, $eventArgs)
+    try {
+        $said = Get-UnexpectedErrorText -Exception $eventArgs.Exception
+        if ($null -eq $said) { return }
+        $eventArgs.Handled = $true
+        if ($script:UnexpectedError -and $script:UnexpectedError.Text -eq $said -and
+            ((Get-Date) - $script:UnexpectedError.At).TotalSeconds -lt 5) { return }
+        $script:UnexpectedError = @{ Text = $said; At = Get-Date }
+        Write-GuiLog "ERROR: Something went wrong that Packwright did not expect: $said. The window was kept open; what you were doing may not have been finished."
+        Set-StatusText 'Something went wrong that Packwright did not expect — see the log.'
+        $ui.ExpLog.IsExpanded = $true
+    }
+    catch { }
+})
 #endregion
 
 #region ---- Persisted settings and recent packages ------------------------------
@@ -1322,8 +1362,10 @@ function Get-InstalledApp {
         @{ Root = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'; Is32Bit = $true }
     )
     $apps = foreach ($hive in $hives) {
-        foreach ($key in @(Get-ChildItem -Path $hive.Root -ErrorAction SilentlyContinue)) {
-            $properties = Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue
+        # By literal path: a key named 'Support Service - [Vendor]' is a wildcard pattern to -Path,
+        # which finds nothing under it, and the app was then missing from the list
+        foreach ($key in @(Get-ChildItem -LiteralPath $hive.Root -ErrorAction SilentlyContinue)) {
+            $properties = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
             $name = "$($properties.DisplayName)".Trim()
             if (-not $name) { continue }
             if ($properties.SystemComponent -eq 1) { continue }
@@ -1514,9 +1556,15 @@ function Set-ComboValue {
 
 function Get-DetTypeValue { "$($ui.CmbDetType.SelectedItem.Tag)" }
 
+# A method that is not one of the four leaves the list on nothing. It used to stay where the
+# package opened before had it: the editor showed that method over this package's rule, and
+# saving wrote it there - over a rule that was only misspelt in app.json.
 function Set-DetTypeValue {
     param([string]$Value)
     foreach ($item in $ui.CmbDetType.Items) { if ("$($item.Tag)" -eq $Value) { $ui.CmbDetType.SelectedItem = $item; return } }
+    $ui.CmbDetType.SelectedItem = $null
+    Write-GuiLog ("WARNING: The detection rule in app.json " + $(if ($Value) { "says '$Value', which is not a detection method" } else { 'names no detection method' }) +
+                  ' (msi, file, registry or script). Pick one under Detection; the rest of the rule is kept.')
 }
 
 function Get-ThemeBrush {
@@ -1750,6 +1798,8 @@ function Import-PackageIcon {
 
 function Show-StartView {
     $script:LoadedFolder = $null
+    $script:PortalUrl = $null
+    $ui.BtnOpenPortal.Visibility = 'Collapsed'
     $script:WinGetBlock = $null
     $script:WinGetRuntimeBlock = $null
     $script:WinGetScripts = @()
@@ -1795,18 +1845,31 @@ function Open-PackageFolder {
     # prefix, and everything outside PowerShell — IntuneWinAppUtil.exe, the WindowsInstaller
     # COM object — then fails to open a path that looks perfectly fine in the log.
     $Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
+    # Without the backslash a folder typed, or completed with Tab, as 'C:\Packages\7-Zip\' ends in.
+    # With it, the icon lying in the folder looked like one picked from elsewhere and saving
+    # failed on copying it over itself, and "C:\Packages\7-Zip\" on the test's command line
+    # ends in an escaped quote. A drive's root keeps its own.
+    if ($Folder.Length -gt 3) { $Folder = $Folder.TrimEnd('\', '/') }
     $script:LoadedFolder  = $Folder
     $script:InitialValues = $null
     $script:PickedApp     = $null
+    # The link to the app published last belongs to the package that was open then
+    $script:PortalUrl     = $null
+    $ui.BtnOpenPortal.Visibility = 'Collapsed'
     Clear-PackageCache -Folder $Folder
     $script:Loading = $true
 
     try {
         $manifestPath = Join-Path $Folder 'app.json'
         $manifest = $null
+        $manifestError = $null
         if (Test-Path -LiteralPath $manifestPath) {
             try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
-            catch { Write-GuiLog "WARNING: app.json could not be read: $($_.Exception.Message)" }
+            catch {
+                $manifestError = $_.Exception.Message
+                Write-GuiLog ("WARNING: app.json could not be read: $manifestError The fields are filled in from the files in the folder instead, " +
+                              'and saving keeps the unreadable file as a copy beside the new one.')
+            }
         }
         # A WinGet package: its commands, scripts and detection are written from this block, by the
         # WinGet part of the studio - read now, if this is the first package to need it
@@ -1944,7 +2007,10 @@ function Open-PackageFolder {
         }
     foreach ($state in @($script:WinGetScripts | Where-Object { $_.State -ne 'current' })) { Write-GuiLog "WARNING: $($state.Detail)" }
     Write-GuiLog "Opened $Folder ($kindText)"
-    Set-StatusText "Opened '$(Split-Path -Leaf $Folder)'. Review the fields, then publish."
+    # Said where it is seen: the log is closed more often than not, and without this the editor
+    # looked like any other package's while showing nothing app.json says
+    Set-StatusText $(if ($manifestError) { "Opened '$(Split-Path -Leaf $Folder)', but its app.json could not be read: nothing it says is shown. See the log." }
+                     else { "Opened '$(Split-Path -Leaf $Folder)'. Review the fields, then publish." })
     $true
 }
 
@@ -2066,7 +2132,19 @@ function Save-AppManifest {
     $manifestPath = Join-Path $script:LoadedFolder 'app.json'
     $existing = @{}
     if (Test-Path -LiteralPath $manifestPath) {
-        try { $existing = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable } catch { $existing = @{} }
+        $read = $null
+        $unreadable = $false
+        try { $read = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable } catch { $unreadable = $true }
+        if ($read -is [System.Collections.IDictionary]) { $existing = $read }
+        elseif ($unreadable -or $null -ne $read) {
+            # What cannot be read cannot be kept, and written over it is gone: requirement rules,
+            # the app the package was published as - for a missing comma, or a path written with
+            # single backslashes. So the file is kept beside the new one, under a name that says so.
+            $kept = 'app.unreadable-{0:yyyyMMdd-HHmmss}.json' -f (Get-Date)
+            Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $script:LoadedFolder $kept) -Force
+            Write-GuiLog ("WARNING: app.json could not be read, so what it said is not in the one written now. " +
+                          "It is kept as $kept - take what you need from it, then delete it.")
+        }
     }
 
     $type = Get-DetTypeValue
@@ -2098,7 +2176,8 @@ function Save-AppManifest {
     $merged.restartBehavior       = Get-ComboValue $ui.CmbRestart
     $merged.architecture          = Get-ComboValue $ui.CmbArch
     $merged.minimumWindowsRelease = ConvertTo-MinOsValue "$($ui.CmbMinOs.Text)"
-    $merged.detection             = $detection
+    # With no method picked - app.json named one that is not a method - the rule stays as it was read
+    if ($type) { $merged.detection = $detection }
     if ($iconReference) { $merged.icon = $iconReference } else { $merged.Remove('icon') }
 
     if ($script:WinGetBlock) {
@@ -2108,6 +2187,13 @@ function Save-AppManifest {
             $script:WinGetBlock['detect'] = $null
         }
         $merged.winget = $script:WinGetBlock
+        # The rule that waits for WinGet asks in the account the app installs as. Another version's
+        # installer can change that account, and the rule was left asking in the one before
+        foreach ($requirement in @($merged['requirements'])) {
+            if ($requirement -is [System.Collections.IDictionary] -and "$($requirement['scriptFile'])" -eq 'Require-WinGetRuntime.ps1') {
+                $requirement['runAsAccount'] = $merged.runAsAccount
+            }
+        }
     }
     if (Test-WinGetStoreApp) {
         # Intune's Store app type has no command, detection rule or architecture of its own
@@ -2242,6 +2328,8 @@ function Test-ReadyToRun {
         'file'     { if (-not $ui.TxtDetPath.Text.Trim()) { $ui.TxtDetPath } elseif (-not $ui.TxtDetFile.Text.Trim()) { $ui.TxtDetFile } }
         'registry' { if (-not (Get-DetectionSummary).Ok) { $ui.TxtKeyPath } }
         'script'   { if (-not (Resolve-DetectionScript)) { $ui.TxtScript } }
+        # No method picked: app.json named one that is not a method, and the list was left on nothing
+        default    { $ui.CmbDetType }
     }
     if ($detectionBox) {
         # The summary already says what is wrong with this particular rule, and says it in
@@ -2253,7 +2341,8 @@ function Test-ReadyToRun {
     }
 
     if (-not $issues) { return $true }
-    foreach ($issue in $issues) { $issue.Box.Tag = 'invalid' }
+    # A text box is marked; the list of detection methods has its items' Tag to keep
+    foreach ($issue in $issues) { if ($issue.Box -is [Windows.Controls.TextBox]) { $issue.Box.Tag = 'invalid' } }
     Set-StatusText $issues[0].Message
     Write-GuiLog "Cannot publish yet: $($issues[0].Message)"
     $issues[0].Box.Focus() | Out-Null
@@ -3369,17 +3458,19 @@ function Start-PackageTest {
 
     $resultPath = Join-Path ([IO.Path]::GetTempPath()) ('Packwright-test-{0}.json' -f [guid]::NewGuid())
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    $testWindow = $null
     try {
-        Start-Process -FilePath $pwsh -Verb RunAs -ArgumentList @(
+        $testWindow = Start-Process -FilePath $pwsh -Verb RunAs -PassThru -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:EngineTest`"",
-            '-SourceFolder', "`"$script:LoadedFolder`"", '-Action', $Action, '-ResultPath', "`"$resultPath`"", '-Pause') | Out-Null
+            '-SourceFolder', "`"$script:LoadedFolder`"", '-Action', $Action, '-ResultPath', "`"$resultPath`"", '-Pause')
     }
     catch {
         Write-GuiLog "Test not started: $($_.Exception.Message)"
         Set-StatusText 'The test was not started (administrator rights were not given).'
         return
     }
-    $script:TestWatch = @{ ResultPath = $resultPath; Action = $Action; Folder = $script:LoadedFolder; Started = Get-Date }
+    $script:TestWatch = @{ ResultPath = $resultPath; Action = $Action; Folder = $script:LoadedFolder; Started = Get-Date
+                           Window = $testWindow; Closed = $null }
     Write-GuiLog "==== Test: $($Action.ToLowerInvariant()) $($ui.TxtName.Text.Trim()) as Intune would, in its own window ===="
     Set-StatusText "Testing the $($Action.ToLowerInvariant()) in its own window..."
     $script:TestTimer.Start()
@@ -3389,7 +3480,19 @@ function Receive-PackageTest {
     $watch = $script:TestWatch
     if (-not $watch) { $script:TestTimer.Stop(); return }
     if (-not (Test-Path -LiteralPath $watch.ResultPath)) {
-        if (((Get-Date) - $watch.Started).TotalHours -gt 3) { $script:TestWatch = $null; $script:TestTimer.Stop() }
+        # The test's window is gone and left no result: it was closed before the test had one.
+        # Said two seconds after it went, so that a result written as it closed is still read.
+        # It used to count as running for three hours, and no other test could be started.
+        $gone = $false
+        try { $gone = $watch.Window -and $watch.Window.WaitForExit(0) } catch { }
+        if ($gone -and -not $watch.Closed) { $watch.Closed = Get-Date }
+        if ($watch.Closed -and ((Get-Date) - $watch.Closed).TotalSeconds -ge 2) {
+            $script:TestWatch = $null
+            $script:TestTimer.Stop()
+            Write-GuiLog 'The test window closed before the test had a result. Closed during the install, it may have left the app partly installed.'
+            Set-StatusText 'The test window closed before the test had a result.'
+        }
+        elseif (((Get-Date) - $watch.Started).TotalHours -gt 3) { $script:TestWatch = $null; $script:TestTimer.Stop() }
         return
     }
     $outcome = $null
@@ -4637,6 +4740,13 @@ if ($TestLoad) {
     Assert-Test 'An absolute path is somebody else''s business' ($null -eq (Get-CommandFileIssue '"C:\Program Files\App\unins000.exe" /SILENT'))
     Assert-Test 'A missing subfolder path is caught' ((Get-CommandFileIssue 'msiexec /i "Files\app.msi" /qn') -eq 'Files\app.msi')
     Assert-Test 'A path that expands at run time is left alone' ($null -eq (Get-CommandFileIssue 'cmd /c "%~dp0install.cmd"'))
+    # What a switch or a property is given names something for the program to use, not a file the
+    # command runs; and Windows has more tools of its own than the few known by name
+    Assert-Test 'What a switch is given is not a file the command runs' ($null -eq (Get-CommandFileIssue '"nsis.exe" -Process:explorer.exe /S'))
+    Assert-Test 'What a property is set to is not a file the command runs' (
+        $null -eq (Get-CommandFileIssue 'msiexec /x "{11111111-2222-3333-4444-555555555555}" LAUNCHAPP=app.exe /qn'))
+    Assert-Test 'The file after such a switch is still looked for' ((Get-CommandFileIssue '"nsis.exe" -Process:explorer.exe gone.exe') -eq 'gone.exe')
+    Assert-Test "One of Windows' own tools is not looked for in the package" ($null -eq (Get-CommandFileIssue 'regedit.exe /s settings.reg'))
     $ui.TxtInstall.Text = '"gone.exe" /S'
     Assert-Test 'Readiness drops when the install command names a missing file' (-not (Update-Readiness)) $ui.ChkCommand.Text
     Assert-Test 'Publish blocked and the command marked' ((-not (Test-ReadyToRun -ForPublish)) -and $ui.TxtInstall.Tag -eq 'invalid')
@@ -4744,6 +4854,12 @@ if ($TestLoad) {
         $hits = @(Select-InstalledApp -All $pickSample -Filter $case.Filter)
         Assert-Test "Picker filter '$($case.Filter)'" ($hits.Count -eq $case.Count) "$($hits.Count) hit(s), expected $($case.Count)"
     }
+    # The same characters in the name of an uninstall key: read with -Path, 'Service - [Vendor]'
+    # is a pattern that matches nothing, and the app was missing from the list. Read from the
+    # source, since the list is this computer's own.
+    $pickerSource = (Get-Command Get-InstalledApp).ScriptBlock.ToString()
+    Assert-Test 'The list of installed apps reads the uninstall keys by literal path' (
+        $pickerSource -match 'Get-ItemProperty -LiteralPath' -and $pickerSource -notmatch 'Get-(ChildItem|ItemProperty) -Path\b')
 
     # --- A manifest value the dropdowns do not offer ------------------------------
     # These lists are shorter than what Intune accepts. An unlisted value used to leave the
@@ -4804,6 +4920,13 @@ if ($TestLoad) {
     $savedManifest = Save-AppManifest
     $iconRoundtrip = Get-Content -LiteralPath $savedManifest -Raw | ConvertFrom-Json
     Assert-Test 'Icon reference saved to app.json' ($iconRoundtrip.icon -eq 'icon.png') "icon=$($iconRoundtrip.icon)"
+    # The same folder with a backslash on the end, as Tab completes it: the icon in it then looked
+    # like one picked from elsewhere, and saving failed on copying it over itself
+    Assert-Test 'A package folder given with a backslash on the end opens as the folder it is' (
+        (Open-PackageFolder -Folder "$iconPackage\") -and $script:LoadedFolder -eq $iconPackage) "$script:LoadedFolder"
+    $slashSaved = try { Save-AppManifest } catch { $_.Exception.Message }
+    Assert-Test 'Saving it works, with the icon that lies in it' (
+        "$slashSaved" -eq (Join-Path $iconPackage 'app.json') -and (Get-Content -LiteralPath $slashSaved -Raw | ConvertFrom-Json).icon -eq 'icon.png') "$slashSaved"
 
     # --- Your own packages, if you point at some ---------------------------------
     # Set PACKWRIGHT_TESTPACKAGES to a semicolon-separated list of package folders to
@@ -5318,6 +5441,230 @@ if ($TestLoad) {
     Assert-Test 'A value Intune would refuse stops the publish before any app is looked up or created' (
         $tooLong.Outcome -like 'THREW:Not published: maxRunTimeInMinutes*' -and $tooLong.Calls -notmatch 'POST|PATCH|filter') "$($tooLong.Outcome) — calls: $($tooLong.Calls)"
 
+    # --- Several packages: plan, review, run ----------------------------------------
+    # A batch, from a copy of the publish script with a stand-in build beside it - one that gives
+    # each folder its own copy of the probe package - against a stand-in Intune holding several
+    # apps. The review is answered from a list, through the one function the script lets a host
+    # stand in for; an answer may change a file first ('Yes|touch=<file>'), as someone could
+    # while the review waits.
+    $batchHome = Join-Path $testRoot 'batch'
+    $null = New-Item -ItemType Directory -Path $batchHome -Force
+    Copy-Item -LiteralPath $script:EnginePublish, $script:EnginePackage -Destination $batchHome
+    ("[CmdletBinding(SupportsShouldProcess = `$true)]`nparam([string]`$SourceFolder, [switch]`$PassThru, [switch]`$Quiet)`n" +
+     "`$built = Join-Path `$PSScriptRoot ('Output\' + (Split-Path -Leaf `$SourceFolder) + '\setup.intunewin')`n" +
+     "`$null = New-Item -ItemType Directory -Path (Split-Path -Parent `$built) -Force`n" +
+     "Copy-Item -LiteralPath '$probePackage' -Destination `$built -Force`n" +
+     "[pscustomobject]@{ IntuneWinFile = `$built; SourceFolder = `$SourceFolder; SetupFile = 'setup.msi' }") |
+        Set-Content -LiteralPath (Join-Path $batchHome 'Build-IntuneWinApp.ps1') -Encoding utf8BOM
+    function New-BatchFolder {
+        param([string]$Leaf, [string]$InstallCommand = 'msiexec /i "setup.msi" /qn')
+        $folder = Join-Path $batchHome "packages\$Leaf"
+        $null = New-Item -ItemType Directory -Path $folder -Force
+        Set-Content -LiteralPath (Join-Path $folder 'setup.msi') -Value 'x'
+        ([ordered]@{
+            displayName = $Leaf; publisher = 'IT'; version = '2.0'
+            installCommandLine = $InstallCommand; uninstallCommandLine = 'msiexec /x "setup.msi" /qn'
+            detection = [ordered]@{ type = 'registry'; keyPath = "HKEY_LOCAL_MACHINE\SOFTWARE\$Leaf"; detectionType = 'exists' }
+        } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $folder 'app.json') -Encoding UTF8
+        $folder
+    }
+    $batchOne     = New-BatchFolder 'Batch One'
+    $batchTwo     = New-BatchFolder 'Batch Two'
+    $batchThree   = New-BatchFolder 'Batch Three'
+    $batchBlocked = New-BatchFolder 'Batch Blocked' -InstallCommand 'msiexec /i "missing.msi" /qn'
+    # Intune has Batch One under its own name, and Batch Two only under the name it was given in
+    # the portal since - the case a lookup by name misses and -Update would make a second app of
+    $batchTestApps = @(
+        @{ id = 'stub-one'; '@odata.type' = '#microsoft.graph.win32LobApp'; displayName = 'Batch One'; displayVersion = '1.0' }
+        @{ id = 'stub-two'; '@odata.type' = '#microsoft.graph.win32LobApp'; displayName = 'Autopilot - Batch Two'; displayVersion = '1.0' }
+    )
+    $batchProbe = {
+        param([string]$stubPublishScript, [hashtable]$stubArgs, [object[]]$stubApps, [string[]]$stubAnswers, [string]$stubFailUpload)
+        $script:StubCalls     = [System.Collections.Generic.List[string]]::new()
+        $script:StubAsked     = [System.Collections.Generic.List[string]]::new()
+        $script:StubAnswerQueue   = [System.Collections.Generic.Queue[string]]::new([string[]]@($stubAnswers | Where-Object { $_ }))
+        $script:StubAppTable      = [ordered]@{}
+        foreach ($app in @($stubApps)) { $script:StubAppTable[$app.id] = $app.Clone() }
+        $script:StubCreated   = 0
+        $script:StubCommitted = @{}
+        function Connect-MgGraph { }
+        function Set-MgGraphOption { }
+        function Get-MgContext {
+            [pscustomobject]@{ ClientId = $null; AuthType = 'Delegated'; TenantId = 'selftest'; Account = 'admin@contoso.example'
+                               Scopes = @('DeviceManagementApps.ReadWrite.All') }
+        }
+        function Invoke-MgGraphRequest {
+            param($Method, $Uri, $Body, $ContentType, $OutputType)
+            $script:StubCalls.Add("$Method $Uri")
+            if ($OutputType -eq 'HttpResponseMessage') {
+                $payload = @{ iat = 1760255520; wids = @(); scp = 'DeviceManagementApps.ReadWrite.All' } | ConvertTo-Json -Compress
+                $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+                $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, [Uri]$Uri)
+                $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', "eyJhbGciOiJub25lIn0.$encoded.unsigned")
+                $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::OK)
+                $response.RequestMessage = $request
+                return $response
+            }
+            if ($Uri -like '*/relationships*') { return @{ value = @() } }
+            if ($Uri -like '*$filter=*') {
+                # One app by its name, or every app of the type
+                if ([Uri]::UnescapeDataString($Uri) -match "displayName eq '((?:[^']|'')*)'") {
+                    $wantedName = $Matches[1] -replace "''", "'"
+                    return @{ value = @($script:StubAppTable.Values | Where-Object { $_.displayName -eq $wantedName }) }
+                }
+                return @{ value = @($script:StubAppTable.Values) }
+            }
+            if ($Method -eq 'POST' -and $Uri -match '/mobileApps/([^/?]+)/.*/commit$') { $script:StubCommitted[$Matches[1]] = $true; return @{} }
+            if ($Method -eq 'GET' -and $Uri -match '/mobileApps/([^/?]+)/.*/files/') {
+                if ($script:StubCommitted[$Matches[1]]) { return @{ uploadState = 'commitFileSuccess' } }
+                return @{ uploadState = 'azureStorageUriRequestSuccess'; azureStorageUri = "https://stub.invalid/$($Matches[1])?sv=stub" }
+            }
+            if ($Method -eq 'POST' -and $Uri -like '*/contentVersions') { return @{ id = '1' } }
+            if ($Method -eq 'POST' -and $Uri -match '/mobileApps/([^/?]+)/.*/files$') { $script:StubCommitted[$Matches[1]] = $false; return @{ id = 'stub-file' } }
+            if ($Method -eq 'POST' -and $Uri -match '/mobileApps$') {
+                $script:StubCreated++
+                $created = $Body | ConvertFrom-Json -AsHashtable
+                $created.id = "stub-new-$($script:StubCreated)"
+                $script:StubAppTable[$created.id] = $created
+                return @{ id = $created.id }
+            }
+            if ($Method -eq 'PATCH' -and $Uri -match '/mobileApps/([^/?]+)$') {
+                $held = $script:StubAppTable[$Matches[1]]
+                if (-not $held) { throw "404 Not Found: $Uri" }
+                $sent = $Body | ConvertFrom-Json -AsHashtable
+                foreach ($key in $sent.Keys) { $held[$key] = $sent[$key] }
+                return @{}
+            }
+            if ($Method -eq 'GET' -and $Uri -match '/mobileApps/([^/?]+)$') {
+                $held = $script:StubAppTable[$Matches[1]]
+                if (-not $held) { throw "404 Not Found: $Uri" }
+                return $held.Clone()
+            }
+            throw "the stub was asked for something this test does not model: $Method $Uri"
+        }
+        # Azure Storage, refusing every block of one app's content with a status not worth retrying
+        function Invoke-WebRequest {
+            param($Method, $Uri, $Body, $Headers, [switch]$UseBasicParsing)
+            $script:StubCalls.Add('PUT-BLOB')
+            if ($stubFailUpload -and "$Uri".StartsWith("https://stub.invalid/${stubFailUpload}?")) {
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('stubbed 400 from Azure Storage',
+                    [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::BadRequest))
+            }
+            @{ StatusCode = 201 }
+        }
+        . $stubPublishScript
+        function Read-PublishChoice {
+            param([string]$Caption, [string]$Message, [string[]]$Choices, [int]$Default = -1)
+            $script:StubAsked.Add("$Message [$(@($Choices | ForEach-Object { $_ -replace '&' }) -join ' / ')]")
+            if (-not $script:StubAnswerQueue.Count) { throw "the review asked more than this test answers: $Message" }
+            $wanted, $touch = $script:StubAnswerQueue.Dequeue() -split '\|touch=', 2
+            if ($touch) { Add-Content -LiteralPath $touch -Value ' ' }
+            for ($i = 0; $i -lt $Choices.Count; $i++) { if (($Choices[$i] -replace '&') -like "$wanted*") { return $i } }
+            throw "no choice '$wanted' among $($Choices -join ', ')"
+        }
+        $outcome = try {
+            $published = @(Publish-IntuneWinApp @stubArgs)
+            "RETURNED:$(@($published | ForEach-Object { "$($_.Action):$($_.AppId)" }) -join ' ')"
+        } catch { "THREW:$($_.Exception.Message)" }
+        [pscustomobject]@{ Outcome = $outcome; Calls = @($script:StubCalls); Asked = @($script:StubAsked) }
+    }
+    function Invoke-BatchProbe {
+        param([hashtable]$Arguments, [string[]]$Answers = @(), [string]$FailUpload = '')
+        $probeRunspace = [runspacefactory]::CreateRunspace()
+        $probeRunspace.Open()
+        $probeShell = [powershell]::Create()
+        $probeShell.Runspace = $probeRunspace
+        [void]$probeShell.AddScript($batchProbe.ToString()).AddParameters(@{
+            stubPublishScript = (Join-Path $batchHome 'Publish-IntuneWinApp.ps1'); stubArgs = $Arguments
+            stubApps = $batchTestApps; stubAnswers = $Answers; stubFailUpload = $FailUpload })
+        $probeAnswer = @($probeShell.Invoke()) | Select-Object -Last 1
+        $said = @($probeShell.Streams.Information | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+        $warned = @($probeShell.Streams.Warning | ForEach-Object { "$_" }) -join "`n"
+        $probeShell.Dispose(); $probeRunspace.Dispose()
+        $written = Get-ChildItem -LiteralPath (Join-Path $batchHome 'Output\Batches') -Filter '*.json' -ErrorAction SilentlyContinue |
+                   Sort-Object LastWriteTime | Select-Object -Last 1
+        @{ Outcome = "$($probeAnswer.Outcome)"; Calls = @($probeAnswer.Calls); Asked = @($probeAnswer.Asked); Said = $said; Warned = $warned
+           File = $(if ($written) { $written.FullName }); Saved = $(if ($written) { Get-Content -LiteralPath $written.FullName -Raw | ConvertFrom-Json }) }
+    }
+    # What a batch file says became of each package, by the package's name
+    function Get-BatchStates {
+        param($Saved)
+        @($Saved.packages | ForEach-Object { "$($_.name)=$($_.decision)/$($_.status)" }) -join ', '
+    }
+
+    # Four folders: one to update, one Intune has under another name, one new, one that cannot be
+    # published. Each that can be published is reviewed; the review chooses the renamed app for
+    # the second, approves the first two, skips the third, and publishes now.
+    $reviewed = Invoke-BatchProbe -Arguments @{ SourceFolder = @($batchOne, $batchTwo, $batchThree, $batchBlocked); Update = $true } `
+                    -Answers 'Approve', '1', 'Approve', 'Skip', 'Yes'
+    Assert-Test 'A batch plans every folder first, and a package that cannot be published is said with its reason and never asked about' (
+        $reviewed.Said -match 'Planning 4 packages' -and $reviewed.Said -match 'Batch Blocked: Not published:.*missing\.msi' -and
+        @($reviewed.Asked | Where-Object { $_ -like 'Publish this package?*' }).Count -eq 4 -and
+        @($reviewed.Asked | Where-Object { $_ -like 'Publish the 2 approved packages now*' }).Count -eq 1) "$($reviewed.Asked -join ' | ')"
+    Assert-Test 'A package Intune has only under another name is offered that app instead of a new one' (
+        "$($reviewed.Asked[1])" -match 'Create a new app / 1 Update stub-two instead' -and $reviewed.Said -match "Autopilot - Batch Two") "$($reviewed.Asked[1])"
+    Assert-Test "The review shows what a package changes in Intune - for the renamed app, that it is named back" (
+        $reviewed.Said -match "displayName: 'Autopilot - Batch Two' -> 'Batch Two'" -and $reviewed.Said -match "version: '1\.0' -> '2\.0'") $reviewed.Outcome
+    $reviewedPatches = @($reviewed.Calls | Where-Object { $_ -match '^PATCH .*/mobileApps/[^/]+$' } | ForEach-Object { ($_ -split '/')[-1] })
+    Assert-Test 'Only the approved packages are published, one at a time, each to its own app - and nothing is created' (
+        $reviewed.Outcome -eq 'RETURNED:Updated:stub-one Updated:stub-two' -and ($reviewedPatches -join ',') -eq 'stub-one,stub-two' -and
+        -not @($reviewed.Calls | Where-Object { $_ -match '^POST .*/mobileApps$' })) "$($reviewed.Outcome) — PATCH: $($reviewedPatches -join ',')"
+    Assert-Test 'The batch file keeps what was decided about each package and what became of it' (
+        (Get-BatchStates $reviewed.Saved) -eq 'Batch One 2.0=approved/published, Batch Two 2.0=approved/published, Batch Three 2.0=skipped/, Batch Blocked=blocked/' -and
+        @($reviewed.Saved.packages)[1].chosenAppId -eq 'stub-two' -and @($reviewed.Saved.packages)[0].packageSha256 -match '^[0-9A-F]{64}$') (Get-BatchStates $reviewed.Saved)
+    $twoRecord = (Get-Content -LiteralPath (Join-Path $batchTwo 'app.json') -Raw | ConvertFrom-Json).intune.selftest
+    Assert-Test 'The app chosen in the review is remembered in app.json, so the next run finds it by itself' (
+        $twoRecord.appId -eq 'stub-two' -and $twoRecord.displayName -eq 'Batch Two') "$($twoRecord | ConvertTo-Json -Compress)"
+
+    # What was approved is what is published: app.json changed while the review waited for the
+    # last answer, and that package is left for another review
+    $drifted = Invoke-BatchProbe -Arguments @{ SourceFolder = @($batchOne, $batchThree); Update = $true } `
+                   -Answers 'Approve', 'Approve', "Yes|touch=$(Join-Path $batchThree 'app.json')"
+    Assert-Test 'A package whose app.json changed after it was approved is not published, and the rest are' (
+        $drifted.Outcome -eq 'RETURNED:Updated:stub-one' -and -not @($drifted.Calls | Where-Object { $_ -match '^POST .*/mobileApps$' }) -and
+        $drifted.Said -match 'app\.json was changed after the package was approved' -and
+        (Get-BatchStates $drifted.Saved) -eq 'Batch One 2.0=approved/published, Batch Three 2.0=approved/changed') "$($drifted.Outcome) — $(Get-BatchStates $drifted.Saved)"
+
+    # Approved now, published later with -Batch: no question asked, and the approved .intunewin
+    # checked first - Batch Two's is gone and Batch Three's built again since, so both are left alone
+    $later = Invoke-BatchProbe -Arguments @{ SourceFolder = @($batchOne, $batchTwo, $batchThree); Update = $true } -Answers 'Approve', 'Approve', 'Approve', 'No'
+    Assert-Test 'Answering later publishes nothing, keeps the approvals, and says how to publish them' (
+        $later.Outcome -eq 'RETURNED:' -and -not @($later.Calls | Where-Object { $_ -match '^(POST|PATCH) .*/mobileApps' }) -and
+        $later.Said -match "-Batch '.*Batch [0-9-]+ \d{6}\.json'" -and
+        (Get-BatchStates $later.Saved) -eq 'Batch One 2.0=approved/pending, Batch Two 2.0=approved/pending, Batch Three 2.0=approved/pending') `
+        "$($later.Outcome) — $(Get-BatchStates $later.Saved)"
+    Remove-Item -LiteralPath (Join-Path $batchHome 'Output\Batch Two\setup.intunewin')
+    Add-Content -LiteralPath (Join-Path $batchHome 'Output\Batch Three\setup.intunewin') -Value ' '
+    $resumed = Invoke-BatchProbe -Arguments @{ Batch = $later.File }
+    Assert-Test '-Batch publishes what was approved, as it was approved, without asking - and not a package gone or rebuilt since' (
+        $resumed.Outcome -eq 'RETURNED:Updated:stub-one' -and -not $resumed.Asked -and $resumed.File -eq $later.File -and
+        $resumed.Said -match 'The \.intunewin that was approved, .*Batch Two.*, is not there any more' -and
+        $resumed.Said -match 'setup\.intunewin is not the one that was approved' -and
+        (Get-BatchStates $resumed.Saved) -eq 'Batch One 2.0=approved/published, Batch Two 2.0=approved/changed, Batch Three 2.0=approved/changed') `
+        "$($resumed.Outcome) — $(Get-BatchStates $resumed.Saved)"
+
+    # Without a review (-Confirm:$false), a failed upload is that package's alone: the next one is
+    # published, and -Batch tries the failed one again - and only that one
+    $failing = Invoke-BatchProbe -Arguments @{ SourceFolder = @($batchOne, $batchThree); Update = $true; Confirm = $false } -FailUpload 'stub-one'
+    Assert-Test 'With -Confirm:$false nothing is asked; a package that fails does not stop the next one' (
+        -not $failing.Asked -and $failing.Outcome -eq 'RETURNED:Created:stub-new-1' -and $failing.Said -match 'Failed: stubbed 400' -and
+        $failing.Warned -match 'still runs its previous content version' -and $failing.Said -match "-Batch '" -and
+        (Get-BatchStates $failing.Saved) -eq 'Batch One 2.0=approved/failed, Batch Three 2.0=approved/published') "$($failing.Outcome) — $(Get-BatchStates $failing.Saved)"
+    $retriedBatch = Invoke-BatchProbe -Arguments @{ Batch = $failing.File }
+    Assert-Test '-Batch tries again what failed, and leaves what was published alone' (
+        $retriedBatch.Outcome -eq 'RETURNED:Updated:stub-one' -and -not @($retriedBatch.Calls | Where-Object { $_ -match '^POST .*/mobileApps$' }) -and
+        (Get-BatchStates $retriedBatch.Saved) -eq 'Batch One 2.0=approved/published, Batch Three 2.0=approved/published') "$($retriedBatch.Outcome) — $(Get-BatchStates $retriedBatch.Saved)"
+
+    # A wildcard that finds several folders is a batch too; -WhatIf shows the plan and every
+    # package's review, and changes nothing
+    $batchPreview = Invoke-BatchProbe -Arguments @{ SourceFolder = @(Join-Path $batchHome 'packages\Batch T*'); Update = $true; WhatIf = $true }
+    Assert-Test 'A wildcard finding several folders is a batch, and -WhatIf shows its plan without asking or changing anything' (
+        $batchPreview.Said -match 'Planning 2 packages' -and $batchPreview.Said -match '--- 2 of 2' -and $batchPreview.Said -match 'What if: this is the plan' -and
+        -not $batchPreview.Asked -and -not @($batchPreview.Calls | Where-Object { $_ -match '^(POST|PATCH) |PUT-BLOB' })) "$($batchPreview.Outcome)"
+    $batchAppId = Invoke-BatchProbe -Arguments @{ SourceFolder = @($batchOne, $batchTwo); AppId = 'stub-one' }
+    Assert-Test '-AppId with several folders is refused before anyone signs in' (
+        $batchAppId.Outcome -like 'THREW:-AppId names one app, and several package folders were given*' -and -not $batchAppId.Calls) $batchAppId.Outcome
+
     # --- End to end: the real run body, in a real runspace -------------------------
     # Everything above tests the studio with the engines stubbed out by never reaching them.
     # This runs $script:RunBody itself — dot-sourcing the engine scripts, binding the run
@@ -5369,6 +5716,49 @@ if ($TestLoad) {
         $e2eShell.Dispose(); $e2eRunspace.Dispose()
     }
 
+    # --- IntuneWinAppUtil.exe, downloaded when it is missing ---------------------------------
+    # With the fetch itself stood in for: what arrives is put in place only when it carries
+    # Microsoft's signature, and nothing is left behind when it does not. A download that broke
+    # off, or a proxy's error page saved as the .exe, was otherwise found by every later build.
+    # In a runspace of its own, since the engine's parameters would wipe the studio's.
+    $toolProbe = {
+        param([string]$enginePath, [string]$folder, [string]$sample)
+        . $enginePath
+        $destination = Join-Path $folder 'IntuneWinAppUtil.exe'
+        $leftBefore = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'IntuneWinAppUtil-*.exe' -File).Count
+        $arrivals = [ordered]@{
+            page   = { param($Url, $File) Set-Content -LiteralPath $File -Value '<html>Blocked by the proxy</html>' }
+            broken = { param($Url, $File) [IO.File]::WriteAllBytes($File, [byte[]](77, 90, 0, 0)); throw 'The response ended prematurely.' }
+            tool   = { param($Url, $File) Copy-Item -LiteralPath $sample -Destination $File }
+        }
+        $answers = @(foreach ($arrival in $arrivals.Keys) {
+            if ($arrival -eq 'tool' -and -not $sample) { continue }
+            Set-Item -Path function:Save-IntuneWinAppUtilDownload -Value $arrivals[$arrival]
+            $said = try { Install-IntuneWinAppUtil -Url 'https://example.invalid/IntuneWinAppUtil.exe' -Destination $destination; 'in place' }
+                    catch { $_.Exception.Message }
+            '{0}: {1}; there: {2}' -f $arrival, $said, (Test-Path -LiteralPath $destination)
+        })
+        $leftBehind = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'IntuneWinAppUtil-*.exe' -File).Count - $leftBefore
+        (@($answers) + "left behind: $leftBehind") -join ' | '
+    }
+    $toolFolder = Join-Path $testRoot 'tool download'
+    $null = New-Item -ItemType Directory -Path $toolFolder -Force
+    $toolRunspace = [runspacefactory]::CreateRunspace()
+    $toolRunspace.Open()
+    $toolShell = [powershell]::Create()
+    $toolShell.Runspace = $toolRunspace
+    [void]$toolShell.AddScript($toolProbe.ToString()).AddParameters(@{ enginePath = $script:EngineBuild; folder = $toolFolder; sample = "$packagingTool" })
+    $toolAnswer = try { "$(@($toolShell.Invoke()) | Select-Object -Last 1)" } catch { "THREW:$($_.Exception.Message)" }
+    $toolShell.Dispose(); $toolRunspace.Dispose()
+    Assert-Test "A download that is not Microsoft's IntuneWinAppUtil.exe is deleted, and one that broke off leaves nothing for the next build to find" (
+        $toolAnswer -match "page: what was downloaded is not Microsoft's IntuneWinAppUtil\.exe [^|]*; there: False" -and
+        $toolAnswer -match 'broken: the download failed \(The response ended prematurely\.\); there: False' -and
+        $toolAnswer -match 'left behind: 0$') $toolAnswer
+    if ($packagingTool) {
+        Assert-Test "A download that carries Microsoft's signature is put in place as IntuneWinAppUtil.exe" ($toolAnswer -match 'tool: in place; there: True') $toolAnswer
+    }
+    else { Write-Host "  SKIP  A signed download put in place (no IntuneWinAppUtil.exe here to stand in for the download)" }
+
     # --- WinGet: read when it is first needed --------------------------------------------
     # Packwright.WinGet.ps1 and New-WinGetPackage.ps1 are read the first time something needs
     # WinGet, from wherever that is - a click handler as often as not, scopes away from the script
@@ -5416,7 +5806,14 @@ if ($TestLoad) {
         $runPackage = Join-Path $runWork 'package'
         $null = New-Item -ItemType Directory -Path $runPackage -Force
         Set-Content -LiteralPath (Join-Path $runPackage 'install.cmd') -Value '@echo off', 'echo x> "%~dp0marker.txt"', 'exit /b 3010' -Encoding ASCII
-        $runPlan = [ordered]@{ Action = 'Install'; Force = $false; TimeoutMinutes = 5; Requirements = @()
+        # A requirement rule whose script app.json keeps outside the package folder: the test puts
+        # it beside the copy of the package and says where, and the runner runs it from there
+        $runRules = Join-Path $runWork 'rules'
+        $null = New-Item -ItemType Directory -Path $runRules -Force
+        Set-Content -LiteralPath (Join-Path $runRules '0-Require-Ready.ps1') -Value "Write-Output 'true'" -Encoding ASCII
+        $runPlan = [ordered]@{ Action = 'Install'; Force = $false; TimeoutMinutes = 5
+                               Requirements = @([ordered]@{ type = 'script'; scriptFile = '..\intune\Require-Ready.ps1'
+                                                            scriptPath = (Join-Path $runRules '0-Require-Ready.ps1') })
                                Detection = [ordered]@{ type = 'file'; path = $runPackage; fileOrFolderName = 'marker.txt'; detectionType = 'exists' } }
         $withBom = [Text.UTF8Encoding]::new($true)
         [IO.File]::WriteAllText((Join-Path $runWork 'plan.json'), ($runPlan | ConvertTo-Json -Depth 6), $withBom)
@@ -5430,6 +5827,9 @@ if ($TestLoad) {
         Assert-Test 'The test runner reads its plan as UTF-8, reports the exit code as it is, and checks the detection rule' (
             $runResult -and $runResult.Ran -and $runResult.ExitCode -eq 3010 -and $runResult.DetectedBefore -eq $false -and $runResult.DetectedAfter -and
             -not $runResult.Error) $(if ($runResult) { $runResult | ConvertTo-Json -Compress } else { 'no result.json' })
+        Assert-Test "The test runner runs a rule's script from where the test left it, beside the copy of the package" (
+            $runResult -and @($runResult.Requirements).Count -eq 1 -and $runResult.Requirements[0].Met) $(
+            if ($runResult) { "$(@($runResult.Requirements)[0].Output) $(@($runResult.Requirements)[0].Error)".Trim() } else { 'no result.json' })
     }
 
     # -Elevate from a PowerShell that is not elevated, with Windows' UAC prompt answered by stand-ins:
@@ -5448,6 +5848,30 @@ if ($TestLoad) {
                 Get-TestVerdict -Ran @{ Ran = $true; ExitCode = 5 } -ReturnCode $codes
                 Get-TestVerdict -Ran @{ Ran = $true; ExitCode = 1 }
                 Get-ExitCodeMeaning 1 -ReturnCode $codes
+            ) -join '|')
+        }
+        if ($answer -eq 'rules') {
+            # A rule's script, found from app.json as Publish finds it: one in the package folder is
+            # run from the copy, one kept outside it - by a relative path or its full path - is put
+            # beside the copy, and one that is not there stops the test
+            $payload = Join-Path $folder 'rules source\payload'
+            $outside = Join-Path $folder 'rules source\intune'
+            $work = Join-Path $folder 'rules work'
+            $null = New-Item -ItemType Directory -Path $payload, $outside, $work -Force
+            Set-Content -LiteralPath (Join-Path $payload 'Detect-In.ps1'), (Join-Path $outside 'Detect-Out.ps1') -Value "'found'" -Encoding ASCII
+            $inside = Resolve-TestRuleScript -Rule ([pscustomobject]@{ type = 'script'; scriptFile = 'Detect-In.ps1' }) -SourceFolder $payload -Work $work
+            $beside = Resolve-TestRuleScript -Rule ([pscustomobject]@{ type = 'script'; scriptFile = '..\intune\Detect-Out.ps1'; runAs32Bit = $true }) -SourceFolder $payload -Work $work
+            $byFullPath = Resolve-TestRuleScript -Rule ([pscustomobject]@{ type = 'script'; scriptFile = (Join-Path $outside 'Detect-Out.ps1') }) -SourceFolder $payload -Work $work -Label 'requirement'
+            $notThere = try { $null = Resolve-TestRuleScript -Rule ([pscustomobject]@{ type = 'script'; scriptFile = 'Nowhere.ps1' }) -SourceFolder $payload -Work $work; 'no error' }
+                        catch { $_.Exception.Message }
+            $otherRule = Resolve-TestRuleScript -Rule ([pscustomobject]@{ type = 'msi'; productCode = '{x}' }) -SourceFolder $payload -Work $work
+            return (@(
+                $inside.scriptPath -eq (Join-Path $work 'package\Detect-In.ps1') -and $inside.scriptFile -eq 'Detect-In.ps1'
+                (Split-Path -Parent $beside.scriptPath) -eq (Join-Path $work 'rules') -and (Test-Path -LiteralPath $beside.scriptPath -PathType Leaf) -and $beside.runAs32Bit -eq $true
+                (Split-Path -Parent $byFullPath.scriptPath) -eq (Join-Path $work 'rules') -and $byFullPath.scriptPath -ne $beside.scriptPath -and
+                    (Get-Content -LiteralPath $byFullPath.scriptPath -Raw).Trim() -eq "'found'"
+                $notThere -like 'The detection script Nowhere.ps1 was not found*'
+                $otherRule.type -eq 'msi' -and -not $otherRule.PSObject.Properties['scriptPath']
             ) -join '|')
         }
         if ($answer -eq 'quote') {
@@ -5503,6 +5927,9 @@ if ($TestLoad) {
     $verdicts = Invoke-ElevateProbe -Answer 'verdict'
     Assert-Test "A test install is judged by the package's own return codes, as they are published" (
         $verdicts -eq 'Install to be tried again (1)|Installed and detected|Install failed|Install failed|retry: Intune tries again in five minutes, three times') $verdicts
+    $rulesTest = Invoke-ElevateProbe -Answer 'rules'
+    Assert-Test "A rule's script kept outside the package folder is put beside the test's copy, and one that is not there stops the test" (
+        $rulesTest -eq 'True|True|True|True|True') $rulesTest
 
     # What a test install found, offered as the detection rule only when it beats the one there is
     $oneEntry = [pscustomobject]@{ Action = 'Install'; Ran = $true; ExitCode = 0; DetectedAfter = $false
@@ -5516,6 +5943,20 @@ if ($TestLoad) {
     $oneEntry.ArpAdded = @($oneEntry.ArpAdded[0], $oneEntry.ArpAdded[0])
     Assert-Test 'An install that added several entries leaves the choice to you' ($null -eq (Get-TestDetectionOffer -Outcome $oneEntry))
 
+    # The test's window, closed before the test had a result: it used to count as running for
+    # three hours, and no other test could be started. Stand-ins for the window's process.
+    $script:TestWatch = @{ ResultPath = (Join-Path $testRoot 'no-result.json'); Action = 'Install'; Folder = $scaffolded; Started = Get-Date; Closed = $null
+                           Window = ([pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { $false } -PassThru) }
+    Receive-PackageTest
+    Assert-Test 'A test still running in its window is waited for' ($null -ne $script:TestWatch)
+    $script:TestWatch.Window = [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { $true } -PassThru
+    Receive-PackageTest
+    $closedNoted = $null -ne $script:TestWatch -and $null -ne $script:TestWatch.Closed
+    $script:TestWatch.Closed = (Get-Date).AddSeconds(-3)
+    Receive-PackageTest
+    Assert-Test 'A test window closed before it had a result is said, and another test can be started' (
+        $closedNoted -and $null -eq $script:TestWatch -and $ui.TxtLog.Text -match 'closed before the test had a result') $ui.TxtStatus.Text
+
     # --- Signing in again -----------------------------------------------------------------
     Update-AuthStatus
     $signInOffered = $ui.BtnSignIn.Visibility -eq $(if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.secret')) { 'Collapsed' } else { 'Visible' })
@@ -5526,6 +5967,71 @@ if ($TestLoad) {
         $ui.TxtLog.Text -match 'The sign-in from 03:04 carries Intune Administrator\.' -and $ui.BtnSignIn.IsEnabled) $ui.TxtStatus.Text
     Assert-Test 'Signing in again forgets the tokens too - both caches - not only the account' (
         $script:GraphSignInScript -match [regex]::Escape("'.IdentityService\mg.msal.cache.*'") -and $script:GraphSignInScript -match 'mg\.authrecord\.json')
+
+    # --- An app.json that cannot be read --------------------------------------------------
+    # A path written with single backslashes is all it takes. The editor then shows nothing the
+    # file says, which was only said in the log, and saving wrote over it: its requirement rules
+    # and the app it was published as were gone.
+    $brokenPackage = Join-Path $testRoot 'pkg\Broken Json'
+    $null = New-Item -ItemType Directory -Path $brokenPackage -Force
+    Copy-Item -LiteralPath (Join-Path $testRoot 'nsis.exe') -Destination $brokenPackage
+    $brokenText = '{ "displayName": "Broken", "requirements": [ { "type": "script", "scriptFile": "Require.ps1" } ], ' +
+                  '"detection": { "type": "file", "path": "C:\Program Files\App", "fileOrFolderName": "app.exe" } }'
+    Set-Content -LiteralPath (Join-Path $brokenPackage 'app.json') -Value $brokenText -Encoding UTF8
+    Assert-Test 'A package whose app.json cannot be read opens, and says so where it is seen' (
+        (Open-PackageFolder -Folder $brokenPackage) -and $ui.TxtStatus.Text -match 'app\.json could not be read') $ui.TxtStatus.Text
+    $ui.TxtName.Text = 'Broken'; $ui.TxtPublisher.Text = 'IT'
+    $brokenSaved = Save-AppManifest
+    $brokenKept = @(Get-ChildItem -LiteralPath $brokenPackage -Filter 'app.unreadable-*.json' -File)
+    Assert-Test 'Saving keeps the unreadable app.json as a copy beside the new one' (
+        $brokenKept.Count -eq 1 -and (Get-Content -LiteralPath $brokenKept[0].FullName -Raw).Trim() -eq $brokenText -and
+        (Get-Content -LiteralPath $brokenSaved -Raw | ConvertFrom-Json).displayName -eq 'Broken') "$($brokenKept.Count) kept"
+    [void](Save-AppManifest)
+    Assert-Test 'A second save has nothing more to keep' (@(Get-ChildItem -LiteralPath $brokenPackage -Filter 'app.unreadable-*.json' -File).Count -eq 1)
+    $ui.TxtLog.Clear()   # the warnings above are logged on purpose
+
+    # --- A detection method app.json misspells --------------------------------------------
+    # The list of methods stayed where the package opened before had it, so the editor showed
+    # that method over this rule, and saving wrote it there
+    $typoPackage = Join-Path $testRoot 'pkg\Typo Type'
+    $null = New-Item -ItemType Directory -Path $typoPackage -Force
+    Copy-Item -LiteralPath (Join-Path $testRoot 'nsis.exe') -Destination $typoPackage
+    '{ "displayName": "Typo", "publisher": "IT", "installCommandLine": "\"nsis.exe\" /S", ' +
+        '"detection": { "type": "regisry", "keyPath": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Typo", "valueName": "Version" } }' |
+        Set-Content -LiteralPath (Join-Path $typoPackage 'app.json') -Encoding UTF8
+    [void](Open-PackageFolder -Folder $scaffolded)
+    Set-DetTypeValue 'file'
+    [void](Open-PackageFolder -Folder $typoPackage)
+    Assert-Test 'A detection method app.json misspells is not shown as the one the last package had, and stops a publish' (
+        (Get-DetTypeValue) -eq '' -and $ui.TxtLog.Text -match "says 'regisry'" -and -not (Update-Readiness) -and -not (Test-ReadyToRun -ForPublish)) "method '$(Get-DetTypeValue)'"
+    $typoSaved = Get-Content -LiteralPath (Save-AppManifest) -Raw | ConvertFrom-Json
+    Assert-Test 'Saving leaves the misspelt rule as it was read' (
+        $typoSaved.detection.type -eq 'regisry' -and $typoSaved.detection.valueName -eq 'Version') ($typoSaved.detection | ConvertTo-Json -Compress)
+    Set-DetTypeValue 'registry'
+    Assert-Test 'Picking the method shows the rule with the fields it had' (
+        (Get-StudioDetection).keyPath -eq 'HKEY_LOCAL_MACHINE\SOFTWARE\Typo' -and (Update-Readiness)) $ui.TxtDetSummary.Text
+    $ui.TxtLog.Clear()   # the warning above is logged on purpose
+
+    # --- Small things the editor shows ----------------------------------------------------
+    Assert-Test 'x64 without ARM64 can be chosen as the architecture' (@($ui.CmbArch.Items | ForEach-Object { "$($_.Content)" }) -contains 'x64only')
+    [void](Show-RunResult -Results @([pscustomobject]@{ AppId = '0000'; DisplayName = 'Self Test App'; PortalUrl = 'https://intune.microsoft.com/' }))
+    $linkShown = $ui.BtnOpenPortal.Visibility -eq 'Visible'
+    [void](Open-PackageFolder -Folder $scaffolded)
+    Assert-Test 'The link to the app published last goes when another package is opened' (
+        $linkShown -and $ui.BtnOpenPortal.Visibility -eq 'Collapsed' -and -not $script:PortalUrl)
+
+    # --- An error nothing caught, out of a click or a timer tick --------------------------
+    # It unwound through ShowDialog and ended the process. Thrown here from the dispatcher, as
+    # a handler would throw it, with the frame a window's ShowDialog runs.
+    $pumpFrame = [Windows.Threading.DispatcherFrame]::new()
+    [void]$window.Dispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Normal, [action]{ throw 'a handler gave up' })
+    [void]$window.Dispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Background, [action]{ $pumpFrame.Continue = $false })
+    $pumpOutcome = try { [Windows.Threading.Dispatcher]::PushFrame($pumpFrame); 'the window stays' } catch { "it unwound: $($_.Exception.Message)" }
+    Assert-Test 'An error nothing caught is said in the log, and the window stays' (
+        $pumpOutcome -eq 'the window stays' -and $ui.TxtLog.Text -match 'did not expect: a handler gave up') $pumpOutcome
+    Assert-Test 'Stopping the script is not taken for such an error' (
+        $null -eq (Get-UnexpectedErrorText -Exception ([System.Management.Automation.PipelineStoppedException]::new())))
+    $ui.TxtLog.Clear()   # the error above is logged on purpose
 
     # --- Wizard walkthrough -------------------------------------------------------
     $walk = New-StudioWindow -Xaml $script:WizardXaml
