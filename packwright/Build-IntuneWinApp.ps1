@@ -69,7 +69,11 @@
 .NOTES
     Author    : Love A
     File Name : Build-IntuneWinApp.ps1, with Packwright.Package.ps1 next to it
-.VERSION
+
+    Version history
+    2026-11-17 - 2.8 - Packwright.Package.ps1 reads what an installer can be given, for the studio's list; a build is unchanged
+    2026-11-10 - 2.7 - A switch's value and Windows' own tools are not files missing from the package; the downloaded IntuneWinAppUtil.exe is checked
+    2026-11-09 - 2.6 - Get-Help shows this help, not only the syntax
     2026-11-03 - 2.5 - The setup file chosen as the studio chooses it, app.json's install command first
     2026-09-22 - 2.4 - Auto-detects a single Install*.ps1/.cmd/.bat as the setup file
     2026-09-08 - 2.3 - A build that wrote no .intunewin no longer reports an older one
@@ -114,6 +118,35 @@ if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Packwright.Package.ps
     throw "Build-IntuneWinApp needs Packwright.Package.ps1 next to it, in $PSScriptRoot. Keep the Packwright scripts together."
 }
 . (Join-Path $PSScriptRoot 'Packwright.Package.ps1')
+
+# The download itself, in a function of its own so the self-test can stand in for it
+function Save-IntuneWinAppUtilDownload {
+    param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)][string]$File)
+    Invoke-WebRequest -Uri $Url -OutFile $File -UseBasicParsing -ErrorAction Stop
+}
+
+# IntuneWinAppUtil.exe fetched from Microsoft's repository. It is downloaded under another name
+# and put in its place only once it carries Microsoft's signature: a download that broke off, or
+# a proxy's error page saved as the .exe, used to be left there for every later build to find -
+# and each of them then failed on a file that is no program, in words that say nothing about a
+# download. Whatever goes wrong, nothing is left behind, and the next build downloads it again.
+function Install-IntuneWinAppUtil {
+    param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)][string]$Destination)
+    $fetched = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ('IntuneWinAppUtil-{0}.exe' -f [guid]::NewGuid())
+    try {
+        try { Save-IntuneWinAppUtilDownload -Url $Url -File $fetched }
+        catch { throw "the download failed ($($_.Exception.Message))" }
+        if (-not (Test-Path -LiteralPath $fetched -PathType Leaf)) { throw 'the download left no file' }
+        $signature = Get-AuthenticodeSignature -LiteralPath $fetched
+        if ("$($signature.Status)" -ne 'Valid' -or "$($signature.SignerCertificate.Subject)" -notmatch 'O=Microsoft Corporation') {
+            throw "what was downloaded is not Microsoft's IntuneWinAppUtil.exe (its signature: $($signature.Status)), so it was deleted"
+        }
+        Move-Item -LiteralPath $fetched -Destination $Destination -Force -Confirm:$false
+    }
+    finally {
+        if (Test-Path -LiteralPath $fetched) { Remove-Item -LiteralPath $fetched -Force -Confirm:$false -ErrorAction SilentlyContinue }
+    }
+}
 
 function Build-IntuneWinApp {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -182,11 +215,9 @@ function Build-IntuneWinApp {
             $toolPath = Join-Path -Path $PSScriptRoot -ChildPath 'IntuneWinAppUtil.exe'
             if ($PSCmdlet.ShouldProcess($toolPath, "Download IntuneWinAppUtil.exe from $toolUrl")) {
                 Write-Host 'IntuneWinAppUtil.exe not found — downloading from microsoft/Microsoft-Win32-Content-Prep-Tool...'
-                try {
-                    Invoke-WebRequest -Uri $toolUrl -OutFile $toolPath -UseBasicParsing
-                }
+                try { Install-IntuneWinAppUtil -Url $toolUrl -Destination $toolPath }
                 catch {
-                    throw "IntuneWinAppUtil.exe is missing and the download failed ($($_.Exception.Message)). Download it manually from https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool and place it next to this script."
+                    throw "IntuneWinAppUtil.exe is missing and $($_.Exception.Message). Download it manually from https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool and place it next to this script."
                 }
             }
         }

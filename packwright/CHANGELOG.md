@@ -12,6 +12,16 @@ Packwright is five components, versioned separately:
 
 Newest first. A heading names every component the release changed; under a heading that names several, each bullet starts with its component. Why a change was made, and how it was tested, is in its commit message.
 
+## Studio 2.17 · Build 2.8 — 2026-11-17
+
+### Added
+- Studio: *More switches and options for the install command*, in the wizard and under Advanced, lists what the installer can be given; ticking a row writes it into the command.
+- Studio: for an MSI the list is read from the file: what its setup wizard asks, the properties it has defaults for, its features and install folder, and a transform beside it.
+- Studio: for Inno Setup, NSIS, WiX Burn and InstallShield the list holds the switches every installer of that type takes, such as a log file and the install folder.
+
+### Changed
+- Build: a build is unchanged; `Packwright.Package.ps1` gains the reading the studio's list uses.
+
 ## Studio 2.16 · WinGet 1.5 — 2026-11-11
 
 ### Added

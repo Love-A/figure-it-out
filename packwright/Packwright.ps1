@@ -16,6 +16,8 @@
       - Start screen with recent packages; drop a folder or an installer on the window
       - Guided wizard from a bare vendor .exe/.msi: installer engine detection
         (MSI/Inno Setup/NSIS/InstallShield/WiX Burn) prefills silent switches
+      - More switches to tick into the install command: what an MSI's own setup wizard
+        asks and the properties it has defaults for, and what each installer type takes
       - Detection without registry knowledge: pick the app from this computer's
         Apps & features list and the uninstall-key rule is generated
       - Advanced settings (commands, run-as, restart, architecture) stay collapsed
@@ -55,6 +57,7 @@
     Requires : PowerShell 7+, Windows. Uses only WPF/WinForms + the engine scripts beside it.
 
     Version history
+    2026-11-17 - 2.17 - More switches and options to tick into the install command, read from the MSI or known for the installer type
     2026-11-11 - 2.16 - An error nothing caught no longer closes the window; an unreadable app.json is kept, and smaller repairs
     2026-11-09 - 2.15 - Get-Help shows this help, not only the syntax
     2026-11-03 - 2.14 - The package logic in Packwright.Package.ps1, shared with Build, Publish and Test
@@ -917,6 +920,16 @@ $script:MainXaml = @'
                     <TextBlock Style="{StaticResource FieldLabel}" Text="UNINSTALL COMMAND"/>
                     <TextBox x:Name="TxtUninstall"/>
                     <TextBlock x:Name="TxtCmdHint" Style="{StaticResource Tiny}" Margin="0,6,0,0"/>
+                    <!-- What else the install command can be given (Show-OptionList fills it when opened) -->
+                    <Expander x:Name="ExpCmdOptions" Header="More switches and options for the install command"
+                              Margin="0,8,0,0" Visibility="Collapsed">
+                      <StackPanel Margin="0,6,0,0" TextElement.FontWeight="Normal">
+                        <TextBlock x:Name="TxtCmdOptionsNote" Style="{StaticResource Tiny}"/>
+                        <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto" Margin="0,2,0,0">
+                          <StackPanel x:Name="PnlCmdOptions" Margin="0,0,8,0"/>
+                        </ScrollViewer>
+                      </StackPanel>
+                    </Expander>
                   </StackPanel>
                   <Grid Margin="0,4,0,0">
                     <Grid.ColumnDefinitions>
@@ -1921,6 +1934,9 @@ function Open-PackageFolder {
         $script:DerivedUninstall = $defaults.Uninstall
         $script:DerivedVersion   = $defaults.Version
         if ($script:WinGetLoaded) { Set-WinGetDerivedCommand }
+        # Closed for every package opened, so that its file is only read when someone looks
+        $ui.ExpCmdOptions.IsExpanded = $false
+        Update-EditorOptionList -Folder $Folder -Setup $setup -Engine "$($defaults.Engine)"
 
         Set-ComboValue $ui.CmbRunAs   $(if ($manifest.runAsAccount)    { $manifest.runAsAccount }    else { 'system' })
         Set-ComboValue $ui.CmbRestart $(if ($manifest.restartBehavior) { $manifest.restartBehavior } else { 'suppress' })
@@ -2045,6 +2061,7 @@ function Update-SetupSelection {
     $script:DerivedUninstall = $defaults.Uninstall
     $script:DerivedVersion   = $defaults.Version
     $ui.TxtCmdHint.Text = "$($defaults.Hint)"
+    Update-EditorOptionList -Folder $script:LoadedFolder -Setup $setup -Engine "$($defaults.Engine)"
     # An 'msi' rule means "the MSI in this package", so the code follows the setup file
     # rather than only filling an empty box. Keeping the previous one is how a copied
     # package ends up published with a rule that matches an MSI it does not contain.
@@ -2060,6 +2077,194 @@ function Update-SetupSelection {
     Update-DetectionSummary | Out-Null
     Update-Readiness | Out-Null
 }
+
+#region ---- Switches and options for the install command ------------------------
+# The list under an install command of what else it can be given, one in the editor and one
+# in the wizard: name -> @{ Expander; Panel; Note; Box; Path; Engine; Transforms; Loaded;
+# Options; Rows; Syncing }. What is in a list comes from Get-SetupOption; ticking a row writes
+# it into the command box, and the rows follow whatever is typed into that box by hand.
+# The handlers are plain scriptblocks that name their list, and a row's controls carry
+# @{ List; Index } in Tag, so nothing here needs a closure.
+$script:OptionLists = @{}
+
+function Register-OptionList {
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)]$Expander, [Parameter(Mandatory)]$Panel,
+          [Parameter(Mandatory)]$Note, [Parameter(Mandatory)]$Box)
+    $script:OptionLists[$Name] = @{
+        Name = $Name; Expander = $Expander; Panel = $Panel; Note = $Note; Box = $Box
+        Path = ''; Engine = ''; Transforms = @(); Loaded = $false; Options = @(); Rows = @(); Syncing = $false
+    }
+}
+
+# Point a list at a setup file, or at none. Nothing is read from the file until the list is
+# opened - an MSI's tables take a second - unless it is open already.
+function Reset-OptionList {
+    param([Parameter(Mandatory)][string]$Name, [string]$Path, [string]$Engine, [string[]]$Transform)
+    $list = $script:OptionLists[$Name]
+    if (-not $list) { return }
+    $list.Path = "$Path"; $list.Engine = "$Engine"; $list.Transforms = @($Transform | Where-Object { $_ })
+    $list.Loaded = $false; $list.Options = @(); $list.Rows = @()
+    $list.Panel.Children.Clear()
+    $list.Note.Text = ''
+    $known = [bool]$list.Path -and $list.Engine -in 'MSI', 'Inno Setup', 'NSIS', 'WiX Burn', 'InstallShield'
+    $list.Expander.Visibility = if ($known) { 'Visible' } else { 'Collapsed' }
+    if ($known -and $list.Expander.IsExpanded) { Show-OptionList -Name $Name }
+}
+
+# Read the options of the list's setup file and draw a row for each: a tick box, and a box for
+# the value where the option takes one - with the values the installer knows of to pick from.
+function Show-OptionList {
+    param([Parameter(Mandatory)][string]$Name)
+    $list = $script:OptionLists[$Name]
+    if (-not $list -or $list.Loaded -or -not $list.Path) { return }
+    $list.Loaded = $true
+    $options = @()
+    [Windows.Input.Mouse]::OverrideCursor = [Windows.Input.Cursors]::Wait
+    try {
+        # Warnings come back in the output and are sorted out of it: the reader warns from a
+        # function further in, which -WarningVariable here would not be handed
+        $read = @(Get-SetupOption -Path $list.Path -Engine $list.Engine -Transform $list.Transforms 3>&1)
+        foreach ($readWarning in @($read | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })) { Write-GuiLog "WARNING: $($readWarning.Message)" }
+        $options = @($read | Where-Object { $_ -and $_ -isnot [System.Management.Automation.WarningRecord] })
+    }
+    catch { Write-GuiLog "WARNING: The options of $([IO.Path]::GetFileName($list.Path)) could not be read: $($_.Exception.Message)" }
+    finally { [Windows.Input.Mouse]::OverrideCursor = $null }
+
+    $list.Options = $options
+    $panel = $list.Panel
+    $fileName = [IO.Path]::GetFileName($list.Path)
+    $rows = @()
+    $group = ''
+    $list.Syncing = $true
+    try {
+        foreach ($option in $options) {
+            if ($option.Origin -ne $group) {
+                $group = $option.Origin
+                $heading = New-Object Windows.Controls.TextBlock
+                $heading.Style = $panel.FindResource('FieldLabel')
+                $heading.Text = if ($group -eq 'file') { "READ FROM $fileName".ToUpperInvariant() }
+                                elseif ($list.Engine -eq 'MSI') { 'WHAT MSIEXEC ITSELF TAKES' }
+                                else { "WHAT EVERY $($list.Engine) INSTALLER TAKES".ToUpperInvariant() }
+                [void]$panel.Children.Add($heading)
+            }
+            $rowTag = @{ List = $Name; Index = $rows.Count }
+            $line = New-Object Windows.Controls.DockPanel
+            $valueBox = $null
+            if ($option.TakesValue) {
+                if ($option.Choices.Count) {
+                    $valueBox = New-Object Windows.Controls.ComboBox
+                    $valueBox.IsEditable = $true
+                    foreach ($choice in $option.Choices) { [void]$valueBox.Items.Add("$choice") }
+                    $valueBox.Text = $option.Value
+                    $valueBox.AddHandler([Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,
+                        [Windows.Controls.TextChangedEventHandler]{ param($sender, $eventArgs) Update-OptionFromRow -Tag $sender.Tag -FromValue })
+                }
+                else {
+                    $valueBox = New-Object Windows.Controls.TextBox
+                    $valueBox.Text = $option.Value
+                    $valueBox.Add_TextChanged({ param($sender, $eventArgs) Update-OptionFromRow -Tag $sender.Tag -FromValue })
+                }
+                $valueBox.Tag = $rowTag
+                $valueBox.Width = 250
+                # A size smaller than the fields of the form: these are rows in a list
+                $valueBox.FontSize = 12
+                $valueBox.Height = 26
+                $valueBox.Padding = New-Object Windows.Thickness 6, 2, 6, 2
+                $valueBox.VerticalContentAlignment = 'Center'
+                $valueBox.Margin = New-Object Windows.Thickness 8, 2, 0, 2
+                $valueBox.VerticalAlignment = 'Center'
+                $valueBox.ToolTip = 'The value written into the command when the row is ticked'
+                [Windows.Controls.DockPanel]::SetDock($valueBox, 'Right')
+                [void]$line.Children.Add($valueBox)
+            }
+            # 'Server  SERVER1=': what it is in the installer's own words, then what is written
+            $caption = New-Object Windows.Controls.TextBlock
+            $caption.TextWrapping = 'Wrap'
+            $written = New-Object Windows.Documents.Run ("$($option.Key)$(if ($option.TakesValue) { $option.Separator })".TrimEnd())
+            $written.FontFamily = New-Object Windows.Media.FontFamily 'Consolas'
+            if ($option.Label) {
+                [void]$caption.Inlines.Add((New-Object Windows.Documents.Run "$($option.Label)   "))
+                $written.Foreground = Get-ThemeBrush 'InkMuted'
+            }
+            [void]$caption.Inlines.Add($written)
+            $check = New-Object Windows.Controls.CheckBox
+            $check.Content = $caption
+            $check.Tag = $rowTag
+            $check.VerticalAlignment = 'Center'
+            # Checked and Unchecked, not Click: a screen reader ticks a box without clicking it
+            $check.Add_Checked({ param($sender, $eventArgs) Update-OptionFromRow -Tag $sender.Tag })
+            $check.Add_Unchecked({ param($sender, $eventArgs) Update-OptionFromRow -Tag $sender.Tag })
+            [void]$line.Children.Add($check)
+            [void]$panel.Children.Add($line)
+            if ($option.Note) {
+                $note = New-Object Windows.Controls.TextBlock
+                $note.Style = $panel.FindResource('Tiny')
+                $note.Text = $option.Note
+                $note.Margin = New-Object Windows.Thickness 22, 0, 0, 6
+                [void]$panel.Children.Add($note)
+            }
+            $rows += @{ Option = $option; Check = $check; Value = $valueBox }
+        }
+    }
+    finally { $list.Syncing = $false }
+    $list.Rows = $rows
+    $list.Note.Text = if ($rows.Count) { Get-SetupOptionNote -Engine $list.Engine }
+                      else { "Nothing could be read from $fileName — see the log." }
+    Sync-OptionList -Name $Name
+}
+
+# Make the rows say what the command box says: ticked when the option is in it, with the value
+# it has there. The value being typed into is left alone.
+function Sync-OptionList {
+    param([Parameter(Mandatory)][string]$Name)
+    $list = $script:OptionLists[$Name]
+    if (-not $list -or -not $list.Loaded -or $list.Syncing) { return }
+    $list.Syncing = $true
+    try {
+        $command = "$($list.Box.Text)"
+        foreach ($row in $list.Rows) {
+            $found = Find-CommandOption -Command $command -Option $row.Option
+            if ([bool]$row.Check.IsChecked -ne $found.Present) { $row.Check.IsChecked = $found.Present }
+            if ($found.Present -and $row.Value -and -not $row.Value.IsKeyboardFocusWithin -and "$($row.Value.Text)" -cne $found.Value) {
+                $row.Value.Text = $found.Value
+            }
+        }
+    }
+    finally { $list.Syncing = $false }
+}
+
+# A row was ticked, unticked, or had its value changed: write that into the command box. A
+# value typed into a row that is not ticked waits there until the row is.
+function Update-OptionFromRow {
+    param($Tag, [switch]$FromValue)
+    $list = $script:OptionLists["$($Tag.List)"]
+    if (-not $list -or $list.Syncing) { return }
+    $row = @($list.Rows)[[int]$Tag.Index]
+    if (-not $row) { return }
+    $ticked = [bool]$row.Check.IsChecked
+    if ($FromValue -and -not $ticked) { return }
+    $value = if ($row.Value) { "$($row.Value.Text)" } else { '' }
+    $command = if ($ticked) { Set-CommandOption -Command $list.Box.Text -Option $row.Option -Value $value -Sibling $list.Options }
+               else { Set-CommandOption -Command $list.Box.Text -Option $row.Option -Remove }
+    if ($command -cne "$($list.Box.Text)") {
+        # The box's own TextChanged would bring the rows back in line; they are in line already
+        $list.Syncing = $true
+        try { $list.Box.Text = $command } finally { $list.Syncing = $false }
+    }
+    # Ticked with nothing to give it: the value is the next thing to type
+    if ($ticked -and -not $FromValue -and $row.Value -and -not $value.Trim()) { [void]$row.Value.Focus() }
+}
+
+# The editor's list follows the setup file. A WinGet package has none of its own: its command
+# is written from the winget block, and what the installer is given is that block's override.
+function Update-EditorOptionList {
+    param([string]$Folder, [string]$Setup, [string]$Engine)
+    $path = ''
+    if ($Folder -and $Setup -and -not (Test-WinGetPackage) -and -not (Test-WinGetRuntimePackage)) { $path = Join-Path $Folder $Setup }
+    $transforms = @(if ($path) { Get-ChildItem -LiteralPath $Folder -Filter *.mst -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name })
+    Reset-OptionList -Name 'editor' -Path $path -Engine $Engine -Transform $transforms
+}
+#endregion
 
 function Import-MsiProductCode {
     param([Parameter(Mandatory)][string]$MsiPath)
@@ -2498,6 +2703,14 @@ Under the checklist you may also see lines marked with a warning sign. Those are
 
 Everything else already has a sensible default.
 '@ }
+    @{ Title = 'Giving the installer more than "install silently"'
+       Body  = @'
+The install command starts as the plain silent install for the installer's type. A server name, another install folder, no desktop shortcut or a log file are things the command has to be given as well.
+
+"More switches and options for the install command", under the install command in the wizard and under Advanced, lists what there is to give. Tick a row and it is written into the command; untick it and it is taken out. A row with a value has a box for it, with the values the installer knows of to pick from where it has any. The command can still be edited by hand, and the rows follow it.
+
+For an MSI the list is read out of the file: what its setup wizard asks, in the wizard's own words, and the properties the MSI has a default for. That a property is there does not show the installer acts on it in a silent install, so test the install. For an .exe the list is what every installer of its type takes. What one vendor has added of its own is packed inside the installer and is not shown — the vendor's documentation has it.
+'@ }
     @{ Title = 'Detection — the one thing worth understanding'
        Body  = @'
 Intune has to answer "is this app already on the device?" without running the installer. That is what a detection rule is for, and Intune refuses an app without one.
@@ -2880,6 +3093,15 @@ $script:WizardXaml = @'
           <TextBox x:Name="WTxtInstall"/>
           <TextBlock Style="{StaticResource FieldLabel}" Text="UNINSTALL COMMAND"/>
           <TextBox x:Name="WTxtUninstall"/>
+          <Expander x:Name="WExpCmdOptions" Header="More switches and options for the install command"
+                    Margin="0,10,0,0" Visibility="Collapsed">
+            <StackPanel Margin="0,6,0,0" TextElement.FontWeight="Normal">
+              <TextBlock x:Name="WTxtCmdOptionsNote" Style="{StaticResource Tiny}"/>
+              <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto" Margin="0,2,0,0">
+                <StackPanel x:Name="WPnlCmdOptions" Margin="0,0,8,0"/>
+              </ScrollViewer>
+            </StackPanel>
+          </Expander>
           <Border Style="{StaticResource Note}" Margin="0,12,0,0">
             <TextBlock x:Name="WTxtCmdHint" Style="{StaticResource Muted}"/>
           </Border>
@@ -3021,6 +3243,7 @@ function Read-WizInstaller {
     $wizard.C.WTxtCmdHint.Text = "$($wizard.Info.Hint)" + $(if ($kept) {
         "  You edited the $($kept -join ' and ') by hand, so it was left as it is — check that it matches $($wizard.Info.FileName)."
     } else { '' })
+    Reset-OptionList -Name 'wizard' -Path $wizard.Info.FilePath -Engine $wizard.Info.Engine
 
     if ($previous -and $previous.FilePath -ine $wizard.Info.FilePath) {
         Write-GuiLog "Wizard: installer set to $($wizard.Info.FileName) ($($wizard.Info.Engine))"
@@ -3185,6 +3408,10 @@ function Show-PackageWizard {
     # managed machine, and a package built from there fails in ways that name the wrong culprit.
     $c.WTxtRoot.Text = Get-StudioPackageRoot
 
+    Register-OptionList -Name 'wizard' -Expander $c.WExpCmdOptions -Panel $c.WPnlCmdOptions -Note $c.WTxtCmdOptionsNote -Box $c.WTxtInstall
+    $c.WExpCmdOptions.Add_Expanded({ Show-OptionList -Name 'wizard' })
+    $c.WTxtInstall.Add_TextChanged({ Sync-OptionList -Name 'wizard' })
+
     $c.WBtnInstaller.Add_Click({
         $dlg = New-Object Microsoft.Win32.OpenFileDialog
         $dlg.Filter = 'Installers (*.exe;*.msi)|*.exe;*.msi'
@@ -3270,6 +3497,7 @@ function Show-PackageWizard {
     [void]$dialog.Window.ShowDialog()
     $result = $script:Wz.Result
     $script:Wz = $null
+    $script:OptionLists.Remove('wizard')
     if ($result) {
         Write-GuiLog "Wizard created the package: $($result.Folder)"
         if (Open-PackageFolder -Folder $result.Folder -PreferSetup $result.Setup) {
@@ -3945,6 +4173,11 @@ $ui.TxtDetValue.Add_TextChanged({
 foreach ($commandBox in 'TxtInstall', 'TxtUninstall') {
     $ui[$commandBox].Add_TextChanged({ if (-not $script:Loading) { Update-Readiness } })
 }
+# What else the install command can be given: read from the setup file when the list is opened,
+# and kept in step with the command whichever of the two is edited
+Register-OptionList -Name 'editor' -Expander $ui.ExpCmdOptions -Panel $ui.PnlCmdOptions -Note $ui.TxtCmdOptionsNote -Box $ui.TxtInstall
+$ui.ExpCmdOptions.Add_Expanded({ Show-OptionList -Name 'editor' })
+$ui.TxtInstall.Add_TextChanged({ Sync-OptionList -Name 'editor' })
 $ui.BtnRegPick.Add_Click({
     $app = Show-InstalledAppPicker -Owner $window
     if (-not $app) { return }
@@ -4566,6 +4799,130 @@ if ($TestLoad) {
         "$($tailInfo.Engine) in a $([int]((Get-Item -LiteralPath $tailFile).Length / 1MB)) MB file"
     Remove-Item -LiteralPath $tailFile -Force
 
+    # --- Switches and options for the install command ----------------------------
+    # An option is found, written, changed and taken out of a command without the rest of
+    # the command being touched
+    $serverOption = New-SetupOption -Key 'SERVER' -Origin file
+    $folderOption = New-SetupOption -Key 'INSTALLDIR' -Origin file
+    $msiLogOption = @(Get-InstallerEngineOption -Engine 'MSI' -LogPath '%ProgramData%\Logs\app.log')[0]
+    $editedCommand = 'msiexec /i "app.msi" /qn /norestart'
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $serverOption -Value 'sql01'
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $folderOption -Value 'C:\Program Files\App'
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $msiLogOption -Value $msiLogOption.Value
+    Assert-Test 'Options are written onto the end of the command' (
+        $editedCommand -eq 'msiexec /i "app.msi" /qn /norestart SERVER=sql01 INSTALLDIR="C:\Program Files\App" /l*v "%ProgramData%\Logs\app.log"') $editedCommand
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $serverOption -Value 'sql 02'
+    Assert-Test 'An option already in the command is changed where it stands' (
+        $editedCommand -match '/norestart SERVER="sql 02" INSTALLDIR=' -and (Find-CommandOption -Command $editedCommand -Option $serverOption).Value -eq 'sql 02') $editedCommand
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $folderOption -Remove
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $msiLogOption -Remove
+    Assert-Test 'An option is taken out and nothing else' ($editedCommand -eq 'msiexec /i "app.msi" /qn /norestart SERVER="sql 02"') $editedCommand
+    Assert-Test 'A property is not found inside a longer one' (-not (Find-CommandOption -Command 'msiexec /i a.msi DBSERVER=x' -Option $serverOption).Present)
+    Assert-Test 'A property given nothing is written as empty quotes' ((Format-CommandOption -Option $serverOption -Value '') -eq 'SERVER=""')
+    Assert-Test 'msiexec''s log switch is known however it is written' (
+        (Find-CommandOption -Command 'msiexec /i a.msi /L*V "c:\x y.log" /qn' -Option $msiLogOption).Value -eq 'c:\x y.log' -and
+        (Find-CommandOption -Command 'msiexec /i a.msi /log c:\x.log' -Option $msiLogOption).Value -eq 'c:\x.log' -and
+        -not (Find-CommandOption -Command 'msiexec /i a.msi /qn' -Option $msiLogOption).Present)
+    $nsisOptions = @(Get-InstallerEngineOption -Engine 'NSIS')
+    $editedCommand = Set-CommandOption -Command '"setup.exe" /S' -Option $nsisOptions[0] -Value 'C:\Program Files\App' -Sibling $nsisOptions
+    $editedCommand = Set-CommandOption -Command $editedCommand -Option $nsisOptions[1] -Sibling $nsisOptions
+    Assert-Test 'NSIS /D= stays last and unquoted' ($editedCommand -eq '"setup.exe" /S /NCRC /D=C:\Program Files\App' -and
+        (Find-CommandOption -Command $editedCommand -Option $nsisOptions[0]).Value -eq 'C:\Program Files\App') $editedCommand
+    $innoLog = @(Get-InstallerEngineOption -Engine 'Inno Setup' -LogPath 'c:\x.log' | Where-Object { $_.Key -eq '/LOG' })[0]
+    Assert-Test 'A bare /LOG counts as the log switch' ((Find-CommandOption -Command '"a.exe" /VERYSILENT /LOG' -Option $innoLog).Present -and
+        (Set-CommandOption -Command '"a.exe" /VERYSILENT /LOG /SP-' -Option $innoLog -Value 'c:\x.log') -eq '"a.exe" /VERYSILENT /LOG=c:\x.log /SP-')
+    $shieldLog = @(Get-InstallerEngineOption -Engine 'InstallShield' -LogPath '%ProgramData%\x.log')[0]
+    $editedCommand = Set-CommandOption -Command '"setup.exe" /s /v"/qn /norestart"' -Option $shieldLog -Value $shieldLog.Value
+    Assert-Test 'A switch with its value straight after it' ($editedCommand -eq '"setup.exe" /s /v"/qn /norestart" /debuglog"%ProgramData%\x.log"') $editedCommand
+    Assert-Test 'Every known engine has switches to offer, an unknown one none' (
+        @('MSI', 'Inno Setup', 'NSIS', 'WiX Burn', 'InstallShield' | Where-Object { -not @(Get-InstallerEngineOption -Engine $_ -LogPath 'x').Count -or -not (Get-SetupOptionNote -Engine $_) }).Count -eq 0 -and
+        @(Get-InstallerEngineOption -Engine 'unknown' -LogPath 'x').Count -eq 0)
+
+    # What an MSI can be told, from its tables. The rows are what Read-MsiTable gives: a WiX
+    # MSI whose wizard asks for a server, a mode and a shortcut, with the leftovers every MSI has.
+    $msiRow = { param([string[]]$Names, [object[]]$Values)
+        $made = [ordered]@{}; for ($at = 0; $at -lt $Names.Count; $at++) { $made[$Names[$at]] = "$($Values[$at])" }; [pscustomobject]$made }
+    $controlNames = 'Dialog_', 'Type', 'X', 'Y', 'Attributes', 'Property', 'Text'
+    $msiTables = @{
+        Property = @(
+            (& $msiRow 'Property', 'Value' 'ALLUSERS', '1'), (& $msiRow 'Property', 'Value' 'WIXUI_INSTALLDIR', 'INSTALLFOLDER'),
+            (& $msiRow 'Property', 'Value' 'DESKTOPSHORTCUT', '1'), (& $msiRow 'Property', 'Value' 'UILANGUAGE', 'en'),
+            (& $msiRow 'Property', 'Value' 'VSDNETMSG', 'This setup requires the .NET Framework version [1].'),
+            (& $msiRow 'Property', 'Value' 'EDITA1', '1'), (& $msiRow 'Property', 'Value' 'DefaultUIFont', 'WixUI_Font_Normal'),
+            (& $msiRow 'Property', 'Value' 'SecureCustomProperties', 'SERVER;WIX_UPGRADE_DETECTED;APIKEY;OLDVERSIONFOUND'))
+        Control = @(
+            (& $msiRow $controlNames 'BrowseDlg', 'PathEdit', 25, 202, 11, 'WIXUI_INSTALLDIR', ''),
+            (& $msiRow $controlNames 'LicenseDlg', 'CheckBox', 20, 207, 3, 'LicenseAccepted', 'I &accept the terms'),
+            (& $msiRow $controlNames 'ServerDlg', 'Text', 20, 105, 3, '', '{\WixUI_Font_Normal}&Server name:'),
+            (& $msiRow $controlNames 'ServerDlg', 'Edit', 115, 100, 3, 'WIXUI_SERVER', ''),
+            (& $msiRow $controlNames 'ServerDlg', 'Edit', 115, 125, 2, 'EDITA3', ''),
+            (& $msiRow $controlNames 'ServerDlg', 'CheckBox', 115, 150, 3, 'DESKTOPSHORTCUT', '&Create a desktop shortcut'),
+            (& $msiRow $controlNames 'ServerDlg', 'Text', 115, 170, 3, '', 'Mode'),
+            (& $msiRow $controlNames 'ServerDlg', 'RadioButtonGroup', 115, 185, 3, 'MODE', ''))
+        RadioButton  = @((& $msiRow 'Property', 'Value' 'MODE', 'Client'), (& $msiRow 'Property', 'Value' 'MODE', 'Server'))
+        CheckBox     = @((& $msiRow 'Property', 'Value' 'DESKTOPSHORTCUT', '1'), (& $msiRow 'Property', 'Value' 'LicenseAccepted', '1'))
+        CustomAction = @(
+            (& $msiRow 'Type', 'Source', 'Target' 51, 'SERVER', 'localhost'), (& $msiRow 'Type', 'Source', 'Target' 307, 'EDITA3', ''),
+            (& $msiRow 'Type', 'Source', 'Target' 51, 'ARPINSTALLLOCATION', '[INSTALLFOLDER]'), (& $msiRow 'Type', 'Source', 'Target' 1, 'SomeDll', 'Entry'))
+        Feature      = @((& $msiRow 'Feature', 'Title', 'Level' 'Main', 'The app', 1), (& $msiRow 'Feature', 'Title', 'Level' 'Extras', '', 1),
+                         (& $msiRow 'Feature', 'Title', 'Level' 'Debug', 'Debug symbols', 100), (& $msiRow 'Feature', 'Title', 'Level' 'Off', '', 0))
+        Directory    = @((& $msiRow 'Directory', 'Directory_Parent', 'DefaultDir' 'TARGETDIR', '', 'SourceDir'),
+                         (& $msiRow 'Directory', 'Directory_Parent', 'DefaultDir' 'INSTALLFOLDER', 'ProgramFiles64Folder', 'abc123|Contoso App'))
+        Upgrade      = @((& $msiRow 'ActionProperty' 'WIX_UPGRADE_DETECTED'), (& $msiRow 'ActionProperty' 'OLDVERSIONFOUND'))
+        AppSearch    = @()
+        Condition    = @((& $msiRow 'Condition' 'DESKTOPSHORTCUT=1'), (& $msiRow 'Condition' 'NOT Installed AND MODE="Server"'))
+    }
+    $msiOptions = @(ConvertTo-MsiOption -Table $msiTables)
+    $msiOptionKeys = ($msiOptions | ForEach-Object { $_.Key }) -join ','
+    Assert-Test 'An MSI''s options: the wizard''s fields first, the leftovers of its tools left out' (
+        $msiOptionKeys -ceq 'INSTALLFOLDER,SERVER,DESKTOPSHORTCUT,MODE,APIKEY,UILANGUAGE,ADDLOCAL') $msiOptionKeys
+    $msiOption = @{}; foreach ($readOption in $msiOptions) { $msiOption[$readOption.Key] = $readOption }
+    Assert-Test 'The install folder is the property the wizard''s folder box edits' (
+        $msiOption.INSTALLFOLDER.Label -eq 'Install folder' -and $msiOption.INSTALLFOLDER.Note -match '\[ProgramFiles64Folder\]Contoso App$') $msiOption.INSTALLFOLDER.Note
+    Assert-Test 'A field is named by the text beside it, and has the default a custom action gives it' (
+        $msiOption.SERVER.Label -eq 'Server name' -and $msiOption.SERVER.Value -eq 'localhost' -and $msiOption.SERVER.Note -match '^Asked for by the setup wizard') "$($msiOption.SERVER.Label) = $($msiOption.SERVER.Value)"
+    Assert-Test 'A tick box is named by its own text and offered its opposite' (
+        $msiOption.DESKTOPSHORTCUT.Label -eq 'Create a desktop shortcut' -and ($msiOption.DESKTOPSHORTCUT.Choices -join ',') -eq '1,0' -and
+        $msiOption.DESKTOPSHORTCUT.Note -match 'tests for 1') "$($msiOption.DESKTOPSHORTCUT.Choices -join ',') / $($msiOption.DESKTOPSHORTCUT.Note)"
+    Assert-Test 'Radio buttons are the values to pick from' ($msiOption.MODE.Label -eq 'Mode' -and ($msiOption.MODE.Choices -join ',') -eq 'Client,Server') "$($msiOption.MODE.Label): $($msiOption.MODE.Choices -join ',')"
+    Assert-Test 'Features installed by default are what ADDLOCAL starts with' (
+        $msiOption.ADDLOCAL.Value -eq 'Main,Extras' -and $msiOption.ADDLOCAL.Note -match 'Main \(The app\), Extras, Debug \(Debug symbols\)\.$') "$($msiOption.ADDLOCAL.Value) / $($msiOption.ADDLOCAL.Note)"
+    $msiTables.Property = @($msiTables.Property | Where-Object { $_.Property -ne 'ALLUSERS' })
+    Assert-Test 'Per machine is offered only to an MSI that does not say it itself' (
+        -not $msiOption.ContainsKey('ALLUSERS') -and @(ConvertTo-MsiOption -Table $msiTables | Where-Object { $_.Key -eq 'ALLUSERS' -and $_.Origin -eq 'engine' }).Count -eq 1)
+
+    # The same through a real MSI: one is made here with Windows Installer, and read back
+    # A plain string: what Join-Path gives is wrapped, and COM is handed the wrapper ('type mismatch')
+    [string]$madeMsi = Join-Path $testRoot 'options.msi'
+    $msiMaker = New-Object -ComObject WindowsInstaller.Installer
+    $msiBase = $msiMaker.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $msiMaker, @($madeMsi, 3))
+    foreach ($statement in @(
+        'CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` LONGCHAR NOT NULL LOCALIZABLE PRIMARY KEY `Property`)'
+        'CREATE TABLE `Component` (`Component` CHAR(72) NOT NULL, `Condition` CHAR(255) PRIMARY KEY `Component`)'
+        'CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)'
+        "INSERT INTO ``Property`` (``Property``, ``Value``) VALUES ('ProductName', 'Options Test')"
+        "INSERT INTO ``Property`` (``Property``, ``Value``) VALUES ('DESKTOPSHORTCUT', '1')"
+        "INSERT INTO ``Component`` (``Component``, ``Condition``) VALUES ('Shortcut', 'DESKTOPSHORTCUT=1')"
+        "INSERT INTO ``Component`` (``Component``) VALUES ('Main')"
+        "INSERT INTO ``CustomAction`` (``Action``, ``Type``, ``Source``, ``Target``) VALUES ('SetServer', 51, 'SERVER', 'localhost')")) {
+        $msiStatement = $msiBase.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $msiBase, $statement)
+        [void]$msiStatement.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $msiStatement, $null)
+        [void]$msiStatement.GetType().InvokeMember('Close', 'InvokeMethod', $null, $msiStatement, $null)
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($msiStatement)
+    }
+    [void]$msiBase.GetType().InvokeMember('Commit', 'InvokeMethod', $null, $msiBase, $null)
+    foreach ($msiHandle in $msiBase, $msiMaker) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($msiHandle) }
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    [IO.File]::WriteAllText((Join-Path $testRoot 'site.mst'), 'x')
+    $madeOptions = @(Get-SetupOption -Path $madeMsi -Engine 'MSI' -Transform 'site.mst')
+    $madeSummary = ($madeOptions | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
+    Assert-Test 'A real MSI is read: its properties, then per machine, the transform beside it and the log' (
+        $madeSummary -eq 'SERVER=localhost; DESKTOPSHORTCUT=1; ALLUSERS=1; TRANSFORMS=site.mst; /l*v=%ProgramData%\Microsoft\IntuneManagementExtension\Logs\options-install.log' -and
+        (@($madeOptions | Where-Object { $_.Key -eq 'DESKTOPSHORTCUT' })[0].Choices -join ',') -eq '1,0') $madeSummary
+    Assert-Test 'A file that is no MSI gives a warning and what msiexec takes, not an error' (
+        (@(Get-SetupOption -Path (Join-Path $testRoot 'plain.exe') -Engine 'MSI' -WarningAction SilentlyContinue | ForEach-Object { $_.Key }) -join ',') -eq '/l*v')
+    Remove-Item -LiteralPath $madeMsi, (Join-Path $testRoot 'site.mst') -Force -ErrorAction SilentlyContinue
+
     # --- Scaffold, open, readiness ----------------------------------------------
     $scaffoldManifest = [ordered]@{
         displayName = 'Self Test App'; publisher = 'IT'; version = '1.0'
@@ -4591,6 +4948,29 @@ if ($TestLoad) {
     Assert-Test 'Package is publish-ready' (Update-Readiness) $ui.TxtReadyTitle.Text
     Assert-Test 'Detection summary is plain language' ($ui.TxtDetSummary.Text -match 'at least 1\.0') $ui.TxtDetSummary.Text
     Assert-Test 'Preview card filled' ($ui.PvName.Text -eq 'Self Test App' -and $ui.PvVersion.Text -eq 'Version 1.0')
+
+    # The list of switches under the install command: offered for an installer of a known
+    # type, read when it is opened, and in step with the command whichever is edited
+    Assert-Test 'The switches are offered and nothing is read until the list is opened' (
+        $ui.ExpCmdOptions.Visibility -eq 'Visible' -and $ui.PnlCmdOptions.Children.Count -eq 0 -and -not $ui.ExpCmdOptions.IsExpanded)
+    $ui.ExpCmdOptions.IsExpanded = $true
+    $switchRows = @($script:OptionLists.editor.Rows)
+    Assert-Test 'Opening the list draws a row for each switch' (
+        $switchRows.Count -eq 2 -and $switchRows[0].Option.Key -eq '/D' -and $ui.PnlCmdOptions.Children.Count -ge 3 -and $ui.TxtCmdOptionsNote.Text -match 'NSIS') "$($switchRows.Count) rows, $($ui.PnlCmdOptions.Children.Count) controls"
+    $switchRows[1].Check.IsChecked = $true
+    Assert-Test 'Ticking a row writes the switch into the command' ($ui.TxtInstall.Text -eq '"nsis.exe" /S /NCRC') $ui.TxtInstall.Text
+    $switchRows[0].Value.Text = 'C:\Apps\Self Test'
+    Assert-Test 'A value typed into a row that is not ticked waits there' ($ui.TxtInstall.Text -eq '"nsis.exe" /S /NCRC') $ui.TxtInstall.Text
+    $switchRows[0].Check.IsChecked = $true
+    Assert-Test 'Ticking a row with a value writes both' ($ui.TxtInstall.Text -eq '"nsis.exe" /S /NCRC /D=C:\Apps\Self Test') $ui.TxtInstall.Text
+    $switchRows[0].Value.Text = 'D:\Apps'
+    Assert-Test 'Changing the value of a ticked row changes the command' ($ui.TxtInstall.Text -eq '"nsis.exe" /S /NCRC /D=D:\Apps') $ui.TxtInstall.Text
+    $ui.TxtInstall.Text = '"nsis.exe" /S /D=E:\Elsewhere'
+    Assert-Test 'The rows follow a command edited by hand' (
+        -not $switchRows[1].Check.IsChecked -and $switchRows[0].Check.IsChecked -and $switchRows[0].Value.Text -eq 'E:\Elsewhere') "NCRC $($switchRows[1].Check.IsChecked), /D= '$($switchRows[0].Value.Text)'"
+    $switchRows[0].Check.IsChecked = $false
+    Assert-Test 'Unticking a row takes the switch out again' ($ui.TxtInstall.Text -eq '"nsis.exe" /S') $ui.TxtInstall.Text
+    $ui.ExpCmdOptions.IsExpanded = $false
 
     # Existing-app options are opposites and must stay mutually exclusive
     $ui.ChkUpdateExisting.IsChecked = $true
@@ -6042,6 +6422,18 @@ if ($TestLoad) {
     $stepResults = @()
     $stepResults += Test-WizStep; $script:Wz.Step = 2; Update-WizStep
     Assert-Test 'Wizard prefills the silent switches' ($walk.C.WTxtInstall.Text -match '/VERYSILENT') $walk.C.WTxtInstall.Text
+    # The wizard's list of switches is the editor's, on the wizard's own command box. Here it
+    # is put on a wizard that is never shown, the way Show-PackageWizard puts it on a real one.
+    Register-OptionList -Name 'wizard' -Expander $walk.C.WExpCmdOptions -Panel $walk.C.WPnlCmdOptions -Note $walk.C.WTxtCmdOptionsNote -Box $walk.C.WTxtInstall
+    Reset-OptionList -Name 'wizard' -Path $script:Wz.Info.FilePath -Engine $script:Wz.Info.Engine
+    Show-OptionList -Name 'wizard'
+    $wizardRow = @($script:OptionLists.wizard.Rows | Where-Object { $_.Option.Key -eq '/MERGETASKS' })[0]
+    $wizardRow.Check.IsChecked = $true
+    Assert-Test 'Wizard offers the switches of the installer type' (
+        $walk.C.WExpCmdOptions.Visibility -eq 'Visible' -and $walk.C.WTxtInstall.Text -match '/SP- /MERGETASKS=!desktopicon$') $walk.C.WTxtInstall.Text
+    $wizardRow.Check.IsChecked = $false
+    Assert-Test 'Wizard command is back as it was suggested' ($walk.C.WTxtInstall.Text -eq $script:Wz.Auto['WTxtInstall']) $walk.C.WTxtInstall.Text
+    $script:OptionLists.Remove('wizard')
     $walk.C.WTxtName.Text = 'Walkthrough App'; $walk.C.WTxtPublisher.Text = 'IT'
     $stepResults += Test-WizStep; $script:Wz.Step = 3; Update-WizStep
     Assert-Test 'Wizard defaults to picking an installed app' ([bool]$walk.C.WRbDetPick.IsChecked)
